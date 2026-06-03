@@ -354,6 +354,50 @@ func TestHTTPRelayHandlerValidatesEnvelopeBeforeInjectedProvider(t *testing.T) {
 	}
 }
 
+func TestHTTPRelayHandlerValidatesQueriesBeforeInjectedProvider(t *testing.T) {
+	ctx := context.Background()
+	provider := &acceptingRelayProvider{}
+	rendezvous := &acceptingRendezvousProvider{}
+	handler, err := NewHTTPRelayHandler(HTTPRelayHandlerConfig{Provider: provider, Rendezvous: rendezvous, ProviderID: "network-relay-1", AllowUnauthenticated: true})
+	if err != nil {
+		t.Fatalf("NewHTTPRelayHandler returned error: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	endpointReq, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/endpoint-hints?namespace=../bad&device_id=device-1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	endpointResp, err := http.DefaultClient.Do(endpointReq)
+	if err != nil {
+		t.Fatalf("HTTP request returned error: %v", err)
+	}
+	endpointResp.Body.Close()
+	if endpointResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("endpoint-hints status = %d, want %d", endpointResp.StatusCode, http.StatusBadRequest)
+	}
+	if provider.listCalled {
+		t.Fatalf("handler forwarded invalid endpoint query to injected provider")
+	}
+
+	rendezvousReq, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/rendezvous?namespace=profile-a&profile_id=bad/profile", nil)
+	if err != nil {
+		t.Fatalf("NewRequest returned error: %v", err)
+	}
+	rendezvousResp, err := http.DefaultClient.Do(rendezvousReq)
+	if err != nil {
+		t.Fatalf("HTTP request returned error: %v", err)
+	}
+	rendezvousResp.Body.Close()
+	if rendezvousResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("rendezvous status = %d, want %d", rendezvousResp.StatusCode, http.StatusBadRequest)
+	}
+	if rendezvous.queryCalled {
+		t.Fatalf("handler forwarded invalid rendezvous query to injected provider")
+	}
+}
+
 func TestHTTPRelayClientRejectsMalformedEnvelopeResponse(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -378,6 +422,7 @@ func TestHTTPRelayClientRejectsMalformedEnvelopeResponse(t *testing.T) {
 
 type acceptingRelayProvider struct {
 	sendCalled bool
+	listCalled bool
 }
 
 func (p *acceptingRelayProvider) GetStatus(context.Context) RelayStatus {
@@ -387,6 +432,7 @@ func (p *acceptingRelayProvider) GetStatus(context.Context) RelayStatus {
 func (p *acceptingRelayProvider) PublishEndpointHint(context.Context, EndpointHint) error { return nil }
 
 func (p *acceptingRelayProvider) ListEndpointHints(context.Context, EndpointHintQuery) ([]EndpointHint, error) {
+	p.listCalled = true
 	return nil, nil
 }
 
@@ -401,4 +447,21 @@ func (p *acceptingRelayProvider) SendEnvelope(context.Context, RelayEnvelope) (D
 
 func (p *acceptingRelayProvider) ReceiveEnvelopes(context.Context, MailboxRef) ([]RelayEnvelope, error) {
 	return nil, nil
+}
+
+type acceptingRendezvousProvider struct {
+	queryCalled bool
+}
+
+func (p *acceptingRendezvousProvider) Announce(context.Context, RendezvousAnnouncement) error {
+	return nil
+}
+
+func (p *acceptingRendezvousProvider) Query(context.Context, RendezvousQuery) ([]RendezvousPeerHint, error) {
+	p.queryCalled = true
+	return nil, nil
+}
+
+func (p *acceptingRendezvousProvider) Revoke(context.Context, RendezvousRevokeRequest) error {
+	return nil
 }

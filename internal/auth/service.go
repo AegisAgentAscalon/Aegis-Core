@@ -237,6 +237,8 @@ func (s *Service) redirectURI() (string, error) {
 		}
 		addr := ln.Addr().(*net.TCPAddr)
 		port = addr.Port
+		// This reserves a candidate port only long enough to build the URL.
+		// Callers still own the loopback callback listener and retry policy.
 		_ = ln.Close()
 	}
 	if port <= 0 || port > 65535 {
@@ -326,7 +328,7 @@ func (s *Service) fetchProfile(ctx context.Context, accessToken string) (Profile
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ProfileSummary{}, fmt.Errorf("profile fetch failed with HTTP %d", resp.StatusCode)
+		return ProfileSummary{}, fmt.Errorf("%w with HTTP %d", errProfileFetchFailed, resp.StatusCode)
 	}
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var parsed struct {

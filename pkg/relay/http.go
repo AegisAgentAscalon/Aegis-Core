@@ -56,7 +56,9 @@ type HTTPRelayHandlerConfig struct {
 	EndpointHintRevoke EndpointHintRevokeProvider
 	Authorizer         HTTPRelayAuthorizer
 	// AllowUnauthenticated must be set intentionally for local/dev handlers
-	// that should accept relay traffic without an Authorizer.
+	// that should accept relay traffic without an Authorizer. Access control is
+	// route-wide, including /status, so public health checks need a separate
+	// caller-owned handler.
 	AllowUnauthenticated bool
 	ProviderID           string
 	MaxPayloadBytes      int
@@ -391,6 +393,14 @@ func (h *httpRelayHandler) endpointHints(w http.ResponseWriter, r *http.Request)
 		writeRelayJSON(w, http.StatusOK, map[string]bool{"accepted": true})
 	case http.MethodGet:
 		query := EndpointHintQuery{Namespace: r.URL.Query().Get("namespace"), DeviceID: r.URL.Query().Get("device_id")}
+		if !validNamespace(query.Namespace) {
+			writeRelayError(w, statusForRelayError(ErrInvalidNamespace), ErrInvalidNamespace)
+			return
+		}
+		if query.DeviceID != "" && !validDeviceID(query.DeviceID) {
+			writeRelayError(w, statusForRelayError(ErrInvalidDeviceID), ErrInvalidDeviceID)
+			return
+		}
 		hints, err := h.provider.ListEndpointHints(r.Context(), query)
 		if err != nil {
 			writeRelayError(w, statusForRelayError(err), err)
@@ -440,6 +450,18 @@ func (h *httpRelayHandler) rendezvousHandler(w http.ResponseWriter, r *http.Requ
 		writeRelayJSON(w, http.StatusOK, map[string]bool{"accepted": true})
 	case http.MethodGet:
 		query := RendezvousQuery{Namespace: r.URL.Query().Get("namespace"), ProfileID: r.URL.Query().Get("profile_id"), DeviceID: r.URL.Query().Get("device_id")}
+		if !validNamespace(query.Namespace) {
+			writeRelayError(w, statusForRelayError(ErrInvalidNamespace), ErrInvalidNamespace)
+			return
+		}
+		if query.ProfileID != "" && !validID(query.ProfileID) {
+			writeRelayError(w, statusForRelayError(ErrInvalidRendezvous), ErrInvalidRendezvous)
+			return
+		}
+		if query.DeviceID != "" && !validDeviceID(query.DeviceID) {
+			writeRelayError(w, statusForRelayError(ErrInvalidDeviceID), ErrInvalidDeviceID)
+			return
+		}
 		peers, err := h.rendezvous.Query(r.Context(), query)
 		if err != nil {
 			writeRelayError(w, statusForRelayError(err), err)

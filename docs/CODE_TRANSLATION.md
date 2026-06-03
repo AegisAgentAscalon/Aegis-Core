@@ -30,7 +30,9 @@ Start with these files:
 
 Owns the public Google OAuth setup facade. It can build a sign-in URL, complete a callback, clear stored auth state, and return safe status/profile summaries.
 
-It must not expose raw access tokens, refresh tokens, PKCE verifiers, auth codes, client secrets, token-store paths, or raw provider responses.
+It must not expose raw access tokens, refresh tokens, PKCE verifiers, auth codes, client secrets, token-store paths, raw provider responses, or raw provider HTTP status details through `AuthStatus.LastError`.
+
+When callback `PortHint` is zero, the implementation discovers a free loopback port and releases it after constructing the redirect URL. The consuming app owns the actual callback listener and should handle bind retries if that port is no longer available.
 
 Stateful implementation lives in `internal/auth`.
 
@@ -46,8 +48,9 @@ Important safety notes:
 
 - Remote manifest providers may use HTTP or GitHub raw manifests.
 - Local file artifacts are restricted to the local file-manifest provider path.
-- SHA-256 verification is enabled by default.
+- SHA-256 artifact verification is always enforced by service normalization.
 - Ed25519 manifest verification exists when callers provide keys and require signatures.
+- Manifest signatures are calculated over Aegis Core's current Go JSON payload with `Signature` removed. This is deterministic for this implementation but is not RFC 8785/JCS canonical JSON, so cross-language signing tools must match the same serialization or wait for a later canonicalization pass.
 
 ### `pkg/devicelink`
 
@@ -81,7 +84,9 @@ Owns optional relay/rendezvous contracts and validation. It includes:
 
 Relay is always transport. It is not device trust, profile truth, sync authority, or access-control policy.
 
-The HTTP handler refuses to start without an `Authorizer` unless the caller explicitly sets `AllowUnauthenticated` for local/dev use. That opt-in should not be used for public relay endpoints.
+The HTTP handler refuses to start without an `Authorizer` unless the caller explicitly sets `AllowUnauthenticated` for local/dev use. That opt-in should not be used for public relay endpoints. Access control is route-wide, including `/status`; callers that need public health checks should expose a separate health handler outside the relay API.
+
+Endpoint-hint and rendezvous query parameters are validated by the HTTP handler before injected providers receive them, even though the built-in client and local provider also validate those query DTOs.
 
 ### `pkg/setupstate`
 
@@ -113,11 +118,13 @@ It must not scan files, detect malware, quarantine, remediate, block, trust prov
 
 - Do not import `internal/*` from a consuming app.
 - Do not expose `ArtifactPath`, token files, provider raw errors, local filesystem paths, or secret-like strings in UI status.
+- Do not assume `AuthStatus.LastError` contains raw provider diagnostics; it is intentionally mapped to safe fixed messages.
 - Do not treat relay delivery as trust.
 - Do not treat cloud/object metadata as profile truth.
 - Do not auto-apply staged updates without an app-owned policy and rollback plan.
 - Do not expose the self-hosted HTTP relay publicly without TLS, authentication, abuse controls, monitoring, and deployment hardening.
 - Do not set `AllowUnauthenticated` outside isolated local/dev tests.
+- Do not make `/status` unauthenticated by setting `AllowUnauthenticated`; create a separate health endpoint instead.
 - Do not assume this repo has been audited.
 
 ## What Human Review Should Focus On

@@ -64,7 +64,9 @@ type TokenStoreConfig struct {
 	Namespace string
 }
 
-// CallbackConfig controls desktop loopback callback URL construction.
+// CallbackConfig controls desktop loopback callback URL construction. When
+// PortHint is zero the service discovers a callback URL port, but the
+// caller-owned callback listener must still handle bind retries.
 type CallbackConfig struct {
 	Host     string
 	Path     string

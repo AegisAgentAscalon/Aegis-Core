@@ -30,6 +30,8 @@ var (
 	ErrStorageUnavailable      = errors.New("auth storage is unavailable; check app permissions")
 	ErrAuthCanceled            = errors.New("auth request canceled")
 	ErrSignOutIncomplete       = errors.New("sign-out cleanup incomplete")
+
+	errProfileFetchFailed = errors.New("profile fetch failed")
 )
 
 // AppConfig identifies one consuming app's auth boundary.
@@ -66,7 +68,9 @@ type TokenStoreConfig struct {
 	Namespace string
 }
 
-// CallbackConfig controls desktop loopback callback URL construction.
+// CallbackConfig controls desktop loopback callback URL construction. When
+// PortHint is zero the service discovers an available port for URL construction
+// only; the caller-owned callback listener must still handle bind retries.
 type CallbackConfig struct {
 	Host     string
 	Path     string

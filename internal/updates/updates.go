@@ -107,6 +107,8 @@ type SourceConfig struct {
 }
 
 type Policy struct {
+	// RequireSHA256 is always enforced; normalization sets it to true even
+	// when callers leave it false.
 	RequireSHA256            bool
 	AllowPrerelease          bool
 	MinimumVersion           string
@@ -681,7 +683,19 @@ func (s *Service) PlanApply(ctx context.Context) (ApplyPlan, error) {
 }
 
 func (s *Service) Apply(ctx context.Context, version string) (ApplyResult, error) {
-	_ = version
+	version = strings.TrimSpace(version)
+	if version != "" {
+		staged, err := s.store.readStaged()
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return ApplyResult{}, ErrStagedUpdateNotFound
+			}
+			return ApplyResult{}, err
+		}
+		if staged.Version != version {
+			return ApplyResult{}, ErrNoUpdateAvailable
+		}
+	}
 	return s.ApplyUpdate(ctx)
 }
 
@@ -713,7 +727,7 @@ func (s *Service) selectArtifact(manifest Manifest) (Artifact, error) {
 	if err := validateManifest(s.cfg, manifest); err != nil {
 		return Artifact{}, err
 	}
-	for _, artifact := range manifest.Artifacts {
+	for _, artifact := range sortedArtifacts(manifest.Artifacts) {
 		if artifact.Platform != s.cfg.Platform || artifact.Architecture != s.cfg.Architecture {
 			continue
 		}
@@ -727,6 +741,9 @@ func (s *Service) selectArtifact(manifest Manifest) (Artifact, error) {
 
 func (s *Service) downloadArtifact(ctx context.Context, artifact Artifact, target string) (int64, error) {
 	if filepath.IsAbs(artifact.DownloadURL) {
+		if s.cfg.Source.Provider != ProviderFileManifest {
+			return 0, ErrInvalidManifest
+		}
 		src, err := os.Open(artifact.DownloadURL)
 		if err != nil {
 			return 0, ErrDownloadFailed
@@ -740,6 +757,9 @@ func (s *Service) downloadArtifact(ctx context.Context, artifact Artifact, targe
 	}
 	switch u.Scheme {
 	case "", "file":
+		if s.cfg.Source.Provider != ProviderFileManifest {
+			return 0, ErrInvalidManifest
+		}
 		path := artifact.DownloadURL
 		if u.Scheme == "file" {
 			path = u.Path
@@ -1091,6 +1111,7 @@ func verifyManifestSignature(policy Policy, manifest Manifest) error {
 func manifestSignaturePayload(manifest Manifest) ([]byte, error) {
 	unsigned := manifest
 	unsigned.Signature = nil
+	// This uses Go's JSON encoding, not a cross-language canonical JSON scheme.
 	return json.Marshal(unsigned)
 }
 
@@ -1411,6 +1432,7 @@ func unsafeUpdateDetail(value string) bool {
 	if lower == "" {
 		return false
 	}
+	// Split several markers to avoid source-scanner false positives.
 	credentialMarkers := []string{
 		strings.Join([]string{"client", "secret"}, "_"),
 		strings.Join([]string{"refresh", "token"}, "_"),

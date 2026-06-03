@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const maxPendingSessionFiles = 5
+
 type store struct {
 	dir string
 }
@@ -102,12 +104,7 @@ func (s *store) writeLastError(err error) {
 		_ = os.Remove(s.errorPath())
 		return
 	}
-	msg := err.Error()
-	var pathErr *os.PathError
-	if errors.As(err, &pathErr) {
-		msg = "auth storage operation failed"
-	}
-	_ = writeFileAtomic(s.errorPath(), []byte(msg), 0o600)
+	_ = writeFileAtomic(s.errorPath(), []byte(safeAuthError(err)), 0o600)
 }
 
 func (s *store) readLastError() string {
@@ -197,9 +194,14 @@ func (s *store) findSessionByState(state string) (pendingSession, error) {
 		return pendingSession{}, ErrStorageUnavailable
 	}
 	sawInvalid := false
+	sessionFiles := 0
 	for _, file := range files {
 		if file.IsDir() {
 			continue
+		}
+		sessionFiles++
+		if sessionFiles > maxPendingSessionFiles {
+			return pendingSession{}, ErrStorageUnavailable
 		}
 		b, err := os.ReadFile(filepath.Join(s.sessionsDir(), file.Name()))
 		if err != nil {
@@ -219,6 +221,69 @@ func (s *store) findSessionByState(state string) (pendingSession, error) {
 		return pendingSession{}, ErrInvalidProviderResponse
 	}
 	return pendingSession{}, ErrSessionNotFound
+}
+
+func safeAuthError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var pathErr *os.PathError
+	switch {
+	case errors.As(err, &pathErr):
+		return "auth storage operation failed"
+	case errors.Is(err, ErrNotConfigured),
+		errors.Is(err, ErrNotSignedIn),
+		errors.Is(err, ErrProfileNotFound),
+		errors.Is(err, ErrSessionNotFound),
+		errors.Is(err, ErrSessionExpired),
+		errors.Is(err, ErrSessionConsumed),
+		errors.Is(err, ErrStateMismatch),
+		errors.Is(err, ErrTokenExchangeFailed),
+		errors.Is(err, ErrProviderUnavailable),
+		errors.Is(err, ErrInvalidProviderResponse),
+		errors.Is(err, ErrStorageUnavailable),
+		errors.Is(err, ErrAuthCanceled),
+		errors.Is(err, ErrSignOutIncomplete),
+		errors.Is(err, errProfileFetchFailed):
+		return unwrapAuthSentinel(err).Error()
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "token exchange timed out"):
+		return "token exchange timed out"
+	case strings.Contains(lower, "profile fetch timed out"):
+		return "profile fetch timed out"
+	case strings.Contains(lower, "state is required"):
+		return "state is required"
+	case strings.Contains(lower, "authorization code is required"):
+		return "authorization code is required"
+	default:
+		return "auth operation failed"
+	}
+}
+
+func unwrapAuthSentinel(err error) error {
+	for _, sentinel := range []error{
+		ErrNotConfigured,
+		ErrNotSignedIn,
+		ErrProfileNotFound,
+		ErrSessionNotFound,
+		ErrSessionExpired,
+		ErrSessionConsumed,
+		ErrStateMismatch,
+		ErrTokenExchangeFailed,
+		ErrProviderUnavailable,
+		ErrInvalidProviderResponse,
+		ErrStorageUnavailable,
+		ErrAuthCanceled,
+		ErrSignOutIncomplete,
+		errProfileFetchFailed,
+	} {
+		if errors.Is(err, sentinel) {
+			return sentinel
+		}
+	}
+	return errors.New("auth operation failed")
 }
 
 func (s *store) consumeSession(sess pendingSession) error {

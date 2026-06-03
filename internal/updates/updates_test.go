@@ -850,6 +850,65 @@ func TestStageUpdateRevalidatesDownloadedArtifactBeforeCopy(t *testing.T) {
 	}
 }
 
+func TestApplyAliasRequiresMatchingVersion(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := stageInternalUpdate(t, "1.2.0", nil)
+	if _, err := svc.Apply(ctx, "9.9.9"); !errors.Is(err, ErrNoUpdateAvailable) {
+		t.Fatalf("Apply with mismatched version error = %v, want no update available", err)
+	}
+	result, err := svc.Apply(ctx, "1.2.0")
+	if err != nil {
+		t.Fatalf("Apply with staged version returned error: %v", err)
+	}
+	if !result.OK || result.Version != "1.2.0" {
+		t.Fatalf("unexpected apply result: %+v", result)
+	}
+}
+
+func TestDownloadArtifactRejectsLocalPathForNonFileProvider(t *testing.T) {
+	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
+	cfg.Source = SourceConfig{Provider: ProviderHTTPManifest, ManifestURL: "https://example.test/manifest.json"}
+	svc, err := NewService(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := Artifact{
+		Platform:     cfg.Platform,
+		Architecture: cfg.Architecture,
+		Filename:     "sample-1.2.0.zip",
+		DownloadURL:  artifactPath,
+		Size:         int64(len("artifact 1.2.0")),
+		SHA256:       artifactHash,
+	}
+	target := filepath.Join(t.TempDir(), "download.zip")
+	if _, err := svc.downloadArtifact(context.Background(), artifact, target); !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("downloadArtifact error = %v, want invalid manifest", err)
+	}
+	if _, err := os.Stat(target); err == nil {
+		t.Fatalf("target should not be written for rejected local artifact")
+	}
+}
+
+func TestSelectArtifactUsesDeterministicFilenameOrder(t *testing.T) {
+	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
+	svc, err := NewService(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := testManifest(cfg, "1.2.0", artifactPath, artifactHash)
+	manifest.Artifacts = []Artifact{
+		{Platform: cfg.Platform, Architecture: cfg.Architecture, Filename: "b.zip", DownloadURL: artifactPath, Size: int64(len("artifact 1.2.0")), SHA256: artifactHash},
+		{Platform: cfg.Platform, Architecture: cfg.Architecture, Filename: "a.zip", DownloadURL: artifactPath, Size: int64(len("artifact 1.2.0")), SHA256: artifactHash},
+	}
+	artifact, err := svc.selectArtifact(manifest)
+	if err != nil {
+		t.Fatalf("selectArtifact returned error: %v", err)
+	}
+	if artifact.Filename != "a.zip" {
+		t.Fatalf("selected artifact = %q, want a.zip", artifact.Filename)
+	}
+}
+
 func TestCorruptStagedMetadataIsClassifiedSafely(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := stageInternalUpdate(t, "1.2.0", failingApply{})

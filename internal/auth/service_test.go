@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -332,6 +333,36 @@ func TestCompleteSignInRejectsCorruptPendingSessionSafely(t *testing.T) {
 	}
 }
 
+func TestCompleteSignInRejectsTooManyPendingSessions(t *testing.T) {
+	svc, err := NewService(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxPendingSessionFiles+1; i++ {
+		sess := pendingSession{
+			SessionID:   "session-" + strconv.Itoa(i),
+			State:       "state-" + strconv.Itoa(i),
+			Verifier:    "verifier",
+			RedirectURI: "http://127.0.0.1:56789/oauth/callback",
+			CreatedAt:   time.Now().UTC(),
+			ExpiresAt:   time.Now().UTC().Add(time.Minute),
+		}
+		if err := svc.store.writeSession(sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := svc.CompleteSignIn(context.Background(), CompleteSignInRequest{State: "missing-state", Code: "code"}); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("expected too many sessions to fail closed, got %v", err)
+	}
+	status, statusErr := svc.Status(context.Background())
+	if statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	if status.LastError != ErrStorageUnavailable.Error() {
+		t.Fatalf("LastError = %q, want %q", status.LastError, ErrStorageUnavailable.Error())
+	}
+}
+
 func TestCompleteSignInUsesVerifierStoresTokenAndReturnsSafeProfile(t *testing.T) {
 	var tokenForm string
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -450,9 +481,49 @@ func TestCompleteSignInTokenExchangeFailureIsActionable(t *testing.T) {
 	if statusErr != nil {
 		t.Fatal(statusErr)
 	}
+	if status.LastError != ErrTokenExchangeFailed.Error() || strings.Contains(status.LastError, "HTTP") {
+		t.Fatalf("status LastError should use safe sentinel text, got %q", status.LastError)
+	}
 	for _, forbidden := range []string{"access-secret", "refresh-secret", "code_verifier", "do-not-leak", "bad code"} {
 		if strings.Contains(err.Error(), forbidden) || strings.Contains(status.LastError, forbidden) {
 			t.Fatalf("provider error leaked %q in err=%q status=%q", forbidden, err.Error(), status.LastError)
+		}
+	}
+}
+
+func TestCompleteSignInProfileHTTPFailureStoresSafeLastError(t *testing.T) {
+	tokenServer, userInfoServer := successOAuthServers(t)
+	defer tokenServer.Close()
+	userInfoServer.Close()
+	failingUserInfo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "profile access_token refresh_token secret", http.StatusServiceUnavailable)
+	}))
+	defer failingUserInfo.Close()
+	cfg := testConfig(t)
+	cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
+	cfg.OAuth.Endpoints.UserInfoURL = failingUserInfo.URL
+	svc, err := NewService(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, err := svc.StartSignIn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.CompleteSignIn(context.Background(), CompleteSignInRequest{State: mustState(t, start.AuthorizationURL), Code: "code"})
+	if err == nil || !errors.Is(err, errProfileFetchFailed) {
+		t.Fatalf("expected profile fetch failure, got %v", err)
+	}
+	status, statusErr := svc.Status(context.Background())
+	if statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	if status.LastError != errProfileFetchFailed.Error() {
+		t.Fatalf("LastError = %q, want %q", status.LastError, errProfileFetchFailed.Error())
+	}
+	for _, forbidden := range []string{"HTTP 503", "access_token", "refresh_token", "secret"} {
+		if strings.Contains(status.LastError, forbidden) {
+			t.Fatalf("profile failure LastError leaked %q in %q", forbidden, status.LastError)
 		}
 	}
 }

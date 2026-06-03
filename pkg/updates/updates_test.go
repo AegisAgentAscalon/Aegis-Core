@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -396,9 +397,12 @@ func TestUpdatesApplyResultSanitizesAppOwnedMessage(t *testing.T) {
 	if _, err := svc.StageUpdate(context.Background(), "1.2.0"); err != nil {
 		t.Fatalf("StageUpdate returned error: %v", err)
 	}
-	result, err := svc.ApplyUpdate(context.Background())
+	if _, err := svc.Apply(context.Background(), "9.9.9"); !errors.Is(err, ErrNoUpdateAvailable) {
+		t.Fatalf("Apply with mismatched version error = %v, want no update available", err)
+	}
+	result, err := svc.Apply(context.Background(), "1.2.0")
 	if err != nil {
-		t.Fatalf("ApplyUpdate returned error: %v", err)
+		t.Fatalf("Apply returned error: %v", err)
 	}
 	if result.Version != "1.2.0" || !result.OK {
 		t.Fatalf("unexpected apply result: %+v", result)

@@ -76,6 +76,8 @@ type SourceConfig struct {
 }
 
 type Policy struct {
+	// RequireSHA256 is always enforced by the service; callers cannot disable
+	// artifact SHA-256 validation through this field.
 	RequireSHA256            bool
 	AllowPrerelease          bool
 	MinimumVersion           string
@@ -371,8 +373,8 @@ func (s *Service) Describe(ctx context.Context) (StagedUpdateSummary, error) {
 }
 func (s *Service) PlanApply(ctx context.Context) (ApplyPlan, error) { return s.BuildApplyPlan(ctx) }
 func (s *Service) Apply(ctx context.Context, version string) (ApplyResult, error) {
-	_ = version
-	return s.ApplyUpdate(ctx)
+	res, err := s.svc.Apply(ctx, version)
+	return ApplyResult(res), err
 }
 
 type publicApplyStrategy struct{ apply ApplyStrategy }

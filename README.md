@@ -30,6 +30,9 @@ The code has tests and defensive boundaries, but it has not been professionally 
 
 ## Module Path
 
+Use the lowercase module path exactly as declared in `go.mod`; the GitHub
+repository display name is not the import path.
+
 ```text
 github.com/AegisAgentAscalon/aegis-core
 ```
@@ -65,14 +68,21 @@ Those boundaries reduce footguns, but they do not replace human review.
 Consumer apps remain responsible for:
 
 - choosing OAuth client identity and scopes;
+- running the loopback OAuth callback listener and retrying if a discovered
+  callback port is no longer available when binding;
 - storing secrets safely;
 - choosing update providers and signing policy;
+- keeping update manifest signing/verifying code aligned with Aegis Core's
+  current Go JSON signature payload, which is not a cross-language canonical
+  JSON format;
 - hosting any relay endpoint safely with authentication, TLS, monitoring, and abuse controls;
 - deciding whether profile-sync conflicts should be accepted;
 - applying staged updates;
 - securing deployment, TLS, logs, monitoring, and access control.
 
-The HTTP relay handler now requires either an explicit `Authorizer` or an explicit local/dev opt-in through `AllowUnauthenticated`; do not set that opt-in on a public endpoint.
+Update artifact SHA-256 verification is always enforced by the service.
+
+The HTTP relay handler now requires either an explicit `Authorizer` or an explicit local/dev opt-in through `AllowUnauthenticated`; do not set that opt-in on a public endpoint. Handler access control is route-wide, including `/status`, so public unauthenticated health checks should be hosted separately by the caller.
 
 ## Validation
 
