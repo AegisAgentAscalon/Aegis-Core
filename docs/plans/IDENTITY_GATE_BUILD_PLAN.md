@@ -1180,7 +1180,22 @@ Before implementation is considered clean, reviewers must confirm:
 - [ ] `go test ./...` passes.
 - [ ] `go vet ./...` passes.
 
-## 16. Clean Revision: Final Implementation Shape
+## 16. Implementation Readiness Gate
+
+This plan is ready for implementation only if all of these are true:
+
+- The build remains a foundation-only Aegis Core package.
+- The first implementation uses mock verification only.
+- The package boundary is `pkg/identitygate` over `internal/identitygate`.
+- Current-operator verification is represented separately from account login, trusted device, and profile recognition.
+- Configurable verification cadence has safe defaults and hard maximums.
+- Prompt/context provenance is treated as metadata for router decisions, not as a replacement for model safety.
+- Private memory, sensitive memory, tools, exports, and admin actions remain scope-gated.
+- The test matrix is accepted as mandatory rather than optional.
+
+If any item is disputed, implementation should pause and the plan should be revised before code starts.
+
+## 17. Clean Revision: Final Implementation Shape
 
 After review and red-team pass, the clean implementation should look like this:
 
@@ -1198,7 +1213,7 @@ After review and red-team pass, the clean implementation should look like this:
 12. Tests covering every security invariant.
 13. README and docs updated only after implementation passes tests.
 
-## 17. Acceptance Criteria
+## 18. Acceptance Criteria
 
 - Aegis Core has an Identity Gate module.
 - Aegis Core can create local user profiles.
@@ -1219,7 +1234,7 @@ After review and red-team pass, the clean implementation should look like this:
 - `go test ./...` passes.
 - `go vet ./...` passes.
 
-## 18. Definition of Done
+## 19. Definition of Done
 
 A build is not done until:
 
@@ -1234,7 +1249,7 @@ A build is not done until:
 - README/package map reflects the new package if implementation is merged.
 - A short implementation changelog exists.
 
-## 19. Later Builds Only
+## 20. Later Builds Only
 
 After the foundation is stable, future builds may add:
 
