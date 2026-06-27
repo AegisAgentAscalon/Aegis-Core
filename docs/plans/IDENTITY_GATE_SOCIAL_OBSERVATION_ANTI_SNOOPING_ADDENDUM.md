@@ -30,7 +30,7 @@ Bystander and social context should be handled through practical limits:
 - Social memory should be useful, proportionate, and user-configurable.
 - The system should not needlessly investigate people.
 - The system should not seek non-public information without a legitimate reason and policy allowance.
-- Social observation must not unlock private user scopes, private memory, tools, exports, admin actions, or identity-vault access.
+- Social observation must not unlock protected user scopes, tools, exports, admin actions, or identity-vault access.
 
 This is a purpose-limitation doctrine, not a forced-forgetting doctrine.
 
@@ -57,8 +57,8 @@ Disallowed by default:
 - retaining ambient conversations unrelated to the user, task, or safety,
 - inferring sensitive personal details without necessity,
 - treating overheard speech as consent,
-- exposing private user context to bystanders,
-- using social observation to unlock private user scopes or tools.
+- exposing protected user context to bystanders,
+- using social observation to unlock protected user scopes or tools.
 
 ## 4. Social Memory Tiers
 
@@ -74,7 +74,7 @@ Disallowed by default:
 
 Social memory is not authority.
 
-Remembering someone, recognizing someone, or knowing they are near the user must not grant them operator status, tool authorization, private memory access, or policy authority.
+Remembering someone, recognizing someone, or knowing they are near the user must not grant them operator status, tool authorization, protected access, or policy authority.
 
 ```text
 Recognition of a person is not verification of that person as the operator.
@@ -90,8 +90,8 @@ Observed context is not consent.
 | Stranger is merely nearby | no external enrichment by default |
 | User asks for non-public info about nearby person without legitimate reason | deny or require legitimate purpose |
 | Ambient conversation unrelated to task is heard | not retained by default |
-| Known contact is later encountered | recognition may support normal interaction without unlocking private user scopes |
-| Bystander gives command involving private user memory | deny unless separately verified as operator |
+| Known contact is later encountered | recognition may support normal interaction without unlocking protected user scopes |
+| Bystander gives command involving protected user context | deny unless separately verified as operator |
 | Social memory tries to grant authority | deny; social memory is data, not authority |
 
 ## 7. Red-Team Findings
@@ -118,16 +118,16 @@ Revision:
 
 ### S3 — Familiarity becomes authorization
 
-Risk: the AI treats a familiar person as allowed to issue private commands.
+Risk: the AI treats a familiar person as allowed to issue protected commands.
 
 Revision:
 
 - Social recognition is not operator verification.
-- Private scopes still require Identity Gate verification.
+- Protected scopes still require Identity Gate verification.
 
 ## 8. Clean Doctrine Sentence
 
-> Embodied AI may remember naturally encountered people when useful, legitimate, proportionate, and user-configurable, but it must not needlessly seek, infer, or store non-public information. Social memory is data for continuity, not authority for private scopes or tools.
+> Embodied AI may remember naturally encountered people when useful, legitimate, proportionate, and user-configurable, but it must not needlessly seek, infer, or store non-public information. Social memory is data for continuity, not authority for protected scopes or tools.
 
 ## 9. Acceptance Update
 
@@ -135,6 +135,6 @@ Social observation planning is not complete unless:
 
 1. The system can support ordinary social memory without treating it as authority.
 2. Needless snooping for non-public information is denied by default.
-3. Social recognition never grants private user scopes or operator verification.
+3. Social recognition never grants protected user scopes or operator verification.
 4. Retention is proportionate, useful, and configurable.
 5. External enrichment requires legitimate reason and policy allowance.
