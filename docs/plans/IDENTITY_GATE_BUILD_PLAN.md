@@ -2,7 +2,7 @@
 
 Status: Build 001 started / foundation implementation in progress
 Build slice: Identity Gate foundation only
-Revision: v2.4 build-started marker
+Revision: v2.5 build-started marker
 
 ## Build 001 Scope
 
