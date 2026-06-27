@@ -2,7 +2,7 @@
 
 Status: planning artifact / integrated pre-implementation review
 Build slice: Identity Gate foundation only
-Revision: v0.7 sanitized implementation-ready plan
+Revision: v0.8 sanitized implementation-ready plan
 
 ## 0. Executive Summary
 
@@ -45,37 +45,9 @@ examples/identity-gate-smoke/main.go     Public API consumer smoke example
 
 ## 3. Build Boundary
 
-In scope:
+In scope: identity assurance vocabulary; current operator vs account/profile/device distinction; local user profile records; recognition result contracts; verification provider interface; mock verification provider only; scope model and policy checks; configurable verification cadence policy; identity session lifecycle; prompt/context provenance metadata; safe model identity packet generation; audit-friendly event records; tests proving recognition, account login, trusted device state, social memory, and untrusted context never become authority by themselves.
 
-- identity assurance vocabulary,
-- current operator vs account/profile/device distinction,
-- local user profile records,
-- recognition result contracts,
-- verification provider interface,
-- mock verification provider only,
-- scope model and policy checks,
-- configurable verification cadence policy,
-- identity session lifecycle,
-- prompt/context provenance metadata,
-- safe model identity packet generation,
-- audit-friendly event records,
-- tests proving recognition, account login, trusted device state, social memory, and untrusted context never become authority by themselves.
-
-Explicit non-goals:
-
-- real biometric providers,
-- real passkeys,
-- hardware security key implementation,
-- vault encryption,
-- downstream app integration,
-- embodied runtime code,
-- release signing,
-- app-specific behavior,
-- cloud identity authority,
-- raw biometric storage,
-- storing secrets, tokens, private keys, OAuth tokens, vault keys, or raw provider payloads,
-- a full prompt-security product,
-- a guarantee that all malicious or hostile content can be detected.
+Explicit non-goals: real biometric providers, real passkeys, hardware security key implementation, vault encryption, downstream app integration, embodied runtime code, release signing, app-specific behavior, cloud identity authority, raw biometric storage, storing secrets/tokens/keys/provider payloads, a full prompt-security product, or a guarantee that all malicious content can be detected.
 
 ## 4. Security Invariants
 
@@ -98,17 +70,7 @@ Explicit non-goals:
 
 ## 5. Readiness Gate
 
-This plan is ready for implementation only if all of these are true:
-
-- The build remains a foundation-only Aegis Core package.
-- The first implementation uses mock verification only.
-- The package boundary is `pkg/identitygate` over `internal/identitygate`.
-- Current-operator verification is represented separately from account login, trusted device, and profile recognition.
-- Configurable verification cadence has safe defaults and hard maximums.
-- Prompt/context provenance is metadata for router decisions, not a replacement for model safety.
-- Protected context, high-risk actions, tools, exports, and admin actions remain scope-gated.
-- Social observation memory is data only and cannot grant authority.
-- The test matrix is mandatory.
+This plan is ready for implementation only if all of these are true: foundation-only Aegis Core package; mock verification only; `pkg/identitygate` over `internal/identitygate`; current-operator verification separate from account login, trusted device, and profile recognition; configurable cadence with guardrails; prompt/context provenance used for router decisions; protected context and high-risk actions remain scope-gated; social observation memory is data only; the test matrix is mandatory.
 
 ## 6. Required Tests
 
