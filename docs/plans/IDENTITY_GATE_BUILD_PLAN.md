@@ -2,7 +2,7 @@
 
 Status: planning artifact / integrated pre-implementation review
 Build slice: Identity Gate foundation only
-Revision: v0.8 sanitized implementation-ready plan
+Revision: v0.9 sanitized implementation-ready plan
 
 ## 0. Executive Summary
 
