@@ -1,16 +1,16 @@
 # Aegis Core Identity Gate Build Plan
 
-Status: planning artifact / integrated pre-implementation review
+Status: Build 001 started / foundation implementation in progress
 Build slice: Identity Gate foundation only
-Revision: v2.0 sanitized implementation-ready plan
+Revision: v2.1 build-started marker
 
-## 0. Executive Summary
+## Build 001 Scope
 
-This build adds the first Aegis Core Identity Gate foundation as a small, isolated, testable Go package. It introduces current-operator awareness, mock verification, configurable verification cadence, scope gating, protected-context disclosure gates, prompt/context provenance, safe model identity packets, audit-friendly events, and tests.
+Build 001 starts the Aegis Core Identity Gate foundation with public contracts, internal state handling, mock verification, configurable verification cadence, scope checks, prompt/context provenance, safe model identity packets, audit-safe event surfaces, a public smoke example, and invariant tests.
 
 Aegis Core is the only project identity intentionally retained. This plan intentionally avoids downstream product names, personal names, companion names, and ecosystem names outside Aegis Core.
 
-## 1. Security Law
+## Security Law
 
 ```text
 Recognition is not verification.
@@ -23,51 +23,21 @@ Only Aegis Core verification may unlock protected scopes.
 Only trusted control-plane sources may change policy, authority, or identity state.
 ```
 
-## 2. Package Shape
+## Roadmap Count
 
-```text
-pkg/identitygate/identitygate.go          Public DTOs, interfaces, service facade
-internal/identitygate/types.go           Internal DTOs/enums/errors
-internal/identitygate/service.go         Session state machine + orchestration
-internal/identitygate/scopes.go          Scope policy and sensitivity gates
-internal/identitygate/cadence.go         Configurable verification windows and policy resolution
-internal/identitygate/profiles.go        Local user profile records + in-memory store
-internal/identitygate/recognizer.go      Recognition contracts + default/mock recognizer
-internal/identitygate/verification.go    Verification provider contracts + mock provider
-internal/identitygate/provenance.go      Prompt/context source classes and authority checks
-internal/identitygate/model_packet.go    Safe model identity packet generation
-internal/identitygate/audit.go           Audit event DTOs + sink interface + memory sink
-internal/identitygate/sanitize.go        Redaction/safe-string helpers
-internal/identitygate/clock.go           Clock interface for deterministic tests
-internal/identitygate/*_test.go          Security and behavior tests
-examples/identity-gate-smoke/main.go     Public API consumer smoke example
-```
+The implementation roadmap should be tracked as 12 build slices:
 
-## 3. Build Boundary
+1. Public contracts and facade.
+2. Internal session state machine.
+3. Cadence policy and guardrails.
+4. Local in-memory profile store.
+5. Recognition contracts and mock recognizer behavior.
+6. Mock verification provider behavior.
+7. Scope policy and high-risk freshness checks.
+8. Prompt/context provenance and authority checks.
+9. Safe model identity packet generation.
+10. Audit-safe event sink and summaries.
+11. Security invariant test matrix.
+12. Public smoke example and docs update.
 
-In scope: identity assurance vocabulary; current operator vs account/profile/device distinction; local user profile records; recognition result contracts; verification provider interface; mock verification provider only; scope model and policy checks; configurable verification cadence policy; identity session lifecycle; prompt/context provenance metadata; safe model identity packet generation; audit-friendly event records; tests proving recognition, account login, trusted device state, social memory, and untrusted context never become authority by themselves.
-
-Explicit non-goals: real biometric providers, real passkeys, hardware security key implementation, vault encryption, downstream app integration, embodied runtime code, release signing, app-specific behavior, cloud identity authority, raw biometric storage, storing secrets/tokens/keys/provider payloads, a full prompt-security product, or a guarantee that all malicious content can be detected.
-
-## 4. Security Invariants
-
-1. `recognized_user_id` must never be copied into `verified_user_id`.
-2. High recognition confidence must never raise assurance to `verified` or `fresh_verified`.
-3. OAuth/account authentication must never prove the current operator.
-4. Trusted-device status must never prove the current operator.
-5. Protected scopes require operator verification by policy.
-6. High-risk scopes require fresh operator verification by policy.
-7. A locked session denies protected and high-risk scopes.
-8. Unknown scopes deny.
-9. Unknown source classes default to untrusted/sandboxed.
-10. Untrusted context may be used as data, but not as policy, identity proof, scope grant, memory authorization, or tool authorization.
-11. Model identity packets must not expose raw recognition features, secrets, provider payloads, local paths, raw errors, or hidden identifiers beyond safe fields.
-12. Prompt/context source metadata must survive until the router/policy decision point.
-13. Mock providers are testing tools, not security authorities.
-14. Policy defaults closed when a scope, assurance level, provider, source class, or session state is unknown.
-15. Social memory is data for continuity, not authority for protected scopes or tools.
-16. Needless snooping for non-public information is denied by default.
-
-## 5. Implementation Readiness
-
-Ready to implement as a foundation-only Aegis Core package with mock verification, public contracts under `pkg/identitygate`, stateful internals under `internal/identitygate`, configurable cadence, prompt provenance, default-deny scope checks, safe packets, audit-safe events, and mandatory tests.
+Build 001 intentionally starts the foundation across these surfaces with minimal local/mock behavior. Later builds should harden, split, and deepen the implementation without adding real biometrics, real passkeys, hardware security keys, vault encryption, downstream app integration, or embodied runtime code yet.
