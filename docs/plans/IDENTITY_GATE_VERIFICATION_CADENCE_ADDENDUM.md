@@ -28,6 +28,7 @@ Do not verify every message.
 Do verify before private disclosure is unlocked.
 Do re-check session assurance on every gated action.
 Do require fresh verification for sensitive, intimate, destructive, export, admin, or identity-vault scopes.
+Do make verification windows configurable by app/profile/security posture.
 ```
 
 This means every message can be evaluated against the current IdentitySession, but the user is not challenged every time.
@@ -69,7 +70,44 @@ The exact field names can change, but implementation must preserve these concept
 - scope recomputation
 - revocation/invalidation epoch
 
-## 3. Suggested Verification Windows
+## 3. Customizable Verification Policy
+
+Verification windows should be configurable instead of hardcoded.
+
+Aegis Core should provide safe defaults, while allowing the consuming app, user profile, or security posture to tighten or relax windows within explicit guardrails.
+
+Recommended policy object:
+
+```go
+type VerificationCadencePolicy struct {
+    VerifiedWindow              time.Duration
+    FreshWindow                 time.Duration
+    IdleTimeout                 time.Duration
+    PublicChatRequiresAuth      bool
+    ProfileLightRequiresAuth    bool
+    SlidingVerifiedWindow       bool
+    SlidingFreshWindow          bool
+    MaxVerifiedWindow           time.Duration
+    MaxFreshWindow              time.Duration
+    BurnFreshAfterSensitiveUse  bool
+    RequireFreshOnAppRestart    bool
+    RequireFreshOnDeviceChange  bool
+    RequireFreshOnNetworkChange bool
+}
+```
+
+Recommended policy layers, from lowest to highest precedence:
+
+1. Aegis Core safe defaults.
+2. App default policy.
+3. Profile/user preference policy.
+4. Device security posture policy.
+5. Scope-specific policy.
+6. Emergency lockdown / suspicious-state policy.
+
+A stricter layer should be able to shorten windows or require step-up. A more permissive user/app preference should not be able to exceed hard maximums set by Aegis Core or the security posture.
+
+## 4. Suggested Default Windows
 
 Initial defaults should be configurable and conservative.
 
@@ -81,9 +119,23 @@ Initial defaults should be configurable and conservative.
 | Idle timeout | 5–15 minutes | activity resets | Downgrade or reauth after inactivity |
 | App restart | policy-dependent | no by default for sensitive scopes | May keep account context, but not fresh sensitive access |
 
-Implementation note: Fresh verification should not silently extend forever just because messages continue. Sensitive authorization should have a short maximum age.
+Implementation note: Fresh verification should not silently extend forever just because messages continue. Sensitive authorization should have a short maximum age unless the profile explicitly accepts a higher-risk posture within allowed guardrails.
 
-## 4. Scope Evaluation Without Per-Message Prompts
+## 5. Policy Presets
+
+Aegis Core can expose named presets while keeping the underlying policy object explicit.
+
+| Preset | Verified window | Fresh window | Intended use |
+| --- | --- | --- | --- |
+| `strict` | short | very short / burn-after-use | Shared devices, high privacy, travel, hostile environment |
+| `balanced` | medium | short | Default personal-device use |
+| `relaxed` | longer | short-to-medium | Low-risk home device, user accepts convenience tradeoff |
+| `development` | configurable/dev-only | configurable/dev-only | Local tests and development; must be visibly non-production |
+| `lockdown` | none | none | Suspicious state, user lock, failed checks |
+
+The implementation should store the resolved policy values, not just a preset name, so behavior is auditable and deterministic.
+
+## 6. Scope Evaluation Without Per-Message Prompts
 
 Every message/action should pass through a policy check, but most checks should not trigger user-facing verification.
 
@@ -91,20 +143,21 @@ Every message/action should pass through a policy check, but most checks should 
 flowchart TD
     A[Message/action arrives] --> B[Load current IdentitySession]
     B --> C[Update last_active_at]
-    C --> D[Recompute effective assurance]
-    D --> E{Requested scope already allowed?}
-    E -- Yes --> F[Proceed without prompt]
-    E -- No --> G{Scope can be satisfied by step-up?}
-    G -- No --> H[Deny safely]
-    G -- Yes --> I[Prompt verification only now]
-    I --> J{Verification success?}
-    J -- Yes --> K[Update session window and scopes]
-    J -- No --> H
+    C --> D[Resolve cadence policy]
+    D --> E[Recompute effective assurance]
+    E --> F{Requested scope already allowed?}
+    F -- Yes --> G[Proceed without prompt]
+    F -- No --> H{Scope can be satisfied by step-up?}
+    H -- No --> I[Deny safely]
+    H -- Yes --> J[Prompt verification only now]
+    J --> K{Verification success?}
+    K -- Yes --> L[Update session window and scopes]
+    K -- No --> I
 ```
 
 The key is that the system checks policy every time, but only interrupts the user when the current session is insufficient for the requested operation.
 
-## 5. Sensitivity-Based Step-Up
+## 7. Sensitivity-Based Step-Up
 
 Recommended step-up triggers:
 
@@ -122,7 +175,7 @@ Recommended step-up triggers:
 
 Low-risk public chat and light personalization should not cause constant verification prompts.
 
-## 6. Companion Chat Behavior
+## 8. Companion Chat Behavior
 
 For companion agents, normal conversation should feel continuous after verification, but memory access should be gated by the current session.
 
@@ -136,7 +189,7 @@ Example safe flow:
 6. After success, private memory scope is available for the configured verified window.
 7. User can chat normally without verifying every message.
 8. If the user asks for intimate or identity-vault content, the system requires fresh verification if the fresh window is absent or expired.
-9. If the device idles, locks, switches user, or resumes later, scopes downgrade.
+9. If the device idles, locks, switches user, or resumes later, scopes downgrade according to the resolved cadence policy.
 
 Important runtime rule:
 
@@ -146,7 +199,7 @@ The model should receive only the memory/context permitted by the current sessio
 
 Do not give the model private context and rely on it to avoid disclosure.
 
-## 7. Downgrade and Invalidation Rules
+## 9. Downgrade and Invalidation Rules
 
 Identity Gate should downgrade or invalidate operator assurance when risk changes.
 
@@ -174,7 +227,7 @@ Downgrade behavior:
 | Lock event | Move to locked or operator-unverified state |
 | Suspicious mismatch | Lock or require verification before any private scope |
 
-## 8. Model Identity Packet Additions
+## 10. Model Identity Packet Additions
 
 The model identity packet should communicate safe authorization state without exposing auth internals.
 
@@ -191,13 +244,14 @@ type ModelIdentityPacket struct {
     ReauthReason           string `json:"reauth_reason,omitempty"`
     VerificationAgeSeconds int64 `json:"verification_age_seconds,omitempty"`
     FreshAgeSeconds        int64 `json:"fresh_age_seconds,omitempty"`
+    IdentityPolicyPreset   string `json:"identity_policy_preset,omitempty"`
     IdentityPolicySummary  string `json:"identity_policy_summary"`
 }
 ```
 
 Do not include raw provider payloads, biometric data, OAuth tokens, local paths, raw recognition features, or secret-like diagnostics.
 
-## 9. Anti-Fatigue Requirement
+## 11. Anti-Fatigue Requirement
 
 Identity Gate should avoid training users to approve prompts blindly.
 
@@ -210,6 +264,8 @@ Rules:
 - Do not reveal sensitive memory existence in the prompt.
 - Do allow the user to lock/private-mode the session quickly.
 - Do allow configurable timeouts per app/profile/security posture.
+- Do make risky relaxation visible to the user.
+- Do allow stricter policies for shared devices or travel mode.
 
 Example safe prompt text:
 
@@ -229,7 +285,7 @@ Avoid prompts like:
 Verify to reveal your intimate memory about X.
 ```
 
-## 10. Required Tests
+## 12. Required Tests
 
 Add these tests to the implementation plan:
 
@@ -246,16 +302,22 @@ Add these tests to the implementation plan:
 | App lock event occurs | private scopes removed or session locked |
 | Verification epoch increments | existing sessions require reauth |
 | Prompt injection says OAuth login is enough | private scope still denied without operator verification |
+| Strict preset uses shorter windows than balanced preset | stricter resolved policy wins |
+| Relaxed preset cannot exceed hard maximum windows | capped by guardrails |
+| Lockdown policy overrides all user/app relaxation | no private or sensitive scopes allowed |
+| Scope-specific policy requires fresh verification despite valid verified window | sensitive scope denied until fresh verification |
 
-## 11. Clean Doctrine Sentence
+## 13. Clean Doctrine Sentence
 
 Use this wording in downstream docs and implementation comments:
 
-> Aegis Core should not verify the user on every message. It should maintain bounded operator-assurance windows, recompute allowed scopes on each gated action, and require step-up verification only when the current session is insufficient for the requested disclosure or operation.
+> Aegis Core should not verify the user on every message. It should maintain configurable bounded operator-assurance windows, recompute allowed scopes on each gated action, and require step-up verification only when the current session is insufficient for the requested disclosure or operation.
 
-## 12. Acceptance Update
+## 14. Acceptance Update
 
-The Identity Gate foundation is not complete unless it supports both of these simultaneously:
+The Identity Gate foundation is not complete unless it supports all of these simultaneously:
 
 1. A non-user who grabs an already logged-in device cannot extract private memory or sensitive AI context.
 2. A legitimately verified user can continue normal private conversation within a bounded session window without being forced to verify on every message.
+3. Verification windows are configurable by app/profile/security posture within explicit guardrails.
+4. Stricter policy layers can shorten windows or force step-up when risk increases.
