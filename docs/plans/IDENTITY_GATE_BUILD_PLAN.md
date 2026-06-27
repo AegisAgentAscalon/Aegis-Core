@@ -2,7 +2,7 @@
 
 Status: planning artifact / integrated pre-implementation review
 Build slice: Identity Gate foundation only
-Revision: v1.9 sanitized implementation-ready plan
+Revision: v2.0 sanitized implementation-ready plan
 
 ## 0. Executive Summary
 
@@ -67,3 +67,7 @@ Explicit non-goals: real biometric providers, real passkeys, hardware security k
 14. Policy defaults closed when a scope, assurance level, provider, source class, or session state is unknown.
 15. Social memory is data for continuity, not authority for protected scopes or tools.
 16. Needless snooping for non-public information is denied by default.
+
+## 5. Implementation Readiness
+
+Ready to implement as a foundation-only Aegis Core package with mock verification, public contracts under `pkg/identitygate`, stateful internals under `internal/identitygate`, configurable cadence, prompt provenance, default-deny scope checks, safe packets, audit-safe events, and mandatory tests.
