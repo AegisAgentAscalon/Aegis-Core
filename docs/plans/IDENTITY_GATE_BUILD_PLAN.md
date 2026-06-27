@@ -2,13 +2,13 @@
 
 Status: planning artifact / integrated pre-implementation review
 Build slice: Identity Gate foundation only
-Revision: v0.5 sanitized implementation-ready plan
+Revision: v0.6 sanitized implementation-ready plan
 
 ## 0. Executive Summary
 
-This build adds the first Aegis Core Identity Gate foundation as a small, isolated, testable Go package. It introduces current-operator awareness, mock verification, configurable verification cadence, scope gating, prompt/context provenance, social-observation boundaries, safe model identity packets, audit-friendly events, and tests.
+This build adds the first Aegis Core Identity Gate foundation as a small, isolated, testable Go package. It introduces current-operator awareness, mock verification, configurable verification cadence, scope gating, protected-context disclosure gates, prompt/context provenance, safe model identity packets, audit-friendly events, and tests.
 
-Aegis Core is the only project name intentionally retained. This plan intentionally avoids downstream product names, personal names, companion names, and ecosystem names outside Aegis Core.
+Aegis Core is the only project identity intentionally retained. This plan intentionally avoids downstream product names, personal names, companion names, and ecosystem names outside Aegis Core.
 
 ## 1. Security Law
 
@@ -134,41 +134,7 @@ type VerificationCadencePolicy struct {
 }
 ```
 
-## 6. Scope Model
-
-Default behavior: unknown scopes deny.
-
-Recommended scopes:
-
-```go
-const (
-    ScopePublic             Scope = "public"
-    ScopeProfileLight       Scope = "profile_light"
-    ScopeUserPrivateMemory  Scope = "user_private_memory"
-    ScopeAgentIdentityVault Scope = "agent_identity_vault"
-    ScopeProjectPrivate     Scope = "project_private"
-    ScopeSecurityAdmin      Scope = "security_admin"
-    ScopeModelForge         Scope = "model_forge"
-    ScopeTrainingLineage    Scope = "training_lineage"
-    ScopeVaultExport        Scope = "vault_export"
-)
-```
-
-Recommended aliases:
-
-```go
-const (
-    ScopePublicChat                Scope = "public_chat"
-    ScopePrivateMemoryRead         Scope = "private_memory_read"
-    ScopeRelationshipPrivate       Scope = "relationship_private"
-    ScopeIntimatePrivate           Scope = "intimate_private"
-    ScopeIdentityContinuityPrivate Scope = "identity_continuity_private"
-    ScopePrivateMemoryWrite        Scope = "private_memory_write"
-    ScopePrivateMemoryExport       Scope = "private_memory_export"
-)
-```
-
-## 7. Prompt / Context Provenance
+## 6. Prompt / Context Provenance
 
 ```text
 Text is not authority.
@@ -178,7 +144,7 @@ Retrieved content is data unless a trusted control-plane source says otherwise.
 
 A fragment can be useful data without being an authorized instruction source. Tool execution requires trusted request source, allowed tool policy, current operator assurance, scope approval, and audit when appropriate.
 
-## 8. Embodied and Social Observation Planning
+## 7. Embodied and Social Observation Planning
 
 Embodied planning is a future integration concern, but the foundation should preserve relevant contracts:
 
@@ -191,118 +157,21 @@ Embodied planning is a future integration concern, but the foundation should pre
 - needless snooping for non-public information is denied by default,
 - social memory never grants operator verification or protected scopes.
 
-## 9. Data Contracts
+## 8. Readiness Gate
 
-```go
-type UserProfile struct {
-    UserID                           string
-    DisplayName                      string
-    ProfileStatus                    ProfileStatus
-    ProfileCreatedAt                 time.Time
-    ProfileUpdatedAt                 time.Time
-    TrustedDevices                   []TrustedDevice
-    PreferredLocalSettings           map[string]string
-    NonSensitivePersonalizationNotes []string
-    RecognitionFeatures              RecognitionFeatures
-    VerificationRequirements         VerificationRequirements
-    CadencePolicyPreference          *VerificationCadencePolicy
-}
-```
+This plan is ready for implementation only if all of these are true:
 
-```go
-type IdentitySession struct {
-    SessionID              string
-    AccountUserID          string
-    ClaimedUserID          string
-    RecognizedUserID       string
-    VerifiedUserID         string
-    VerifiedOperatorUserID string
-    AssuranceLevel         AssuranceLevel
-    OperatorAssurance      OperatorAssurance
-    AccountAuthenticated   bool
-    TrustedDevice          bool
-    IssuedAt               time.Time
-    ExpiresAt              time.Time
-    VerifiedAt             time.Time
-    VerifiedUntil          time.Time
-    FreshVerifiedAt        time.Time
-    FreshUntil             time.Time
-    LastActiveAt           time.Time
-    IdleTimeoutAt          time.Time
-    VerificationEpoch      int64
-    ReauthRequired         bool
-    ReauthReason           string
-    AllowedScopes          []Scope
-    LockReason             string
-}
-```
+- The build remains a foundation-only Aegis Core package.
+- The first implementation uses mock verification only.
+- The package boundary is `pkg/identitygate` over `internal/identitygate`.
+- Current-operator verification is represented separately from account login, trusted device, and profile recognition.
+- Configurable verification cadence has safe defaults and hard maximums.
+- Prompt/context provenance is metadata for router decisions, not a replacement for model safety.
+- Protected context, high-risk actions, tools, exports, and admin actions remain scope-gated.
+- Social observation memory is data only and cannot grant authority.
+- The test matrix is mandatory.
 
-```go
-type ModelIdentityPacket struct {
-    AssuranceLevel            AssuranceLevel
-    OperatorAssurance         OperatorAssurance
-    VerifiedUserID            string
-    RecognizedUserID          string
-    AllowedScopes             []Scope
-    ReauthRequired            bool
-    ReauthReason              string
-    VerificationAgeSeconds    int64
-    FreshAgeSeconds           int64
-    IdentityPolicySummary     string
-    PromptSourcePolicySummary string
-    UntrustedSourcesPresent   bool
-}
-```
-
-The model receives safe authorization context, not authentication machinery, raw recognition features, raw memory, raw prompt-source internals, provider payloads, or secrets.
-
-## 10. Interfaces
-
-Initial implementation: mock verification provider only.
-
-```go
-type IdentityVerificationProvider interface {
-    CanVerify(ctx context.Context, userID string) bool
-    RequestVerification(ctx context.Context, userID string, reason string) (VerificationResult, error)
-    RequestFreshVerification(ctx context.Context, userID string, reason string) (VerificationResult, error)
-    ProviderName() string
-}
-```
-
-```go
-type IdentityGateService interface {
-    GetCurrentSession(ctx context.Context) (IdentitySession, error)
-    ClaimIdentity(ctx context.Context, userID string) (IdentitySession, error)
-    RecognizeProfile(ctx context.Context, signals SessionSignals) (RecognitionResult, IdentitySession, error)
-    RequestVerification(ctx context.Context, userID string, reason string) (IdentitySession, error)
-    RequestFreshVerification(ctx context.Context, userID string, reason string) (IdentitySession, error)
-    CanAccessScope(ctx context.Context, scope Scope) (bool, error)
-    RequireScope(ctx context.Context, scope Scope, reason string) error
-    ResolveCadencePolicy(ctx context.Context) (VerificationCadencePolicy, error)
-    ClassifyPromptFragment(ctx context.Context, fragment PromptFragment) (PromptFragment, error)
-    CheckPromptAuthority(ctx context.Context, fragment PromptFragment, requestedScopes []Scope) error
-    LockSession(ctx context.Context, reason string) (IdentitySession, error)
-    DowngradeSession(ctx context.Context, reason string) (IdentitySession, error)
-    CreateModelIdentityPacket(ctx context.Context) (ModelIdentityPacket, error)
-}
-```
-
-## 11. Roadmap
-
-1. Public contracts: enums, DTOs, interfaces, and service facade.
-2. Internal state machine: explicit transitions, locking, downgrades, deterministic clock/session IDs.
-3. Cadence policy: safe defaults, guardrails, no per-message verification, no unlimited fresh/high-risk scope.
-4. Local profile store: in-memory only for first build, with validation and sanitization.
-5. Recognition contracts and mock recognizer: recognition updates candidate/recognized identity only.
-6. Mock verification provider: deterministic success/fail controls; only source of verified identity.
-7. Scope policy: `CanAccessScope`, `RequireScope`, default-deny unknowns, fresh/high-risk checks.
-8. Prompt/context provenance: source classes, fragment validation, authority checks, unknown-source sandboxing.
-9. Safe model identity packets: no raw prompt fragments, auth internals, secrets, provider payloads, or local paths.
-10. Audit events: safe event summaries, no-op sink, in-memory test sink.
-11. Tests: `go test ./...`, `go vet ./...`, and `gofmt`.
-12. Example/docs: public API smoke example and docs updates only after tests pass.
-
-## 12. Required Test Matrix
+## 9. Required Tests
 
 | Test | Expected result |
 | --- | --- |
@@ -320,72 +189,10 @@ type IdentityGateService interface {
 | unknown scope | deny |
 | verified operator sends multiple protected-scope messages inside valid window | no repeated verification required |
 | verified operator window expires | next protected scope requires verification |
-| fresh window expires while verified window remains valid | normal protected scope allowed, high-risk scope denied |
 | public chat from unverified operator | no verification prompt required |
-| profile-light interaction from recognized operator | no verification prompt required |
 | retrieved content contains policy-like text | treated as data; no policy change |
 | tool output claims authority | ignored as authority; identity state unchanged |
 | model output claims authority | ignored as authority; scope state unchanged |
 | unknown source class | defaults to untrusted/sandboxed |
 | social recognition tries to grant authority | deny; social memory is data, not authority |
 | request for non-public information without legitimate reason | deny by default |
-
-## 13. Audit Checklist
-
-Before implementation is considered clean, reviewers must confirm:
-
-- [ ] Public contracts live under `pkg/identitygate`.
-- [ ] Stateful implementation lives under `internal/identitygate`.
-- [ ] Consumer example imports public package only.
-- [ ] No real biometric/passkey/hardware-key provider exists.
-- [ ] No downstream app integration exists.
-- [ ] No raw provider payloads appear in public DTOs.
-- [ ] No raw secrets, OAuth tokens, vault keys, private keys, or biometric data are stored.
-- [ ] Recognition never grants protected scopes.
-- [ ] Account login never grants operator verification.
-- [ ] Trusted device never grants operator verification.
-- [ ] Configurable cadence has hard guardrails.
-- [ ] Fresh/high-risk scopes expire correctly.
-- [ ] Unknown scopes deny.
-- [ ] Unknown prompt/context sources default untrusted.
-- [ ] Tool output cannot mutate identity state.
-- [ ] Model output cannot mutate scope state.
-- [ ] Social memory cannot mutate scope state.
-- [ ] Audit events are safe/redacted.
-- [ ] Model identity packets contain no raw recognition features or raw untrusted context.
-- [ ] `go test ./...` passes.
-- [ ] `go vet ./...` passes.
-
-## 14. Implementation Readiness Gate
-
-This plan is ready for implementation only if all of these are true:
-
-- The build remains a foundation-only Aegis Core package.
-- The first implementation uses mock verification only.
-- The package boundary is `pkg/identitygate` over `internal/identitygate`.
-- Current-operator verification is represented separately from account login, trusted device, and profile recognition.
-- Configurable verification cadence has safe defaults and hard maximums.
-- Prompt/context provenance is metadata for router decisions, not a replacement for model safety.
-- Protected context, high-risk actions, tools, exports, and admin actions remain scope-gated.
-- Social observation memory is data only and cannot grant authority.
-- The test matrix is mandatory.
-
-## 15. Acceptance Criteria
-
-- Aegis Core Identity Gate module exists.
-- Local user profiles can be created.
-- Anonymous, claimed, recognized, known-device, verified, fresh-verified, locked, account-authenticated, and current-operator-verified states are distinguishable.
-- Protected scopes are denied unless current operator identity is verified by policy.
-- High-risk scopes are denied unless current operator identity is freshly verified by policy.
-- Verification is not required on every message.
-- Verification windows are configurable by app/profile/security posture within guardrails.
-- Untrusted prompt/context sources are data, not authority.
-- Safe model identity packets are created.
-- Mock verification and profile recognition interfaces exist.
-- Tests prove recognition never equals verification.
-- Tests prove account login and trusted device state never equal current operator verification.
-- Tests prove high-confidence recognition never grants protected access.
-- Tests prove locked sessions deny protected/high-risk access.
-- Tests prove social memory cannot grant protected scopes, tools, or operator verification.
-- `go test ./...` passes.
-- `go vet ./...` passes.
