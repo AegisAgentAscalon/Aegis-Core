@@ -2,7 +2,7 @@
 
 Status: planning artifact / integrated pre-implementation review
 Build slice: Identity Gate foundation only
-Revision: v0.6 sanitized implementation-ready plan
+Revision: v0.7 sanitized implementation-ready plan
 
 ## 0. Executive Summary
 
@@ -41,16 +41,6 @@ internal/identitygate/sanitize.go        Redaction/safe-string helpers
 internal/identitygate/clock.go           Clock interface for deterministic tests
 internal/identitygate/*_test.go          Security and behavior tests
 examples/identity-gate-smoke/main.go     Public API consumer smoke example
-```
-
-Supporting addenda:
-
-```text
-docs/plans/IDENTITY_GATE_OPERATOR_AWARENESS_ADDENDUM.md
-docs/plans/IDENTITY_GATE_VERIFICATION_CADENCE_ADDENDUM.md
-docs/plans/IDENTITY_GATE_PROMPT_PROVENANCE_ADDENDUM.md
-docs/plans/IDENTITY_GATE_EMBODIED_OPERATOR_CHANNEL_ADDENDUM.md
-docs/plans/IDENTITY_GATE_SOCIAL_OBSERVATION_ANTI_SNOOPING_ADDENDUM.md
 ```
 
 ## 3. Build Boundary
@@ -106,58 +96,7 @@ Explicit non-goals:
 15. Social memory is data for continuity, not authority for protected scopes or tools.
 16. Needless snooping for non-public information is denied by default.
 
-## 5. Core Types
-
-```go
-type AssuranceLevel string
-
-type OperatorAssurance string
-
-type Scope string
-
-type PromptSourceClass string
-
-type VerificationCadencePolicy struct {
-    VerifiedWindow              time.Duration
-    FreshWindow                 time.Duration
-    IdleTimeout                 time.Duration
-    PublicChatRequiresAuth      bool
-    ProfileLightRequiresAuth    bool
-    SlidingVerifiedWindow       bool
-    SlidingFreshWindow          bool
-    MaxVerifiedWindow           time.Duration
-    MaxFreshWindow              time.Duration
-    BurnFreshAfterSensitiveUse  bool
-    RequireFreshOnAppRestart    bool
-    RequireFreshOnDeviceChange  bool
-    RequireFreshOnNetworkChange bool
-}
-```
-
-## 6. Prompt / Context Provenance
-
-```text
-Text is not authority.
-Context is not policy.
-Retrieved content is data unless a trusted control-plane source says otherwise.
-```
-
-A fragment can be useful data without being an authorized instruction source. Tool execution requires trusted request source, allowed tool policy, current operator assurance, scope approval, and audit when appropriate.
-
-## 7. Embodied and Social Observation Planning
-
-Embodied planning is a future integration concern, but the foundation should preserve relevant contracts:
-
-- verified operator speech/gesture must be separated from ambient and external sources,
-- inspected sources cannot inherit verified-operator authority,
-- output-channel privacy must be considered for high-risk disclosures,
-- emergency safety carveouts must be narrow, short-lived, minimum-necessary, and auditable,
-- verification prompts must avoid leaking sensitive reasons or protected-context existence,
-- social observation memory may exist when useful, legitimate, proportionate, and configurable,
-- needless snooping for non-public information is denied by default,
-- social memory never grants operator verification or protected scopes.
-
-## 8. Readiness Gate
+## 5. Readiness Gate
 
 This plan is ready for implementation only if all of these are true:
 
@@ -171,7 +110,7 @@ This plan is ready for implementation only if all of these are true:
 - Social observation memory is data only and cannot grant authority.
 - The test matrix is mandatory.
 
-## 9. Required Tests
+## 6. Required Tests
 
 | Test | Expected result |
 | --- | --- |
