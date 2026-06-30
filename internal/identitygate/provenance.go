@@ -44,10 +44,12 @@ func (s *Service) CheckPromptAuthority(ctx context.Context, fragment PromptFragm
 		return nil
 	}
 	if !fragment.AllowedAsInstruction {
+		s.record(ctx, EventPromptAuthorityDenied, "prompt source lacks authority")
 		return ErrPromptAuthorityDenied
 	}
 	for _, scope := range scopes {
 		if err := s.RequireScope(ctx, scope, "prompt authority"); err != nil {
+			s.record(ctx, EventPromptAuthorityDenied, "prompt source lacks required scope")
 			return err
 		}
 	}
