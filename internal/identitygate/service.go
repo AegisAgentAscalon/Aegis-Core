@@ -31,7 +31,7 @@ func NewService(cfg Config) (*Service, error) {
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("sess_%d", now.UnixNano())
 	}
-	return &Service{
+	svc := &Service{
 		session: IdentitySession{
 			SessionID:         sessionID,
 			AssuranceLevel:    AssuranceAnonymous,
@@ -44,7 +44,9 @@ func NewService(cfg Config) (*Service, error) {
 		verifier: verifier,
 		clock:    clock,
 		audit:    cfg.AuditSink,
-	}, nil
+	}
+	svc.record(context.Background(), EventSessionCreated, "session created")
+	return svc, nil
 }
 
 func (s *Service) CurrentSession(ctx context.Context) (IdentitySession, error) {
