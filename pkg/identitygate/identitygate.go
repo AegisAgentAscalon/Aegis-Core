@@ -134,6 +134,7 @@ type VerificationResult = internal.VerificationResult
 type SessionSignals = internal.SessionSignals
 type PromptFragment = internal.PromptFragment
 type ModelIdentityPacket = internal.ModelIdentityPacket
+type ScopeAccessDecision = internal.ScopeAccessDecision
 type AuditEvent = internal.AuditEvent
 type Clock = internal.Clock
 type IdentityVerificationProvider = internal.IdentityVerificationProvider
@@ -186,6 +187,10 @@ func (s *Service) RequestVerification(ctx context.Context, userID string, reason
 
 func (s *Service) RequestFreshVerification(ctx context.Context, userID string, reason string) (IdentitySession, error) {
 	return s.inner.RequestFreshVerification(ctx, userID, reason)
+}
+
+func (s *Service) EvaluateScope(ctx context.Context, scope Scope) (ScopeAccessDecision, error) {
+	return s.inner.EvaluateScope(ctx, scope)
 }
 
 func (s *Service) CanAccessScope(ctx context.Context, scope Scope) (bool, error) {
