@@ -1,6 +1,9 @@
 package identitygate
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestPublicAuditEventConstantsAndRedaction(t *testing.T) {
 	event := NewAuditEvent(EventScopeDenied, "contains password token", nil)
@@ -18,7 +21,7 @@ func TestPublicAuditSinkReceivesServiceEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = svc.RequestVerification(nilContext(), "user", "test")
+	_, _ = svc.RequestVerification(context.Background(), "user", "test")
 	events := sink.Snapshot()
 	seen := false
 	for _, event := range events {
@@ -30,12 +33,3 @@ func TestPublicAuditSinkReceivesServiceEvents(t *testing.T) {
 		t.Fatalf("expected verification success event in %+v", events)
 	}
 }
-
-func nilContext() contextWrapper { return contextWrapper{} }
-
-type contextWrapper struct{}
-
-func (contextWrapper) Deadline() (deadline time.Time, ok bool) { return time.Time{}, false }
-func (contextWrapper) Done() <-chan struct{} { return nil }
-func (contextWrapper) Err() error { return nil }
-func (contextWrapper) Value(key any) any { return nil }
