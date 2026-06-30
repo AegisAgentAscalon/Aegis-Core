@@ -107,6 +107,24 @@ const (
 	SocialTierExternalEnrichment = internal.SocialTierExternalEnrichment
 )
 
+const (
+	EventSessionCreated           = internal.EventSessionCreated
+	EventIdentityClaimed          = internal.EventIdentityClaimed
+	EventProfileRecognized        = internal.EventProfileRecognized
+	EventVerificationRequested    = internal.EventVerificationRequested
+	EventVerificationSucceeded    = internal.EventVerificationSucceeded
+	EventVerificationFailed       = internal.EventVerificationFailed
+	EventScopeAllowed             = internal.EventScopeAllowed
+	EventScopeDenied              = internal.EventScopeDenied
+	EventSessionLocked            = internal.EventSessionLocked
+	EventSessionDowngraded        = internal.EventSessionDowngraded
+	EventPromptAuthorityDenied    = internal.EventPromptAuthorityDenied
+	EventModelPacketCreated       = internal.EventModelPacketCreated
+	EventOutputPolicyEvaluated    = internal.EventOutputPolicyEvaluated
+	EventSocialPolicyEvaluated    = internal.EventSocialPolicyEvaluated
+	EventEmergencyPolicyEvaluated = internal.EventEmergencyPolicyEvaluated
+)
+
 type RecognitionFeatures = internal.RecognitionFeatures
 type UserProfile = internal.UserProfile
 type VerificationCadencePolicy = internal.VerificationCadencePolicy
@@ -136,6 +154,7 @@ func DefaultCadencePolicy() VerificationCadencePolicy { return internal.DefaultC
 func EvaluateChannelPolicy(req ChannelPolicyRequest) ChannelPolicyDecision { return internal.EvaluateChannelPolicy(req) }
 func EvaluateEmergencyPolicy(req EmergencyPolicyRequest) EmergencyPolicyDecision { return internal.EvaluateEmergencyPolicy(req) }
 func EvaluateSocialObservation(req SocialObservationRequest) SocialObservationDecision { return internal.EvaluateSocialObservation(req) }
+func NewAuditEvent(kind string, summary string, clock Clock) AuditEvent { return internal.NewAuditEvent(kind, summary, clock) }
 
 func NewService(cfg Config) (*Service, error) {
 	inner, err := internal.NewService(cfg)
