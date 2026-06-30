@@ -29,5 +29,6 @@ func (s *Service) CreateModelIdentityPacket(ctx context.Context) (ModelIdentityP
 	if !s.session.FreshVerifiedAt.IsZero() {
 		packet.FreshAgeSeconds = int64(now.Sub(s.session.FreshVerifiedAt).Seconds())
 	}
+	s.record(ctx, EventModelPacketCreated, "model identity packet created")
 	return packet, nil
 }
