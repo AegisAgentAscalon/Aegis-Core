@@ -13,13 +13,16 @@ func (s *Service) CanAccessScope(ctx context.Context, scope Scope) (bool, error)
 	defer s.mu.Unlock()
 	s.refresh()
 	if !known(scope) {
+		s.record(ctx, EventScopeDenied, "unknown scope denied")
 		return false, ErrUnknownScope
 	}
 	for _, allowed := range s.session.AllowedScopes {
 		if allowed == scope {
+			s.record(ctx, EventScopeAllowed, "scope allowed")
 			return true, nil
 		}
 	}
+	s.record(ctx, EventScopeDenied, "scope denied")
 	return false, nil
 }
 
@@ -41,6 +44,7 @@ func (s *Service) LockSession(ctx context.Context, reason string) (IdentitySessi
 	s.session.OperatorAssurance = OperatorLocked
 	s.session.LockReason = safe(reason)
 	s.session.AllowedScopes = []Scope{ScopePublic, ScopePublicChat}
+	s.record(ctx, EventSessionLocked, "session locked")
 	return cloneSession(s.session), nil
 }
 
@@ -61,6 +65,7 @@ func (s *Service) DowngradeSession(ctx context.Context, reason string) (Identity
 		s.session.OperatorAssurance = OperatorUnknown
 	}
 	s.recompute()
+	s.record(ctx, EventSessionDowngraded, "session downgraded")
 	return cloneSession(s.session), nil
 }
 
