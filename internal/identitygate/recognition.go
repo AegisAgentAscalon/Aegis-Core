@@ -18,6 +18,7 @@ func (s *Service) ClaimIdentity(ctx context.Context, userID string) (IdentitySes
 	s.session.AssuranceLevel = AssuranceClaimed
 	s.session.OperatorAssurance = OperatorClaimed
 	s.recompute()
+	s.record(ctx, EventIdentityClaimed, "identity claimed")
 	return cloneSession(s.session), nil
 }
 
@@ -51,6 +52,7 @@ func (s *Service) RecognizeProfile(ctx context.Context, signals SessionSignals) 
 		s.session.RecognizedUserID = best.CandidateUserID
 		s.session.AssuranceLevel = AssuranceRecognizedProfile
 		s.session.OperatorAssurance = OperatorRecognized
+		s.record(ctx, EventProfileRecognized, "profile recognized; verification still required")
 	}
 	if signals.DeviceKnown {
 		s.session.TrustedDevice = true
