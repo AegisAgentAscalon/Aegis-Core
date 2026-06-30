@@ -18,8 +18,10 @@ func (s *Service) verify(ctx context.Context, userID string, fresh bool) (Identi
 	defer s.mu.Unlock()
 	s.refresh()
 	if s.session.AssuranceLevel == AssuranceLocked {
+		s.record(ctx, EventVerificationFailed, "verification denied because session is locked")
 		return cloneSession(s.session), ErrLocked
 	}
+	s.record(ctx, EventVerificationRequested, "verification requested")
 	var result VerificationResult
 	var err error
 	if fresh {
@@ -28,6 +30,7 @@ func (s *Service) verify(ctx context.Context, userID string, fresh bool) (Identi
 		result, err = s.verifier.RequestVerification(ctx, userID, "verify")
 	}
 	if err != nil || !result.Verified || result.UserID == "" {
+		s.record(ctx, EventVerificationFailed, "verification failed")
 		return cloneSession(s.session), ErrReauthRequired
 	}
 	now := s.clock.Now().UTC()
@@ -44,5 +47,6 @@ func (s *Service) verify(ctx context.Context, userID string, fresh bool) (Identi
 		s.session.OperatorAssurance = OperatorFreshVerified
 	}
 	s.recompute()
+	s.record(ctx, EventVerificationSucceeded, "verification succeeded")
 	return cloneSession(s.session), nil
 }
