@@ -5,33 +5,39 @@ import (
 	"time"
 )
 
-func (s *Service) CanAccessScope(ctx context.Context, scope Scope) (bool, error) {
+func (s *Service) EvaluateScope(ctx context.Context, scope Scope) (ScopeAccessDecision, error) {
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return ScopeAccessDecision{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refresh()
-	if !known(scope) {
-		s.record(ctx, EventScopeDenied, "unknown scope denied")
-		return false, ErrUnknownScope
+	decision := s.evaluateScopeLocked(scope)
+	if decision.Allowed {
+		s.record(ctx, EventScopeAllowed, "scope allowed")
+	} else {
+		s.record(ctx, EventScopeDenied, decision.Reason)
 	}
-	for _, allowed := range s.session.AllowedScopes {
-		if allowed == scope {
-			s.record(ctx, EventScopeAllowed, "scope allowed")
-			return true, nil
-		}
+	if !decision.KnownScope {
+		return decision, ErrUnknownScope
 	}
-	s.record(ctx, EventScopeDenied, "scope denied")
-	return false, nil
+	return decision, nil
+}
+
+func (s *Service) CanAccessScope(ctx context.Context, scope Scope) (bool, error) {
+	decision, err := s.EvaluateScope(ctx, scope)
+	if err != nil {
+		return false, err
+	}
+	return decision.Allowed, nil
 }
 
 func (s *Service) RequireScope(ctx context.Context, scope Scope, reason string) error {
-	ok, err := s.CanAccessScope(ctx, scope)
+	decision, err := s.EvaluateScope(ctx, scope)
 	if err != nil {
 		return err
 	}
-	if !ok {
+	if !decision.Allowed {
 		return ErrReauthRequired
 	}
 	return nil
@@ -112,6 +118,37 @@ func (s *Service) recompute() {
 		allowed = append(allowed, ScopeAgentIdentityVault, ScopeIdentityContinuityPrivate, ScopeIntimatePrivate, ScopeSecurityAdmin, ScopeModelForge, ScopeTrainingLineage, ScopeVaultExport, ScopePrivateMemoryExport)
 	}
 	s.session.AllowedScopes = allowed
+}
+
+func (s *Service) evaluateScopeLocked(scope Scope) ScopeAccessDecision {
+	decision := ScopeAccessDecision{Scope: scope, KnownScope: known(scope), CurrentAssurance: s.session.AssuranceLevel, OperatorAssurance: s.session.OperatorAssurance}
+	if !decision.KnownScope {
+		decision.Reason = "unknown scope"
+		return decision
+	}
+	if s.session.AssuranceLevel == AssuranceLocked {
+		decision.Locked = true
+		decision.ReauthRequired = true
+		decision.Reason = "session locked"
+		return decision
+	}
+	for _, allowed := range s.session.AllowedScopes {
+		if allowed == scope {
+			decision.Allowed = true
+			decision.Reason = "scope allowed"
+			return decision
+		}
+	}
+	decision.ReauthRequired = protected(scope) || high(scope)
+	decision.FreshRequired = high(scope)
+	if high(scope) {
+		decision.Reason = "fresh verification required"
+	} else if protected(scope) {
+		decision.Reason = "operator verification required"
+	} else {
+		decision.Reason = "scope denied"
+	}
+	return decision
 }
 
 func known(scope Scope) bool { return public(scope) || protected(scope) || high(scope) }
