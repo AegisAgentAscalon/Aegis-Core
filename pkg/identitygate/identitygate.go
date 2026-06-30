@@ -88,6 +88,25 @@ const (
 	SourceTrustUntrusted = internal.SourceTrustUntrusted
 )
 
+type DeliveryChannel = internal.DeliveryChannel
+
+const (
+	DeliveryVoice  = internal.DeliveryVoice
+	DeliveryDirect = internal.DeliveryDirect
+	DeliveryScreen = internal.DeliveryScreen
+	DeliveryHold   = internal.DeliveryHold
+)
+
+type SocialObservationTier = internal.SocialObservationTier
+
+const (
+	SocialTierTransient          = internal.SocialTierTransient
+	SocialTierObservation        = internal.SocialTierObservation
+	SocialTierKnownContact       = internal.SocialTierKnownContact
+	SocialTierSensitiveRecord    = internal.SocialTierSensitiveRecord
+	SocialTierExternalEnrichment = internal.SocialTierExternalEnrichment
+)
+
 type RecognitionFeatures = internal.RecognitionFeatures
 type UserProfile = internal.UserProfile
 type VerificationCadencePolicy = internal.VerificationCadencePolicy
@@ -104,10 +123,19 @@ type AuditSink = internal.AuditSink
 type Config = internal.Config
 type MockVerificationProvider = internal.MockVerificationProvider
 type MemoryAuditSink = internal.MemoryAuditSink
+type ChannelPolicyRequest = internal.ChannelPolicyRequest
+type ChannelPolicyDecision = internal.ChannelPolicyDecision
+type EmergencyPolicyRequest = internal.EmergencyPolicyRequest
+type EmergencyPolicyDecision = internal.EmergencyPolicyDecision
+type SocialObservationRequest = internal.SocialObservationRequest
+type SocialObservationDecision = internal.SocialObservationDecision
 
 type Service struct{ inner *internal.Service }
 
 func DefaultCadencePolicy() VerificationCadencePolicy { return internal.DefaultCadencePolicy() }
+func EvaluateChannelPolicy(req ChannelPolicyRequest) ChannelPolicyDecision { return internal.EvaluateChannelPolicy(req) }
+func EvaluateEmergencyPolicy(req EmergencyPolicyRequest) EmergencyPolicyDecision { return internal.EvaluateEmergencyPolicy(req) }
+func EvaluateSocialObservation(req SocialObservationRequest) SocialObservationDecision { return internal.EvaluateSocialObservation(req) }
 
 func NewService(cfg Config) (*Service, error) {
 	inner, err := internal.NewService(cfg)
