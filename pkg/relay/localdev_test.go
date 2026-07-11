@@ -277,6 +277,55 @@ func TestLocalDevProviderDuplicateMessageIDIsTargetScoped(t *testing.T) {
 	}
 }
 
+func TestLocalDevProviderExpiresDuplicateTracking(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	clock := &mutableRelayClock{now: now}
+	provider, err := NewLocalDevProvider(LocalDevProviderConfig{ProviderID: "local-dev-1", Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailbox, err := provider.OpenMailbox(ctx, MailboxOpenRequest{
+		Namespace:     "profile-a",
+		OwnerDeviceID: "device-2",
+		MailboxID:     "mbox-2",
+		CreatedAt:     now,
+		ExpiresAt:     now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := validEnvelope(now, []byte("bounded-duplicate-state"))
+	envelope.TargetDeviceID = ""
+	envelope.TargetMailboxID = mailbox.MailboxID
+	envelope.ExpiresAt = now.Add(time.Minute)
+	envelope.PayloadHash = PayloadSHA256(envelope.Payload)
+	if _, err := provider.SendEnvelope(ctx, envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.seen) != 1 {
+		t.Fatalf("seen delivery count = %d, want 1", len(provider.seen))
+	}
+	clock.now = now.Add(2 * time.Hour)
+	if err := provider.CleanupExpired(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.seen) != 0 {
+		t.Fatalf("expired duplicate tracking retained %d entries", len(provider.seen))
+	}
+}
+
+func TestLocalDevProviderNilContextDoesNotPanic(t *testing.T) {
+	provider, err := NewLocalDevProvider(LocalDevProviderConfig{ProviderID: "local-dev-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := provider.GetStatus(nil)
+	if !status.Available {
+		t.Fatalf("nil-context status unexpectedly unavailable: %+v", status)
+	}
+}
+
 type mutableRelayClock struct {
 	now time.Time
 }

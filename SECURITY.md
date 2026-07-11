@@ -1,6 +1,6 @@
 # Security Policy
 
-Aegis Core is experimental and unaudited.
+Aegis Core is experimental and has completed an internal engineering audit and hardening pass.
 
 Do not treat this repository as production security infrastructure, managed update infrastructure, a managed relay service, or a malware/security product. It provides reusable setup contracts and local-first helpers that require app-owned review before production use.
 
@@ -10,9 +10,11 @@ Until a formal process exists, report security concerns through the GitHub issue
 
 ## Current Review Status
 
+See [`docs/audits/2026-07-11-internal-hardening.md`](docs/audits/2026-07-11-internal-hardening.md) for scope, findings, validation, and residual release gates.
+
 - Automated Go tests and `go vet` are expected to pass.
-- The code has had an internal hardening pass.
-- No independent human security audit has been completed.
+- The code completed an internal engineering audit and hardening pass on 2026-07-11.
+- No independent professional security audit has been completed.
 - No penetration test has been completed.
 
 ## Consumer Responsibilities

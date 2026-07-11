@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +57,62 @@ func TestValidateConfigRequiresAppScopedIdentity(t *testing.T) {
 	cfg.Callback.Host = "example.com"
 	if err := ValidateConfig(cfg); err == nil || !strings.Contains(err.Error(), "loopback") {
 		t.Fatalf("expected loopback callback host error, got %v", err)
+	}
+}
+
+func TestStartAndCompleteSignInAcceptNilContext(t *testing.T) {
+	tokenServer, userInfoServer := successOAuthServers(t)
+	defer tokenServer.Close()
+	defer userInfoServer.Close()
+	cfg := testConfig(t)
+	cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
+	cfg.OAuth.Endpoints.UserInfoURL = userInfoServer.URL
+	svc, err := NewService(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, err := svc.StartSignIn(nil)
+	if err != nil {
+		t.Fatalf("StartSignIn(nil) returned error: %v", err)
+	}
+	result, err := svc.CompleteSignIn(nil, CompleteSignInRequest{State: mustState(t, start.AuthorizationURL), Code: "code"})
+	if err != nil || !result.Status.SignedIn {
+		t.Fatalf("CompleteSignIn(nil) = %+v, %v", result, err)
+	}
+}
+
+func TestAuthStoreRepairsPrivateDirectoryPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not authoritative on Windows")
+	}
+	cfg := testConfig(t)
+	dir := namespacedStoreDir(cfg.TokenStore.BaseDir, cfg.AppID, cfg.TokenStore.Namespace)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("auth store permissions = %o, want 700", got)
+	}
+	if _, err := svc.StartSignIn(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sessionInfo, err := os.Stat(svc.store.sessionsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sessionInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("pending session permissions = %o, want 700", got)
 	}
 }
 

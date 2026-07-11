@@ -20,6 +20,7 @@ const (
 	MetadataVersion         = 1
 	defaultLinkTTL          = 15 * time.Minute
 	defaultStaleAfter       = 5 * time.Minute
+	defaultFutureSkew       = 2 * time.Minute
 	defaultTransportTimeout = 5 * time.Second
 )
 
@@ -359,12 +360,16 @@ func validSafeName(s string) bool {
 	if strings.Contains(s, "..") || strings.ContainsAny(s, `/\`) {
 		return false
 	}
+	upper := strings.ToUpper(s)
+	if i := strings.IndexByte(upper, '.'); i >= 0 {
+		upper = upper[:i]
+	}
 	reserved := map[string]bool{
 		"CON": true, "PRN": true, "AUX": true, "NUL": true,
 		"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
 		"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
 	}
-	return !reserved[strings.ToUpper(s)]
+	return !reserved[upper]
 }
 
 func validSessionID(id string) bool {
@@ -417,6 +422,13 @@ func decodePrivateKey(encoded string) (ed25519.PrivateKey, error) {
 	return ed25519.PrivateKey(raw), nil
 }
 
+func normalizeContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 func isContextCanceled(ctx context.Context) bool {
 	return ctx != nil && ctx.Err() != nil
 }
@@ -429,7 +441,7 @@ func contextError(ctx context.Context) error {
 }
 
 func isStale(now, lastSeen time.Time) bool {
-	return !lastSeen.IsZero() && now.Sub(lastSeen) > defaultStaleAfter
+	return !lastSeen.IsZero() && (lastSeen.After(now.Add(defaultFutureSkew)) || now.Sub(lastSeen) > defaultStaleAfter)
 }
 
 func endpointLooksLocal(address string) bool {

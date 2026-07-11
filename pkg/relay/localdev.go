@@ -43,8 +43,13 @@ type LocalDevProvider struct {
 	announcements map[string]RendezvousAnnouncement
 	mailboxes     map[string]MailboxRef
 	envelopes     map[string][]RelayEnvelope
-	seen          map[string]DeliveryReceipt
+	seen          map[string]seenDelivery
 	mailboxSeq    uint64
+}
+
+type seenDelivery struct {
+	Receipt   DeliveryReceipt
+	ExpiresAt time.Time
 }
 
 func NewLocalDevProvider(config LocalDevProviderConfig) (*LocalDevProvider, error) {
@@ -68,7 +73,7 @@ func NewLocalDevProvider(config LocalDevProviderConfig) (*LocalDevProvider, erro
 		announcements: map[string]RendezvousAnnouncement{},
 		mailboxes:     map[string]MailboxRef{},
 		envelopes:     map[string][]RelayEnvelope{},
-		seen:          map[string]DeliveryReceipt{},
+		seen:          map[string]seenDelivery{},
 	}, nil
 }
 
@@ -281,7 +286,7 @@ func (p *LocalDevProvider) SendEnvelope(ctx context.Context, envelope RelayEnvel
 		p.envelopes[key] = append(p.envelopes[key], stored)
 	}
 	receipt := DeliveryReceipt{MessageID: envelope.MessageID, Accepted: true, Delivered: len(targetKeys) > 0, ReceivedAt: now, Summary: "local/dev relay accepted envelope metadata"}
-	p.seen[seenKey] = receipt
+	p.seen[seenKey] = seenDelivery{Receipt: receipt, ExpiresAt: envelope.ExpiresAt}
 	return receipt, nil
 }
 
@@ -407,6 +412,11 @@ func (p *LocalDevProvider) cleanupExpiredLocked(now time.Time) {
 			delete(p.envelopes, key)
 		} else {
 			p.envelopes[key] = filtered
+		}
+	}
+	for key, seen := range p.seen {
+		if expiredAt(seen.ExpiresAt, now) {
+			delete(p.seen, key)
 		}
 	}
 }

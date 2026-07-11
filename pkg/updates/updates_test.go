@@ -115,6 +115,12 @@ func TestUpdatesDescribeAndApplyPlanAreSafeHandoffs(t *testing.T) {
 	}
 	assertPublicUpdateJSONSafe(t, summary, dir)
 	assertPublicUpdateJSONSafe(t, plan, dir)
+	if _, err := svc.Apply(context.Background(), "9.9.9"); err != ErrNoUpdateAvailable {
+		t.Fatalf("Apply mismatched version error = %v", err)
+	}
+	if result, err := svc.Apply(context.Background(), "1.1.0"); err != nil || !result.OK || result.Version != "1.1.0" {
+		t.Fatalf("Apply matching version = %+v, %v", result, err)
+	}
 	if _, err := svc.ClearStagedUpdate(context.Background()); err != nil {
 		t.Fatalf("ClearStagedUpdate returned error: %v", err)
 	}

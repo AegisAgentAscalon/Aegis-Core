@@ -178,6 +178,23 @@ func TestHTTPRelayMalformedRequestsAuthorizationAndClientFailures(t *testing.T) 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("malformed request status = %d", resp.StatusCode)
 	}
+	validMailbox, err := json.Marshal(MailboxOpenRequest{Namespace: "profile-a", OwnerDeviceID: "device-1", MailboxID: "mbox-1", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err = http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/mailboxes", strings.NewReader(string(validMailbox)+` {}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer test-relay-access")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("trailing JSON request status = %d", resp.StatusCode)
+	}
 
 	trailingReq, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/mailboxes", strings.NewReader(`{"Namespace":"profile-a","OwnerDeviceID":"device-1","MailboxID":"mbox-trailing","CreatedAt":"`+now.Format(time.RFC3339Nano)+`","ExpiresAt":"`+now.Add(time.Hour).Format(time.RFC3339Nano)+`"} {}`))
 	if err != nil {
@@ -218,12 +235,61 @@ func TestHTTPRelayMalformedRequestsAuthorizationAndClientFailures(t *testing.T) 
 		t.Fatalf("malformed response status should be sanitized: %+v", status)
 	}
 
+	trailingJSONServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"enabled":true,"available":true,"provider_id":"unsafe-accepted"} {}`))
+	}))
+	defer trailingJSONServer.Close()
+	trailingJSONClient := newHTTPRelayTestClient(t, trailingJSONServer.URL, "")
+	if status := trailingJSONClient.GetStatus(ctx); status.Available {
+		t.Fatalf("client accepted trailing JSON response: %+v", status)
+	}
+
 	closedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	closedURL := closedServer.URL
 	closedServer.Close()
 	closedClient := newHTTPRelayTestClient(t, closedURL, "")
 	if status := closedClient.GetStatus(ctx); status.Available || !assertStatusSafe(status) {
 		t.Fatalf("closed server status should be sanitized: %+v", status)
+	}
+}
+
+func TestHTTPRelayRejectsOversizedRequestBodies(t *testing.T) {
+	handler, err := NewHTTPRelayHandler(HTTPRelayHandlerConfig{ProviderID: "network-relay-1", MaxRequestBodyBytes: 32, AllowUnauthenticated: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	resp, err := http.Post(server.URL+"/mailboxes", "application/json", strings.NewReader(strings.Repeat("x", 64)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized request status = %d, want %d", resp.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestHTTPRelayClientRejectsUnsafeBaseURLsAndUsesFiniteDefaultTimeout(t *testing.T) {
+	for _, baseURL := range []string{
+		"ftp://example.test",
+		"file:///tmp/relay",
+		"https://user:pass@example.test",
+		"https://example.test?token=value",
+		"https://example.test#fragment",
+		"example.test/relay",
+	} {
+		if _, err := NewHTTPRelayClient(HTTPRelayClientConfig{BaseURL: baseURL}); !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("unsafe base URL %q error = %v", baseURL, err)
+		}
+	}
+	client, err := NewHTTPRelayClient(HTTPRelayClientConfig{BaseURL: "https://example.test/relay"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.client == nil || client.client.Timeout != defaultHTTPRelayTimeout {
+		t.Fatalf("default HTTP timeout = %v, want %v", client.client.Timeout, defaultHTTPRelayTimeout)
 	}
 }
 

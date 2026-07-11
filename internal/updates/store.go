@@ -14,6 +14,7 @@ type store struct {
 
 type selectedUpdate struct {
 	SchemaVersion int       `json:"schema_version"`
+	SourceKey     string    `json:"source_key"`
 	Manifest      Manifest  `json:"manifest"`
 	Artifact      Artifact  `json:"artifact"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -21,6 +22,7 @@ type selectedUpdate struct {
 
 type downloadedUpdate struct {
 	SchemaVersion int       `json:"schema_version"`
+	SourceKey     string    `json:"source_key"`
 	Manifest      Manifest  `json:"manifest"`
 	Artifact      Artifact  `json:"artifact"`
 	ArtifactPath  string    `json:"artifact_path"`
@@ -36,7 +38,7 @@ type verifiedUpdate struct {
 
 func newStore(cfg AppConfig) (*store, error) {
 	dir := filepath.Join(cfg.StagingDir, cfg.AppID, cfg.Namespace, "updates")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := secureMkdirAll(dir); err != nil {
 		return nil, ErrStorageUnavailable
 	}
 	return &store{dir: dir}, nil
@@ -98,6 +100,35 @@ func (s *store) writeStaged(v StagedUpdate) error {
 	return writeJSON(s.stagedMetaPath(), v)
 }
 
+func (s *store) clearCandidateState() error {
+	if err := removeFiles(s.selectedPath(), s.downloadedPath(), s.verifiedPath()); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(s.downloadsDir()); err != nil {
+		return ErrStorageUnavailable
+	}
+	return nil
+}
+
+func (s *store) clearDownloadedState() error {
+	if err := removeFiles(s.downloadedPath(), s.verifiedPath()); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(s.downloadsDir()); err != nil {
+		return ErrStorageUnavailable
+	}
+	return nil
+}
+
+func removeFiles(paths ...string) error {
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return ErrStorageUnavailable
+		}
+	}
+	return nil
+}
+
 func readJSON(path string, out any) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -122,7 +153,7 @@ func writeJSON(path string, v any) error {
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := secureMkdirAll(dir); err != nil {
 		return ErrStorageUnavailable
 	}
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
@@ -146,9 +177,20 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.Chmod(name, perm); err != nil {
 		return ErrStorageUnavailable
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := replaceFile(name, path); err != nil {
 		return ErrStorageUnavailable
 	}
 	cleanup = false
 	return nil
+}
+
+func secureMkdirAll(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return ErrStorageUnavailable
+	}
+	return os.Chmod(dir, 0o700)
 }
