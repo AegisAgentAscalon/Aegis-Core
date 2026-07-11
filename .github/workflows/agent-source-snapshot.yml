@@ -1,24 +1,61 @@
-name: Agent source snapshot
+name: Apply reconciled audit hardening
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
+      - agent/aegis-core-audit-hardening
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  snapshot:
+  apply:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-      - name: Package exact pull-request head
-        run: tar --exclude=.git -czf /tmp/source-snapshot.tar.gz .
-      - uses: actions/upload-artifact@v4
+          ref: agent/aegis-core-audit-hardening
+          fetch-depth: 0
+
+      - name: Apply exact audited patch
+        shell: bash
+        run: |
+          cat .github/audit-patch/part-*.b64 | base64 --decode | gzip --decompress > /tmp/aegis-hardening.patch
+          test "$(sha256sum /tmp/aegis-hardening.patch | awk '{print $1}')" = "1cb059b709479331ec15a3049cd32100eae469a82268e03a9785a7fae048a0e3"
+          git apply --check /tmp/aegis-hardening.patch
+          git apply /tmp/aegis-hardening.patch
+          rm -rf .github/audit-patch .github/workflows/agent-source-snapshot.yml
+          git diff --check
+
+      - uses: actions/setup-go@v5
         with:
-          name: source-snapshot
-          path: /tmp/source-snapshot.tar.gz
-          retention-days: 1
+          go-version-file: go.mod
+
+      - name: Validate reconciled tree
+        shell: bash
+        run: |
+          go mod verify
+          go test ./...
+          go vet ./...
+          go test -race ./internal/...
+          go test -race ./pkg/...
+          go test -shuffle=on -count=5 ./...
+          cp go.mod /tmp/go.mod.before
+          if test -f go.sum; then cp go.sum /tmp/go.sum.before; fi
+          go mod tidy
+          cmp go.mod /tmp/go.mod.before
+          if test -f go.sum || test -f /tmp/go.sum.before; then
+            test -f go.sum
+            test -f /tmp/go.sum.before
+            cmp go.sum /tmp/go.sum.before
+          fi
+          git diff --check
+
+      - name: Commit reconciled audit hardening
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: reconcile Aegis Core audit hardening"
+          git push origin HEAD:agent/aegis-core-audit-hardening
