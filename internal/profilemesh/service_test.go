@@ -294,6 +294,22 @@ func TestConcurrentProfileOperations(t *testing.T) {
 	}
 }
 
+func TestProfileMeshTreatsFutureDatedPresenceAsStale(t *testing.T) {
+	now := time.Now().UTC()
+	if !isStale(now, now.Add(defaultFutureSkew+time.Second)) {
+		t.Fatal("future-dated profile device presence was treated as fresh")
+	}
+	if isStale(now, now.Add(defaultFutureSkew-time.Second)) {
+		t.Fatal("presence within permitted clock skew was treated as stale")
+	}
+}
+
+func TestProfileMeshRejectsWindowsReservedNamespaceWithExtension(t *testing.T) {
+	if _, err := NewService(testConfig(t, "LPT1.profile")); !errors.Is(err, ErrInvalidNamespace) {
+		t.Fatalf("reserved namespace error = %v", err)
+	}
+}
+
 func registerDevice(t *testing.T, svc *Service, deviceID string) ProfileDeviceRecord {
 	t.Helper()
 	device, err := svc.RegisterProfileDevice(context.Background(), RegisterProfileDeviceRequest{

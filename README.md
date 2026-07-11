@@ -6,9 +6,9 @@ This repository is intended to be readable, inspectable infrastructure code. It 
 
 ## Status
 
-Aegis Core is public, experimental, and unaudited.
+Aegis Core is public and experimental. It completed an internal engineering audit and hardening pass on 2026-07-11, documented in [`docs/audits/2026-07-11-internal-hardening.md`](docs/audits/2026-07-11-internal-hardening.md).
 
-The code has tests and defensive boundaries, but it has not been professionally reviewed, penetration tested, or certified. Treat it as reference-quality infrastructure that must be reviewed by the app developer before use in production.
+That work is not an independent professional security audit, penetration test, or certification. Treat the repository as reference-quality infrastructure that still requires consumer-specific review before production use.
 
 ## What This Is
 
@@ -59,6 +59,8 @@ go get github.com/AegisAgentAscalon/aegis-core
 
 See [docs/CODE_TRANSLATION.md](docs/CODE_TRANSLATION.md) for a human-oriented walkthrough of how the code is shaped.
 
+The current Core-side priorities and consumer/Core ownership boundary are tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## Safety Model
 
 Aegis Core tries to keep infrastructure honest by separating public contracts from private implementation details, keeping provider outputs non-authoritative, redacting obvious unsafe status text, and forcing app-owned decisions for operations such as update apply, conflict review, credential handling, and deployment policy.
@@ -91,6 +93,9 @@ Run the core validation from the repository root:
 ```powershell
 go test ./...
 go vet ./...
+go test -race ./internal/...
+go test -race ./pkg/...
+go mod verify
 ```
 
 The examples also run as part of `go test ./...`.

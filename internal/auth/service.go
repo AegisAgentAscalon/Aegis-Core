@@ -54,6 +54,7 @@ func (s *Service) Status(context.Context) (AuthStatus, error) {
 // StartSignIn creates a safe Google authorization URL and private pending
 // session for an app-scoped desktop PKCE flow.
 func (s *Service) StartSignIn(ctx context.Context) (SignInStartResult, error) {
+	ctx = normalizeContext(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ValidateConfig(); err != nil {
@@ -139,6 +140,7 @@ func (s *Service) StartSignIn(ctx context.Context) (SignInStartResult, error) {
 // private PKCE verifier, stores tokens privately, fetches safe profile data, and
 // returns safe status/profile summaries.
 func (s *Service) CompleteSignIn(ctx context.Context, req CompleteSignInRequest) (CompleteSignInResult, error) {
+	ctx = normalizeContext(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	req.State = strings.TrimSpace(req.State)
@@ -360,6 +362,13 @@ func checkContext(ctx context.Context) error {
 		return ErrAuthCanceled
 	}
 	return nil
+}
+
+func normalizeContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 func classifyProviderError(ctx context.Context, err error, op string) error {

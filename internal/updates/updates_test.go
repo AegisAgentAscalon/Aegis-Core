@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -639,6 +640,38 @@ func TestHTTPManifestProviderLifecycle(t *testing.T) {
 	}
 }
 
+func TestHTTPUpdateNilContextDoesNotPanic(t *testing.T) {
+	cfg := testConfig(t)
+	artifact := []byte("network artifact")
+	sum := sha256.Sum256(artifact)
+	var manifestURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/manifest.json":
+			manifest := testManifest(cfg, "1.3.0", manifestURL[:strings.LastIndex(manifestURL, "/")]+"/artifact.zip", hex.EncodeToString(sum[:]))
+			manifest.Artifacts[0].Size = int64(len(artifact))
+			_ = json.NewEncoder(w).Encode(manifest)
+		case "/artifact.zip":
+			_, _ = w.Write(artifact)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	manifestURL = server.URL + "/manifest.json"
+	cfg.Source = SourceConfig{Provider: ProviderHTTPManifest, ManifestURL: manifestURL}
+	svc, err := NewService(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check, err := svc.CheckForUpdates(nil); err != nil || !check.UpdateAvailable {
+		t.Fatalf("CheckForUpdates(nil) = %+v, %v", check, err)
+	}
+	if result, err := svc.DownloadUpdate(nil, "1.3.0"); err != nil || result.BytesWritten != int64(len(artifact)) {
+		t.Fatalf("DownloadUpdate(nil) = %+v, %v", result, err)
+	}
+}
+
 func TestGitHubRawManifestProviderValidation(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Source = SourceConfig{Provider: ProviderGitHubRawManifest, GitHubOwner: "owner", GitHubRepo: "repo", GitHubRef: "main", GitHubManifestPath: "releases/manifest.json"}
@@ -943,6 +976,222 @@ func TestNoUpdateAvailable(t *testing.T) {
 	result, err := svc.CheckForUpdates(context.Background())
 	if err != nil || result.UpdateAvailable {
 		t.Fatalf("expected no update, got %+v %v", result, err)
+	}
+}
+
+func TestWithdrawnUpdateClearsCachedCandidateState(t *testing.T) {
+	ctx := context.Background()
+	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
+	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
+	svc, err := NewService(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CheckForUpdates(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); err != nil {
+		t.Fatal(err)
+	}
+
+	currentPath := filepath.Join(t.TempDir(), "sample-1.0.0.zip")
+	currentBody := []byte("artifact 1.0.0")
+	if err := os.WriteFile(currentPath, currentBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	currentHash := sha256.Sum256(currentBody)
+	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.0.0", currentPath, hex.EncodeToString(currentHash[:])))
+	check, err := svc.CheckForUpdates(ctx)
+	if err != nil || check.UpdateAvailable {
+		t.Fatalf("withdrawal check = %+v, %v", check, err)
+	}
+	for _, path := range []string{svc.store.selectedPath(), svc.store.downloadedPath(), svc.store.verifiedPath()} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale candidate metadata still exists at %s: %v", filepath.Base(path), err)
+		}
+	}
+	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); !errors.Is(err, ErrNoUpdateAvailable) {
+		t.Fatalf("stale withdrawn candidate remained downloadable: %v", err)
+	}
+}
+
+func TestSourceChangeCannotReusePriorSelection(t *testing.T) {
+	ctx := context.Background()
+	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
+	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
+	svc, err := NewService(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CheckForUpdates(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	otherManifestPath := filepath.Join(t.TempDir(), "manifest.json")
+	currentPath := filepath.Join(t.TempDir(), "sample-1.0.0.zip")
+	currentBody := []byte("artifact 1.0.0")
+	if err := os.WriteFile(currentPath, currentBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	currentHash := sha256.Sum256(currentBody)
+	writeManifest(t, otherManifestPath, testManifest(cfg, "1.0.0", currentPath, hex.EncodeToString(currentHash[:])))
+	if _, err := svc.ConfigureSource(ctx, SourceConfig{Provider: ProviderFileManifest, ManifestPath: otherManifestPath}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); !errors.Is(err, ErrNoUpdateAvailable) {
+		t.Fatalf("old-source candidate was reused after source change: %v", err)
+	}
+}
+
+func TestApplyAliasRequiresRequestedVersion(t *testing.T) {
+	svc, _ := stageInternalUpdate(t, "1.2.0", nil)
+	if _, err := svc.Apply(context.Background(), "9.9.9"); !errors.Is(err, ErrNoUpdateAvailable) {
+		t.Fatalf("Apply version mismatch error = %v", err)
+	}
+	result, err := svc.Apply(context.Background(), "1.2.0")
+	if err != nil || !result.OK || result.Version != "1.2.0" {
+		t.Fatalf("Apply matching version = %+v, %v", result, err)
+	}
+}
+
+func TestManifestVerificationKeysAreCloned(t *testing.T) {
+	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
+	keyID, publicKey, signer := testManifestSigner(t)
+	keys := map[string]string{keyID: publicKey}
+	cfg.Policy.RequireManifestSignature = true
+	cfg.Policy.ManifestVerificationKeys = keys
+	writeManifest(t, cfg.Source.ManifestPath, signer(testManifest(cfg, "1.2.0", artifactPath, artifactHash)))
+	svc, err := NewService(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys[keyID] = "caller-mutated-invalid-key"
+	if result, err := svc.CheckForUpdates(context.Background()); err != nil || !result.UpdateAvailable {
+		t.Fatalf("caller mutation changed service trust roots: %+v, %v", result, err)
+	}
+}
+
+func TestRemoteManifestRejectsLocalArtifactReference(t *testing.T) {
+	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
+	manifest := testManifest(cfg, "1.2.0", artifactPath, artifactHash)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(manifest)
+	}))
+	defer server.Close()
+	cfg.Source = SourceConfig{Provider: ProviderHTTPManifest, ManifestURL: server.URL}
+	svc, err := NewService(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CheckForUpdates(context.Background()); !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("remote manifest local artifact error = %v", err)
+	}
+}
+
+func TestDownloadedMetadataCannotRedirectVerificationPath(t *testing.T) {
+	ctx := context.Background()
+	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
+	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
+	svc, err := NewService(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CheckForUpdates(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); err != nil {
+		t.Fatal(err)
+	}
+	downloaded, err := svc.store.readDownloaded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirected := filepath.Join(t.TempDir(), downloaded.Artifact.Filename)
+	body, err := os.ReadFile(downloaded.ArtifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(redirected, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	downloaded.ArtifactPath = redirected
+	if err := svc.store.writeDownloaded(downloaded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.VerifyUpdate(ctx, "1.2.0"); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("redirected downloaded path error = %v", err)
+	}
+}
+
+func TestVersionComparisonHandlesLargeNumericComponents(t *testing.T) {
+	large := "1.999999999999999999999999999999999999"
+	if !validVersion(large) {
+		t.Fatalf("large syntactically valid version was rejected")
+	}
+	if compareVersions(large, "1.10.0") <= 0 {
+		t.Fatalf("large numeric component compared incorrectly")
+	}
+	if compareVersions("1.000000000000000000000000000000000010", "1.10") != 0 {
+		t.Fatalf("leading-zero version components compared incorrectly")
+	}
+}
+
+func TestAdditionalUnsafeConfigurationShapes(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Policy.MaximumArtifactSize = -1
+	if _, err := NewService(cfg, nil); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("negative maximum artifact size error = %v", err)
+	}
+	cfg = testConfig(t)
+	cfg.AppID = "COM1.log"
+	if _, err := NewService(cfg, nil); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("Windows reserved app id error = %v", err)
+	}
+}
+
+func TestConcurrentConfigurationAndWorkflowReads(t *testing.T) {
+	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
+	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
+	secondPath := filepath.Join(t.TempDir(), "manifest.json")
+	writeManifest(t, secondPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
+	svc, err := NewService(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := []SourceConfig{
+		{Provider: ProviderFileManifest, ManifestPath: cfg.Source.ManifestPath},
+		{Provider: ProviderFileManifest, ManifestPath: secondPath},
+	}
+	var wg sync.WaitGroup
+	errCh := make(chan error, 4)
+	for worker := 0; worker < 4; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				var err error
+				switch worker {
+				case 0:
+					_, err = svc.ConfigureSource(context.Background(), sources[i%len(sources)])
+				case 1:
+					_, err = svc.SetChannel(context.Background(), ChannelStable)
+				case 2:
+					_, err = svc.CheckForUpdates(context.Background())
+				default:
+					_, err = svc.GetStatus(context.Background())
+				}
+				if err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent service operation failed: %v", err)
 	}
 }
 

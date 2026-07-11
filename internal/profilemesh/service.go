@@ -678,5 +678,5 @@ func isDeviceUsable(device ProfileDeviceRecord) bool {
 }
 
 func isStale(now, lastSeen time.Time) bool {
-	return !lastSeen.IsZero() && now.Sub(lastSeen) > defaultStaleAge
+	return !lastSeen.IsZero() && (lastSeen.After(now.Add(defaultFutureSkew)) || now.Sub(lastSeen) > defaultStaleAge)
 }

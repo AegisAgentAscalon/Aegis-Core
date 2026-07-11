@@ -140,7 +140,10 @@ type HTTPRelayClient struct {
 func NewHTTPRelayClient(config HTTPRelayClientConfig) (*HTTPRelayClient, error) {
 	base := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 	parsed, err := url.Parse(base)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, ErrInvalidConfig
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return nil, ErrInvalidConfig
 	}
 	providerID := config.ProviderID
@@ -331,8 +334,7 @@ func (c *HTTPRelayClient) doJSON(ctx context.Context, method, path string, in an
 	if out == nil {
 		return nil
 	}
-	dec := json.NewDecoder(io.LimitReader(resp.Body, int64(c.maxPayload*2)))
-	if err := dec.Decode(out); err != nil {
+	if err := decodeBoundedJSON(resp.Body, int64(c.maxPayload*2), out, false); err != nil {
 		return ErrProviderUnavailable
 	}
 	return nil
@@ -555,19 +557,41 @@ func (h *httpRelayHandler) decode(w http.ResponseWriter, r *http.Request, out an
 		return false
 	}
 	defer r.Body.Close()
-	r.Body = http.MaxBytesReader(w, r.Body, h.maxRequestBody)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(out); err != nil {
-		writeRelayError(w, http.StatusBadRequest, ErrInvalidConfig)
+	err := decodeBoundedJSON(r.Body, h.maxRequestBody, out, true)
+	if errors.Is(err, ErrPayloadTooLarge) {
+		writeRelayError(w, http.StatusRequestEntityTooLarge, ErrPayloadTooLarge)
 		return false
 	}
-	var trailing any
-	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+	if err != nil {
 		writeRelayError(w, http.StatusBadRequest, ErrInvalidConfig)
 		return false
 	}
 	return true
+}
+
+func decodeBoundedJSON(r io.Reader, limit int64, out any, disallowUnknown bool) error {
+	if r == nil || limit <= 0 {
+		return ErrInvalidConfig
+	}
+	payload, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return ErrProviderUnavailable
+	}
+	if int64(len(payload)) > limit {
+		return ErrPayloadTooLarge
+	}
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	if disallowUnknown {
+		dec.DisallowUnknownFields()
+	}
+	if err := dec.Decode(out); err != nil {
+		return ErrInvalidConfig
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return ErrInvalidConfig
+	}
+	return nil
 }
 
 type relayHTTPErrorBody struct {

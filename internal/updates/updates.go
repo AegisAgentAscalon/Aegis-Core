@@ -18,7 +18,6 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -337,6 +336,8 @@ func NewServiceWithAdapter(cfg AppConfig, adapter ApplyAdapter) (*Service, error
 }
 
 func (s *Service) ValidateConfig() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return validateConfig(s.cfg)
 }
 
@@ -346,6 +347,10 @@ func (s *Service) GetStatus(ctx context.Context) (CurrentState, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.getStatusLocked()
+}
+
+func (s *Service) getStatusLocked() (CurrentState, error) {
 	state := CurrentState{
 		AppID:          s.cfg.AppID,
 		DisplayName:    s.cfg.DisplayName,
@@ -358,7 +363,10 @@ func (s *Service) GetStatus(ctx context.Context) (CurrentState, error) {
 		Message:        "updates configured",
 	}
 	if cached, err := s.store.readSelected(); err == nil {
-		if err := validateSelectedUpdate(s.cfg, cached); err == nil {
+		if cached.SourceKey != sourceKey(s.cfg.Source) || cached.Manifest.Channel != s.cfg.Channel {
+			// A source/channel change intentionally makes the prior selection out of
+			// scope; it is not storage corruption and must not surface as an error.
+		} else if err := validateSelectedUpdate(s.cfg, cached); err == nil {
 			release := releaseFromSelection(cached.Manifest, cached.Artifact, time.Time{})
 			state.LatestRelease = &release
 			state.UpdateAvailable = compareVersions(cached.Manifest.Version, s.cfg.CurrentVersion) > 0
@@ -369,7 +377,7 @@ func (s *Service) GetStatus(ctx context.Context) (CurrentState, error) {
 		state.LastError = "stored update metadata is invalid"
 	}
 	if staged, err := s.store.readStaged(); err == nil {
-		if err := validateStagedUpdateReady(s.cfg, staged, time.Now().UTC()); err == nil {
+		if err := s.validateStagedUpdateReady(staged, time.Now().UTC()); err == nil {
 			state.StagedVersion = staged.Version
 			state.Verified = true
 		} else {
@@ -386,21 +394,19 @@ func (s *Service) ConfigureSource(ctx context.Context, source SourceConfig) (Cur
 		return CurrentState{}, err
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	next := s.cfg
 	next.Source = normalizeSource(source)
 	if err := validateSource(next.Source); err != nil {
-		s.mu.Unlock()
 		return CurrentState{}, err
 	}
 	provider, err := newProvider(next)
 	if err != nil {
-		s.mu.Unlock()
 		return CurrentState{}, err
 	}
 	s.cfg = next
 	s.provider = provider
-	s.mu.Unlock()
-	return s.GetStatus(ctx)
+	return s.getStatusLocked()
 }
 
 func (s *Service) SetChannel(ctx context.Context, channel Channel) (CurrentState, error) {
@@ -412,39 +418,75 @@ func (s *Service) SetChannel(ctx context.Context, channel Channel) (CurrentState
 		return CurrentState{}, ErrInvalidConfig
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cfg.Channel = channel
-	s.mu.Unlock()
-	return s.GetStatus(ctx)
+	return s.getStatusLocked()
 }
 
 func (s *Service) CheckForUpdates(ctx context.Context) (CheckResult, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return CheckResult{}, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.checkForUpdatesLocked(ctx)
+}
+
+func (s *Service) checkForUpdatesLocked(ctx context.Context) (CheckResult, error) {
 	manifest, err := s.provider.LoadManifest(ctx)
 	if err != nil {
 		return CheckResult{}, sanitizeProviderError(err)
 	}
 	artifact, err := s.selectArtifact(manifest)
 	if err != nil {
+		if errors.Is(err, ErrNoUpdateAvailable) || errors.Is(err, ErrNoCompatibleArtifact) {
+			if clearErr := s.store.clearCandidateState(); clearErr != nil {
+				return CheckResult{}, clearErr
+			}
+		}
 		return CheckResult{}, err
 	}
 	release := releaseFromSelection(manifest, artifact, time.Now().UTC())
 	available := compareVersions(manifest.Version, s.cfg.CurrentVersion) > 0
 	if !available {
+		if err := s.store.clearCandidateState(); err != nil {
+			return CheckResult{}, err
+		}
 		return CheckResult{UpdateAvailable: false, LatestRelease: &release, Message: "no update available"}, nil
 	}
-	if err := s.store.writeSelected(selectedUpdate{SchemaVersion: SchemaVersion, Manifest: manifest, Artifact: artifact, UpdatedAt: time.Now().UTC()}); err != nil {
+	selected := selectedUpdate{
+		SchemaVersion: SchemaVersion,
+		SourceKey:     sourceKey(s.cfg.Source),
+		Manifest:      manifest,
+		Artifact:      artifact,
+		UpdatedAt:     time.Now().UTC(),
+	}
+	if previous, readErr := s.store.readSelected(); readErr == nil {
+		if !sameSelectedUpdate(previous, selected) {
+			if err := s.store.clearDownloadedState(); err != nil {
+				return CheckResult{}, err
+			}
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		if err := s.store.clearCandidateState(); err != nil {
+			return CheckResult{}, err
+		}
+	}
+	if err := s.store.writeSelected(selected); err != nil {
 		return CheckResult{}, err
 	}
 	return CheckResult{UpdateAvailable: true, LatestRelease: &release, Message: "update available"}, nil
 }
 
 func (s *Service) DownloadUpdate(ctx context.Context, version string) (DownloadResult, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return DownloadResult{}, err
 	}
-	selected, err := s.selectionForVersion(ctx, version)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	selected, err := s.selectionForVersionLocked(ctx, version)
 	if err != nil {
 		return DownloadResult{}, err
 	}
@@ -452,7 +494,7 @@ func (s *Service) DownloadUpdate(ctx context.Context, version string) (DownloadR
 	if err := validateArtifact(s.cfg, artifact); err != nil {
 		return DownloadResult{}, err
 	}
-	if err := os.MkdirAll(s.store.downloadsDir(), 0o700); err != nil {
+	if err := secureMkdirAll(s.store.downloadsDir()); err != nil {
 		return DownloadResult{}, ErrStorageUnavailable
 	}
 	tmpPath := filepath.Join(s.store.downloadsDir(), artifact.Filename+".tmp")
@@ -470,11 +512,19 @@ func (s *Service) DownloadUpdate(ctx context.Context, version string) (DownloadR
 		_ = os.Remove(tmpPath)
 		return DownloadResult{}, ErrDownloadFailed
 	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
+	if err := replaceFile(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return DownloadResult{}, ErrStorageUnavailable
 	}
-	meta := downloadedUpdate{SchemaVersion: SchemaVersion, Manifest: selected.Manifest, Artifact: artifact, ArtifactPath: finalPath, BytesWritten: n, DownloadedAt: time.Now().UTC()}
+	meta := downloadedUpdate{
+		SchemaVersion: SchemaVersion,
+		SourceKey:     selected.SourceKey,
+		Manifest:      selected.Manifest,
+		Artifact:      artifact,
+		ArtifactPath:  finalPath,
+		BytesWritten:  n,
+		DownloadedAt:  time.Now().UTC(),
+	}
 	if err := s.store.writeDownloaded(meta); err != nil {
 		return DownloadResult{}, err
 	}
@@ -485,6 +535,12 @@ func (s *Service) VerifyUpdate(ctx context.Context, version string) (VerifyResul
 	if err := contextError(ctx); err != nil {
 		return VerifyResult{}, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.verifyUpdateLocked(version)
+}
+
+func (s *Service) verifyUpdateLocked(version string) (VerifyResult, error) {
 	downloaded, err := s.store.readDownloaded()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -495,10 +551,7 @@ func (s *Service) VerifyUpdate(ctx context.Context, version string) (VerifyResul
 	if version != "" && downloaded.Manifest.Version != version {
 		return VerifyResult{}, ErrVerificationFailed
 	}
-	if err := validateManifest(s.cfg, downloaded.Manifest); err != nil {
-		return VerifyResult{}, err
-	}
-	if err := validateArtifact(s.cfg, downloaded.Artifact); err != nil {
+	if err := s.validateDownloadedUpdate(downloaded); err != nil {
 		return VerifyResult{}, err
 	}
 	got, err := fileSHA256(downloaded.ArtifactPath)
@@ -516,12 +569,15 @@ func (s *Service) VerifyUpdate(ctx context.Context, version string) (VerifyResul
 }
 
 func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return StageResult{}, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	verified, err := s.store.readVerified()
 	if err != nil {
-		if _, verifyErr := s.VerifyUpdate(ctx, version); verifyErr != nil {
+		if _, verifyErr := s.verifyUpdateLocked(version); verifyErr != nil {
 			return StageResult{}, verifyErr
 		}
 		verified, err = s.store.readVerified()
@@ -532,21 +588,21 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 	if version != "" && verified.Downloaded.Manifest.Version != version {
 		return StageResult{}, ErrVerificationFailed
 	}
-	if err := validateManifest(s.cfg, verified.Downloaded.Manifest); err != nil {
-		return StageResult{}, err
+	if verified.SchemaVersion != SchemaVersion || verified.VerifiedAt.IsZero() {
+		return StageResult{}, ErrStorageUnavailable
 	}
-	if err := validateArtifact(s.cfg, verified.Downloaded.Artifact); err != nil {
+	if err := s.validateDownloadedUpdate(verified.Downloaded); err != nil {
 		return StageResult{}, err
 	}
 	got, err := fileSHA256(verified.Downloaded.ArtifactPath)
 	if err != nil || !strings.EqualFold(got, verified.Downloaded.Artifact.SHA256) {
 		return StageResult{}, ErrVerificationFailed
 	}
-	if err := os.MkdirAll(s.store.stagedDir(), 0o700); err != nil {
+	if err := secureMkdirAll(s.store.stagedDir()); err != nil {
 		return StageResult{}, ErrStorageUnavailable
 	}
 	target := filepath.Join(s.store.stagedDir(), verified.Downloaded.Artifact.Filename)
-	if err := copyFileAtomic(verified.Downloaded.ArtifactPath, target); err != nil {
+	if err := copyFileAtomic(ctx, verified.Downloaded.ArtifactPath, target); err != nil {
 		return StageResult{}, err
 	}
 	staged := StagedUpdate{
@@ -563,7 +619,7 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 		RequiredRestart: verified.Downloaded.Manifest.RequiredRestart,
 		ApplyBehavior:   verified.Downloaded.Manifest.ApplyBehavior,
 	}
-	if err := validateStagedUpdateReady(s.cfg, staged, time.Now().UTC()); err != nil {
+	if err := s.validateStagedUpdateReady(staged, time.Now().UTC()); err != nil {
 		_ = os.Remove(target)
 		return StageResult{}, err
 	}
@@ -577,6 +633,8 @@ func (s *Service) DescribeStagedUpdate(ctx context.Context) (StagedUpdateSummary
 	if err := contextError(ctx); err != nil {
 		return StagedUpdateSummary{}, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	staged, err := s.store.readStaged()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -584,7 +642,7 @@ func (s *Service) DescribeStagedUpdate(ctx context.Context) (StagedUpdateSummary
 		}
 		return StagedUpdateSummary{}, ErrStorageUnavailable
 	}
-	if err := validateStagedUpdateReady(s.cfg, staged, time.Now().UTC()); err != nil {
+	if err := s.validateStagedUpdateReady(staged, time.Now().UTC()); err != nil {
 		return StagedUpdateSummary{}, err
 	}
 	return stagedSummaryFrom(staged), nil
@@ -594,6 +652,8 @@ func (s *Service) BuildApplyPlan(ctx context.Context) (ApplyPlan, error) {
 	if err := contextError(ctx); err != nil {
 		return ApplyPlan{}, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	staged, err := s.store.readStaged()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -601,7 +661,7 @@ func (s *Service) BuildApplyPlan(ctx context.Context) (ApplyPlan, error) {
 		}
 		return ApplyPlan{}, ErrStorageUnavailable
 	}
-	if err := validateStagedUpdateReady(s.cfg, staged, time.Now().UTC()); err != nil {
+	if err := s.validateStagedUpdateReady(staged, time.Now().UTC()); err != nil {
 		return ApplyPlan{}, err
 	}
 	return ApplyPlan{
@@ -620,20 +680,38 @@ func (s *Service) BuildApplyPlan(ctx context.Context) (ApplyPlan, error) {
 }
 
 func (s *Service) ApplyUpdate(ctx context.Context) (ApplyResult, error) {
+	return s.applyExpectedVersion(ctx, "")
+}
+
+func (s *Service) applyExpectedVersion(ctx context.Context, version string) (ApplyResult, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return ApplyResult{}, err
 	}
+	version = strings.TrimSpace(version)
+	if version != "" && !validVersion(version) {
+		return ApplyResult{}, ErrNoUpdateAvailable
+	}
+	s.mu.Lock()
 	staged, err := s.store.readStaged()
 	if err != nil {
+		s.mu.Unlock()
 		if errors.Is(err, os.ErrNotExist) {
 			return ApplyResult{}, ErrStagedUpdateNotFound
 		}
 		return ApplyResult{}, err
 	}
-	if err := validateStagedUpdateReady(s.cfg, staged, time.Now().UTC()); err != nil {
+	if version != "" && staged.Version != version {
+		s.mu.Unlock()
+		return ApplyResult{}, ErrNoUpdateAvailable
+	}
+	if err := s.validateStagedUpdateReady(staged, time.Now().UTC()); err != nil {
+		s.mu.Unlock()
 		return ApplyResult{}, err
 	}
-	result, err := s.apply.Apply(ctx, staged)
+	strategy := s.apply
+	s.mu.Unlock()
+	result, err := strategy.Apply(ctx, staged)
 	if err != nil {
 		return ApplyResult{}, ErrApplyFailed
 	}
@@ -648,13 +726,17 @@ func (s *Service) ClearStagedUpdate(ctx context.Context) (ClearResult, error) {
 	if err := contextError(ctx); err != nil {
 		return ClearResult{}, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := os.RemoveAll(s.store.stagedDir()); err != nil {
 		return ClearResult{}, ErrStorageUnavailable
 	}
-	if err := os.MkdirAll(s.store.stagedDir(), 0o700); err != nil {
+	if err := secureMkdirAll(s.store.stagedDir()); err != nil {
 		return ClearResult{}, ErrStorageUnavailable
 	}
-	_ = os.Remove(s.store.verifiedPath())
+	if err := removeFiles(s.store.verifiedPath()); err != nil {
+		return ClearResult{}, err
+	}
 	return ClearResult{Cleared: true, Message: "staged update cleared"}, nil
 }
 
@@ -683,34 +765,22 @@ func (s *Service) PlanApply(ctx context.Context) (ApplyPlan, error) {
 }
 
 func (s *Service) Apply(ctx context.Context, version string) (ApplyResult, error) {
-	version = strings.TrimSpace(version)
-	if version != "" {
-		staged, err := s.store.readStaged()
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return ApplyResult{}, ErrStagedUpdateNotFound
-			}
-			return ApplyResult{}, err
-		}
-		if staged.Version != version {
-			return ApplyResult{}, ErrNoUpdateAvailable
-		}
-	}
-	return s.ApplyUpdate(ctx)
+	return s.applyExpectedVersion(ctx, version)
 }
 
-func (s *Service) selectionForVersion(ctx context.Context, version string) (selectedUpdate, error) {
+func (s *Service) selectionForVersionLocked(ctx context.Context, version string) (selectedUpdate, error) {
+	version = strings.TrimSpace(version)
 	selected, err := s.store.readSelected()
 	if err == nil && (version == "" || selected.Manifest.Version == version) {
 		if err := validateSelectedUpdate(s.cfg, selected); err == nil {
 			return selected, nil
 		}
 	}
-	check, err := s.CheckForUpdates(ctx)
+	check, err := s.checkForUpdatesLocked(ctx)
 	if err != nil {
 		return selectedUpdate{}, err
 	}
-	if !check.UpdateAvailable && (version == "" || check.LatestRelease == nil || check.LatestRelease.Version != version) {
+	if !check.UpdateAvailable {
 		return selectedUpdate{}, ErrNoUpdateAvailable
 	}
 	selected, err = s.store.readSelected()
@@ -719,6 +789,9 @@ func (s *Service) selectionForVersion(ctx context.Context, version string) (sele
 	}
 	if version != "" && selected.Manifest.Version != version {
 		return selectedUpdate{}, ErrNoUpdateAvailable
+	}
+	if err := validateSelectedUpdate(s.cfg, selected); err != nil {
+		return selectedUpdate{}, err
 	}
 	return selected, nil
 }
@@ -844,6 +917,7 @@ func normalizeConfig(cfg AppConfig) AppConfig {
 		}
 	}
 	cfg.Source = normalizeSource(cfg.Source)
+	cfg.Policy.ManifestVerificationKeys = cloneStringMap(cfg.Policy.ManifestVerificationKeys)
 	if !cfg.Policy.RequireSHA256 {
 		cfg.Policy.RequireSHA256 = true
 	}
@@ -879,6 +953,8 @@ func validateConfig(cfg AppConfig) error {
 	case !validVersion(cfg.CurrentVersion):
 		return ErrInvalidConfig
 	case cfg.Policy.MinimumVersion != "" && !validVersion(cfg.Policy.MinimumVersion):
+		return ErrInvalidConfig
+	case cfg.Policy.MaximumArtifactSize < 0:
 		return ErrInvalidConfig
 	case cfg.Policy.MaximumManifestAge < 0:
 		return ErrInvalidConfig
@@ -956,6 +1032,9 @@ func validateManifest(cfg AppConfig, manifest Manifest) error {
 }
 
 func validateSelectedUpdate(cfg AppConfig, selected selectedUpdate) error {
+	if selected.SchemaVersion != SchemaVersion || selected.SourceKey != sourceKey(cfg.Source) || selected.UpdatedAt.IsZero() {
+		return ErrStorageUnavailable
+	}
 	if err := validateManifest(cfg, selected.Manifest); err != nil {
 		return err
 	}
@@ -1012,7 +1091,7 @@ func validateArtifact(cfg AppConfig, artifact Artifact) error {
 	if err := validateSignatureMetadata(artifact.Signature); err != nil {
 		return err
 	}
-	return validateArtifactDownloadURL(cfg, artifact.DownloadURL)
+	return validateArtifactDownloadURL(cfg.Source.Provider, artifact.DownloadURL)
 }
 
 func validateManifestText(manifest Manifest) error {
@@ -1023,6 +1102,9 @@ func validateManifestText(manifest Manifest) error {
 		if unsafeUpdateDetail(value) {
 			return ErrInvalidManifest
 		}
+	}
+	if manifest.ReleaseNotesURL != "" && !validHTTPURL(manifest.ReleaseNotesURL) {
+		return ErrInvalidManifest
 	}
 	for key, value := range manifest.Metadata {
 		if !validSafeName(key) || unsafeUpdateDetail(value) {
@@ -1131,13 +1213,13 @@ func decodeEd25519Signature(encoded string) ([]byte, error) {
 	return raw, nil
 }
 
-func validateArtifactDownloadURL(cfg AppConfig, raw string) error {
+func validateArtifactDownloadURL(provider ProviderKind, raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ErrInvalidManifest
 	}
 	if filepath.IsAbs(raw) {
-		if cfg.Source.Provider != ProviderFileManifest || hasPathTraversal(raw) {
+		if provider != ProviderFileManifest || hasPathTraversal(raw) {
 			return ErrInvalidManifest
 		}
 		return nil
@@ -1153,7 +1235,7 @@ func validateArtifactDownloadURL(cfg AppConfig, raw string) error {
 		}
 		return nil
 	case "file":
-		if cfg.Source.Provider != ProviderFileManifest || u.Host != "" {
+		if provider != ProviderFileManifest || u.Host != "" {
 			return ErrInvalidManifest
 		}
 		path := u.Path
@@ -1193,27 +1275,58 @@ func validateStagedUpdate(cfg AppConfig, staged StagedUpdate) error {
 	return nil
 }
 
-func validateStagedUpdateReady(cfg AppConfig, staged StagedUpdate, now time.Time) error {
-	if err := validateStagedUpdate(cfg, staged); err != nil {
-		return err
-	}
-	if cfg.Policy.MaximumFutureSkew > 0 && staged.StagedAt.After(now.Add(cfg.Policy.MaximumFutureSkew)) {
-		return ErrManifestFutureDated
-	}
-	if cfg.Policy.MaximumStagedAge > 0 && staged.StagedAt.Before(now.Add(-cfg.Policy.MaximumStagedAge)) {
-		return ErrStagedUpdateStale
-	}
-	if staged.ArtifactPath == "" || hasPathTraversal(staged.ArtifactPath) {
+func (s *Service) validateDownloadedUpdate(downloaded downloadedUpdate) error {
+	if downloaded.SchemaVersion != SchemaVersion || downloaded.SourceKey != sourceKey(s.cfg.Source) || downloaded.DownloadedAt.IsZero() || downloaded.BytesWritten < 0 {
 		return ErrStorageUnavailable
 	}
-	info, err := os.Stat(staged.ArtifactPath)
-	if err != nil || info.IsDir() {
+	if err := validateManifest(s.cfg, downloaded.Manifest); err != nil {
+		return err
+	}
+	if err := validateArtifact(s.cfg, downloaded.Artifact); err != nil {
+		return err
+	}
+	expectedPath := filepath.Join(s.store.downloadsDir(), downloaded.Artifact.Filename)
+	if downloaded.ArtifactPath == "" || !samePath(downloaded.ArtifactPath, expectedPath) {
+		return ErrStorageUnavailable
+	}
+	info, err := os.Lstat(expectedPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return ErrVerificationFailed
+	}
+	if info.Size() != downloaded.BytesWritten {
+		return ErrVerificationFailed
+	}
+	if downloaded.Artifact.Size > 0 && info.Size() != downloaded.Artifact.Size {
+		return ErrVerificationFailed
+	}
+	if s.cfg.Policy.MaximumArtifactSize > 0 && info.Size() > s.cfg.Policy.MaximumArtifactSize {
+		return ErrVerificationFailed
+	}
+	return nil
+}
+
+func (s *Service) validateStagedUpdateReady(staged StagedUpdate, now time.Time) error {
+	if err := validateStagedUpdate(s.cfg, staged); err != nil {
+		return err
+	}
+	if s.cfg.Policy.MaximumFutureSkew > 0 && staged.StagedAt.After(now.Add(s.cfg.Policy.MaximumFutureSkew)) {
+		return ErrManifestFutureDated
+	}
+	if s.cfg.Policy.MaximumStagedAge > 0 && staged.StagedAt.Before(now.Add(-s.cfg.Policy.MaximumStagedAge)) {
+		return ErrStagedUpdateStale
+	}
+	expectedPath := filepath.Join(s.store.stagedDir(), staged.ArtifactName)
+	if staged.ArtifactPath == "" || !samePath(staged.ArtifactPath, expectedPath) {
+		return ErrStorageUnavailable
+	}
+	info, err := os.Lstat(expectedPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return ErrVerificationFailed
 	}
 	if staged.Size > 0 && info.Size() != staged.Size {
 		return ErrVerificationFailed
 	}
-	got, err := fileSHA256(staged.ArtifactPath)
+	got, err := fileSHA256(expectedPath)
 	if err != nil {
 		return ErrVerificationFailed
 	}
@@ -1279,6 +1392,7 @@ type httpManifestProvider struct {
 }
 
 func (p httpManifestProvider) LoadManifest(ctx context.Context) (Manifest, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return Manifest{}, err
 	}
@@ -1378,13 +1492,27 @@ func validSafeName(s string) bool {
 	if strings.Contains(s, "..") || strings.ContainsAny(s, `/\`) {
 		return false
 	}
-	reserved := map[string]bool{"CON": true, "PRN": true, "AUX": true, "NUL": true}
-	return !reserved[strings.ToUpper(s)]
+	return !windowsReservedName(s)
 }
 
 func validArtifactFilename(name string) bool {
 	name = strings.TrimSpace(name)
-	return safeFilenamePattern.MatchString(name) && filepath.Base(name) == name && !strings.Contains(name, "..") && !strings.ContainsAny(name, `/\`)
+	return safeFilenamePattern.MatchString(name) && filepath.Base(name) == name && !strings.Contains(name, "..") && !strings.ContainsAny(name, `/\`) && !windowsReservedName(name)
+}
+
+func windowsReservedName(name string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(name))
+	if i := strings.IndexByte(upper, '.'); i >= 0 {
+		upper = upper[:i]
+	}
+	switch upper {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	if len(upper) == 4 && (strings.HasPrefix(upper, "COM") || strings.HasPrefix(upper, "LPT")) {
+		return upper[3] >= '1' && upper[3] <= '9'
+	}
+	return false
 }
 
 func validManifestPath(path string) bool {
@@ -1419,7 +1547,8 @@ func githubRawManifestURL(src SourceConfig) string {
 }
 
 func validVersion(v string) bool {
-	return versionPattern.MatchString(strings.TrimSpace(v))
+	v = strings.TrimSpace(v)
+	return len(v) <= 128 && versionPattern.MatchString(v)
 }
 
 func validHTTPURL(raw string) bool {
@@ -1470,21 +1599,72 @@ func unsafeUpdateDetail(value string) bool {
 	return false
 }
 
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func sourceKey(src SourceConfig) string {
+	src = normalizeSource(src)
+	value := strings.Join([]string{
+		string(src.Provider),
+		src.ManifestPath,
+		src.ManifestURL,
+		src.Feed,
+		src.GitHubOwner,
+		src.GitHubRepo,
+		src.GitHubRef,
+		src.GitHubManifestPath,
+	}, "\x00")
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func sameSelectedUpdate(a, b selectedUpdate) bool {
+	if a.SourceKey != b.SourceKey {
+		return false
+	}
+	left, leftErr := json.Marshal(struct {
+		Manifest Manifest `json:"manifest"`
+		Artifact Artifact `json:"artifact"`
+	}{Manifest: a.Manifest, Artifact: a.Artifact})
+	right, rightErr := json.Marshal(struct {
+		Manifest Manifest `json:"manifest"`
+		Artifact Artifact `json:"artifact"`
+	}{Manifest: b.Manifest, Artifact: b.Artifact})
+	return leftErr == nil && rightErr == nil && bytes.Equal(left, right)
+}
+
+func samePath(a, b string) bool {
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 func compareVersions(a, b string) int {
 	ap, apre := versionParts(a)
 	bp, bpre := versionParts(b)
 	for i := 0; i < len(ap) || i < len(bp); i++ {
-		av, bv := 0, 0
+		av, bv := "0", "0"
 		if i < len(ap) {
 			av = ap[i]
 		}
 		if i < len(bp) {
 			bv = bp[i]
 		}
-		if av > bv {
+		if len(av) > len(bv) || (len(av) == len(bv) && av > bv) {
 			return 1
 		}
-		if av < bv {
+		if len(av) < len(bv) || (len(av) == len(bv) && av < bv) {
 			return -1
 		}
 	}
@@ -1500,7 +1680,7 @@ func compareVersions(a, b string) int {
 	return strings.Compare(apre, bpre)
 }
 
-func versionParts(v string) ([]int, string) {
+func versionParts(v string) ([]string, string) {
 	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
 	pre := ""
 	if i := strings.Index(v, "-"); i >= 0 {
@@ -1508,10 +1688,13 @@ func versionParts(v string) ([]int, string) {
 		v = v[:i]
 	}
 	raw := strings.Split(v, ".")
-	out := make([]int, 0, len(raw))
+	out := make([]string, 0, len(raw))
 	for _, item := range raw {
-		n, _ := strconv.Atoi(item)
-		out = append(out, n)
+		item = strings.TrimLeft(item, "0")
+		if item == "" {
+			item = "0"
+		}
+		out = append(out, item)
 	}
 	return out, pre
 }
@@ -1527,6 +1710,13 @@ func sanitizeProviderError(err error) error {
 		return err
 	}
 	return ErrProviderUnavailable
+}
+
+func normalizeContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 func contextError(ctx context.Context) error {
@@ -1587,22 +1777,39 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func copyFileAtomic(src, dst string) error {
+func copyFileAtomic(ctx context.Context, src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return ErrVerificationFailed
 	}
 	defer in.Close()
 	tmp := dst + ".tmp"
-	if _, err := writeStreamToFile(context.Background(), in, tmp, 0); err != nil {
+	if _, err := writeStreamToFile(ctx, in, tmp, 0); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, dst); err != nil {
+	if err := replaceFile(tmp, dst); err != nil {
 		_ = os.Remove(tmp)
 		return ErrStorageUnavailable
 	}
 	return nil
+}
+
+func replaceFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	info, err := os.Lstat(dst)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return ErrStorageUnavailable
+	}
+	if err := os.Remove(dst); err != nil {
+		return err
+	}
+	return os.Rename(src, dst)
 }
 
 func sortedArtifacts(in []Artifact) []Artifact {

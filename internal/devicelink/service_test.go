@@ -303,6 +303,59 @@ func TestPresenceDiscoveryTrustAndRemoteResources(t *testing.T) {
 	_ = aID
 }
 
+func TestDiscoveryProviderCallsMayReenterService(t *testing.T) {
+	provider := &reentrantDiscoveryProvider{}
+	svc := newTestService(t, "reentrant", WithDiscoveryProvider(provider))
+	provider.svc = svc
+	if _, err := svc.BootstrapCurrentDevice(context.Background(), BootstrapDeviceRequest{DisplayName: "Local"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AdvertiseResources(context.Background(), ResourceAdvertisementRequest{Resources: []ResourceDescriptor{{ResourceID: "kb", Type: ResourceData, DisplayName: "KB"}}}); err != nil {
+		t.Fatal(err)
+	}
+	mustFinishDeviceLinkCall(t, func() error {
+		_, err := svc.PublishPresence(context.Background())
+		return err
+	})
+	mustFinishDeviceLinkCall(t, func() error {
+		_, err := svc.DiscoverPeers(context.Background())
+		return err
+	})
+}
+
+func TestRemoteResourceAvailabilityRequiresFreshTrustedFingerprint(t *testing.T) {
+	now := time.Now().UTC()
+	peer := PresenceRecord{
+		SchemaVersion:        SchemaVersion,
+		DeviceID:             "peer",
+		LastSeen:             now,
+		PublicKeyFingerprint: "sha256:peer",
+	}
+	if got := remoteResourceAvailability(now, peer, TrustedDevice{}); got != ResourceUnknown {
+		t.Fatalf("unknown device availability = %q", got)
+	}
+	trusted := TrustedDevice{DeviceID: "peer", TrustStatus: TrustTrusted, PublicKeyFingerprint: peer.PublicKeyFingerprint}
+	if got := remoteResourceAvailability(now, peer, trusted); got != ResourceAvailable {
+		t.Fatalf("fresh trusted availability = %q", got)
+	}
+	peer.LastSeen = now.Add(defaultFutureSkew + time.Second)
+	if got := remoteResourceAvailability(now, peer, trusted); got != ResourceUnavailable {
+		t.Fatalf("future-dated presence availability = %q", got)
+	}
+	peer.LastSeen = now
+	trusted.TrustStatus = TrustRevoked
+	if got := remoteResourceAvailability(now, peer, trusted); got != ResourceUnavailable {
+		t.Fatalf("revoked device availability = %q", got)
+	}
+}
+
+func TestDeviceLinkRejectsWindowsReservedNamespaceWithExtension(t *testing.T) {
+	cfg := testConfig(t, "COM1.log")
+	if _, err := NewService(cfg); !errors.Is(err, ErrInvalidNamespace) {
+		t.Fatalf("reserved namespace error = %v", err)
+	}
+}
+
 func TestSignedHandshakeSuccessAndFailures(t *testing.T) {
 	discovery := NewMemoryDiscoveryProvider()
 	a := newTestService(t, "mesh", WithDiscoveryProvider(discovery))
@@ -516,6 +569,35 @@ func TestLinkTestAndConnectionStatus(t *testing.T) {
 	_ = aID
 }
 
+func TestDiscoveryAndLinkAcceptNilContext(t *testing.T) {
+	discovery := NewMemoryDiscoveryProvider()
+	transport := NewMemoryTransport()
+	a := newTestService(t, "nil-context-a", WithDiscoveryProvider(discovery), WithTransport(transport))
+	b := newTestService(t, "nil-context-b", WithDiscoveryProvider(discovery))
+	aID, err := a.BootstrapCurrentDevice(nil, BootstrapDeviceRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bID, err := b.BootstrapCurrentDevice(nil, BootstrapDeviceRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustBoth(t, a, aID, b, bID)
+	if _, err := b.PublishPresence(nil); err != nil {
+		t.Fatalf("PublishPresence(nil) returned error: %v", err)
+	}
+	if _, err := a.DiscoverPeers(nil); err != nil {
+		t.Fatalf("DiscoverPeers(nil) returned error: %v", err)
+	}
+	transport.RegisterHandler(bID.DeviceID, func(ctx context.Context, msg Message) (Message, error) {
+		return Message{Kind: "pong", FromDeviceID: bID.DeviceID, CreatedAt: time.Now().UTC()}, nil
+	})
+	result, err := a.TestLink(nil, bID.DeviceID)
+	if err != nil || !result.OK {
+		t.Fatalf("TestLink(nil) = %+v, %v", result, err)
+	}
+}
+
 func TestConcurrentBootstrapAndTrustOperations(t *testing.T) {
 	svc := newTestService(t, "concurrent")
 	var wg sync.WaitGroup
@@ -568,6 +650,40 @@ func trustBoth(t *testing.T, a *Service, aID DeviceIdentity, b *Service, bID Dev
 	if _, err := b.TrustDevice(context.Background(), TrustDeviceRequest{DeviceID: aID.DeviceID, DisplayName: aID.DisplayName, PublicKey: aID.PublicKey, PublicKeyFingerprint: aID.PublicKeyFingerprint}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func mustFinishDeviceLinkCall(t *testing.T, fn func() error) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reentrant service call failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("discovery provider reentry deadlocked the service")
+	}
+}
+
+type reentrantDiscoveryProvider struct {
+	svc    *Service
+	record PresenceRecord
+}
+
+func (p *reentrantDiscoveryProvider) Publish(ctx context.Context, record PresenceRecord) error {
+	if _, err := p.svc.GetCurrentDevice(ctx); err != nil {
+		return err
+	}
+	p.record = clonePresenceRecord(record)
+	return nil
+}
+
+func (p *reentrantDiscoveryProvider) Discover(ctx context.Context) ([]PresenceRecord, error) {
+	if _, err := p.svc.ListLocalResources(ctx); err != nil {
+		return nil, err
+	}
+	return []PresenceRecord{clonePresenceRecord(p.record)}, nil
 }
 
 func errString[T any](v T, err error) string {

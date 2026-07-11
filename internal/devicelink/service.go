@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Service struct {
@@ -388,8 +389,10 @@ func (s *Service) ListKnownRemoteResources(ctx context.Context) ([]RemoteResourc
 		trust[dev.DeviceID] = dev
 	}
 	var out []RemoteResourceDescriptor
+	now := s.clock.Now().UTC()
 	for _, peer := range peers.Peers {
 		dev := trust[peer.DeviceID]
+		availability := remoteResourceAvailability(now, peer, dev)
 		for _, summary := range peer.ResourcesSummary {
 			out = append(out, RemoteResourceDescriptor{
 				ResourceDescriptor: ResourceDescriptor{
@@ -397,7 +400,7 @@ func (s *Service) ListKnownRemoteResources(ctx context.Context) ([]RemoteResourc
 					Type:          summary.Type,
 					DisplayName:   string(summary.Type),
 					OwnerDeviceID: peer.DeviceID,
-					Availability:  ResourceAvailable,
+					Availability:  availability,
 					LastUpdated:   peer.LastSeen,
 				},
 				DeviceDisplayName:    peer.DisplayName,
@@ -410,17 +413,19 @@ func (s *Service) ListKnownRemoteResources(ctx context.Context) ([]RemoteResourc
 }
 
 func (s *Service) PublishPresence(ctx context.Context) (PresenceRecord, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return PresenceRecord{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	current, err := s.store.readIdentity()
 	if err != nil {
+		s.mu.Unlock()
 		return PresenceRecord{}, err
 	}
 	resources, err := s.store.readResources()
 	if err != nil {
+		s.mu.Unlock()
 		return PresenceRecord{}, err
 	}
 	record := PresenceRecord{
@@ -432,23 +437,32 @@ func (s *Service) PublishPresence(ctx context.Context) (PresenceRecord, error) {
 		LastSeen:             s.clock.Now().UTC(),
 		PublicKeyFingerprint: current.PublicKeyFingerprint,
 	}
-	if err := s.discovery.Publish(ctx, record); err != nil {
+	discovery := s.discovery
+	s.mu.Unlock()
+	if err := discovery.Publish(ctx, record); err != nil {
 		return PresenceRecord{}, ErrDiscoveryUnavailable
 	}
 	return record, nil
 }
 
 func (s *Service) DiscoverPeers(ctx context.Context) ([]DiscoveredPeer, error) {
+	ctx = normalizeContext(ctx)
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	discovery := s.discovery
+	s.mu.Unlock()
+	records, err := discovery.Discover(ctx)
+	if err != nil {
+		return nil, ErrDiscoveryUnavailable
+	}
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, _ := s.store.readIdentity()
-	records, err := s.discovery.Discover(ctx)
-	if err != nil {
-		return nil, ErrDiscoveryUnavailable
-	}
 	reg, err := s.store.readRegistry()
 	if err != nil {
 		return nil, err
@@ -461,7 +475,8 @@ func (s *Service) DiscoverPeers(ctx context.Context) ([]DiscoveredPeer, error) {
 	var out []DiscoveredPeer
 	now := s.clock.Now().UTC()
 	for _, rec := range records {
-		if rec.DeviceID == "" || rec.PublicKeyFingerprint == "" {
+		rec = clonePresenceRecord(rec)
+		if rec.DeviceID == "" || rec.PublicKeyFingerprint == "" || rec.SchemaVersion != SchemaVersion {
 			continue
 		}
 		if current.DeviceID != "" && rec.DeviceID == current.DeviceID {
@@ -495,6 +510,27 @@ func (s *Service) DiscoverPeers(ctx context.Context) ([]DiscoveredPeer, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func remoteResourceAvailability(now time.Time, peer PresenceRecord, dev TrustedDevice) ResourceAvailability {
+	switch dev.TrustStatus {
+	case TrustTrusted:
+		if isStale(now, peer.LastSeen) || dev.PublicKeyFingerprint == "" || dev.PublicKeyFingerprint != peer.PublicKeyFingerprint {
+			return ResourceUnavailable
+		}
+		return ResourceAvailable
+	case TrustRevoked, TrustStale:
+		return ResourceUnavailable
+	default:
+		return ResourceUnknown
+	}
+}
+
+func clonePresenceRecord(record PresenceRecord) PresenceRecord {
+	record.EndpointHints = append([]EndpointHint{}, record.EndpointHints...)
+	record.Capabilities = append([]string{}, record.Capabilities...)
+	record.ResourcesSummary = append([]ResourceSummary{}, record.ResourcesSummary...)
+	return record
 }
 
 func (s *Service) StartHandshake(ctx context.Context, peer DiscoveredPeer) (HandshakeStartResult, error) {
@@ -615,6 +651,7 @@ func (s *Service) CompleteHandshake(ctx context.Context, req HandshakeCompleteRe
 }
 
 func (s *Service) TestLink(ctx context.Context, deviceID string) (LinkTestResult, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return LinkTestResult{}, err
 	}

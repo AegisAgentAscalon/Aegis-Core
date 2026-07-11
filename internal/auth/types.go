@@ -296,10 +296,14 @@ func validSafeName(s string) bool {
 	if strings.Contains(s, "..") || strings.ContainsAny(s, `/\`) {
 		return false
 	}
+	upper := strings.ToUpper(s)
+	if i := strings.IndexByte(upper, '.'); i >= 0 {
+		upper = upper[:i]
+	}
 	reserved := map[string]bool{
 		"CON": true, "PRN": true, "AUX": true, "NUL": true,
 		"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
 		"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
 	}
-	return !reserved[strings.ToUpper(s)]
+	return !reserved[upper]
 }

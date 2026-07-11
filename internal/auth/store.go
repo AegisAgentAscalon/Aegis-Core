@@ -26,7 +26,7 @@ func newStore(cfg AppConfig) (*store, error) {
 		base = filepath.Join(userCfg, "aegis-core", "auth")
 	}
 	dir := namespacedStoreDir(base, cfg.AppID, cfg.TokenStore.Namespace)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := ensurePrivateDir(dir); err != nil {
 		return nil, ErrStorageUnavailable
 	}
 	return &store{dir: dir}, nil
@@ -159,7 +159,7 @@ func (s *store) status(cfg AppConfig) AuthStatus {
 }
 
 func (s *store) writeSession(sess pendingSession) error {
-	if err := os.MkdirAll(s.sessionsDir(), 0o700); err != nil {
+	if err := ensurePrivateDir(s.sessionsDir()); err != nil {
 		return ErrStorageUnavailable
 	}
 	b, err := json.MarshalIndent(sess, "", "  ")
@@ -300,7 +300,7 @@ func (s *store) clearSessions() error {
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := ensurePrivateDir(dir); err != nil {
 		return ErrStorageUnavailable
 	}
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
@@ -329,4 +329,15 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	}
 	cleanup = false
 	return nil
+}
+
+func ensurePrivateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return ErrStorageUnavailable
+	}
+	return os.Chmod(dir, 0o700)
 }
