@@ -22,8 +22,8 @@ These are infrastructure contracts and reference implementations. They do not au
 
 These items should be addressed before claiming stable production security behavior:
 
-1. **Secure-update authorization:** independent artifact signatures, key lifecycle and revocation, expiring/delegated metadata, rollback protection, and release-pipeline verification.
-2. **Outbound update policy:** redirect restrictions, destination/IP policy, optional host allowlists or pinning, and explicit private-network behavior.
+1. **Secure-update authorization beyond the current signed-manifest foundation:** artifact authorization independent of transport, key lifecycle and revocation, expiring/delegated metadata, stronger rollback protection, build provenance, and release-pipeline verification.
+2. **Outbound update policy beyond current exact host/redirect restrictions:** DNS rebinding resistance, destination-IP and private-network policy, optional certificate/key pinning, and deployment-specific egress controls.
 3. **Protected key storage:** platform keystore adapters behind the existing narrow Auth and Device Link storage boundaries.
 4. **Transactional persistence:** generation directories, atomic pointer swaps, journals, or a transactional store for multi-file Auth, Device Link, Profile Mesh, and Profile Sync workflows.
 5. **Authenticated distributed metadata:** signer identity, epoch, freshness, rollback, and revocation validation for snapshots and manifests.
@@ -58,6 +58,8 @@ Consumer integrations have exposed recurring contract opportunities. These are *
 - Safe relay Profile Sync diagnostics DTOs.
 
 ### Update package and install handoff
+
+The public/private source and lane-isolation foundation is implemented. Remaining candidates focus on package semantics and application-owned installation rather than repository topology.
 
 - Safe package, catalog, manifest-route, and validation DTOs.
 - Explicit separation of discovery, download, verification, reveal, handoff, execution, restart, and completion states.
