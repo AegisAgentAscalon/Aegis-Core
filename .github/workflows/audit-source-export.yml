@@ -1,6 +1,9 @@
 name: Audit source snapshot
 
 on:
+  push:
+    branches:
+      - agent/aegis-core-audit-hardening-20260711
   pull_request:
     branches:
       - main
