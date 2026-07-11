@@ -51,6 +51,9 @@ Important safety notes:
 - SHA-256 artifact verification is always enforced by service normalization.
 - Ed25519 manifest verification exists when callers provide keys and require signatures.
 - Manifest signatures are calculated over Aegis Core's current Go JSON payload with `Signature` removed. This is deterministic for this implementation but is not RFC 8785/JCS canonical JSON, so cross-language signing tools must match the same serialization or wait for a later canonicalization pass.
+- Public and app-owned authenticated sources use separate host-supplied HTTP clients. Credentials stay in the app-owned transport and are never persisted or exposed through status DTOs.
+- Explicit `SourceID` lanes isolate selected, downloaded, verified, and staged state by source, channel, and effective policy. `ConfigureLane` switches those values atomically.
+- Authenticated sources require exact destination restrictions, a signed manifest, and a source-pinned verification key. See `docs/UPDATE_SOURCES.md`.
 
 ### `pkg/devicelink`
 
@@ -122,6 +125,8 @@ It must not scan files, detect malware, quarantine, remediate, block, trust prov
 - Do not treat relay delivery as trust.
 - Do not treat cloud/object metadata as profile truth.
 - Do not auto-apply staged updates without an app-owned policy and rollback plan.
+- Do not put update credentials in source URLs or manifests; supply them through the app-owned authenticated HTTP client.
+- Do not reuse a signing key across development and stable lanes.
 - Do not expose the self-hosted HTTP relay publicly without TLS, authentication, abuse controls, monitoring, and deployment hardening.
 - Do not set `AllowUnauthenticated` outside isolated local/dev tests.
 - Do not make `/status` unauthenticated by setting `AllowUnauthenticated`; create a separate health endpoint instead.

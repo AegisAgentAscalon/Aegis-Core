@@ -50,6 +50,8 @@ var (
 	ErrApplyFailed          = errors.New("update apply failed")
 	ErrStorageUnavailable   = errors.New("update storage unavailable")
 	ErrContextCanceled      = errors.New("update operation canceled")
+	ErrUpdateStateChanged   = errors.New("update source or policy changed during operation")
+	ErrApplyInProgress      = errors.New("update apply is already in progress")
 )
 
 var (
@@ -103,6 +105,12 @@ type SourceConfig struct {
 	GitHubRepo         string
 	GitHubRef          string
 	GitHubManifestPath string
+	// SourceID is a non-secret stable lane identity used for safe provenance
+	// and isolated persisted state. Authenticated sources require it.
+	SourceID              string
+	Access                SourceAccess
+	RequiredManifestKeyID string
+	AllowedHTTPHosts      []string
 }
 
 type Policy struct {
@@ -155,39 +163,41 @@ type SignatureMetadata struct {
 }
 
 type Release struct {
-	AppID                   string    `json:"app_id"`
-	Version                 string    `json:"version"`
-	Channel                 Channel   `json:"channel"`
-	Platform                string    `json:"platform"`
-	Architecture            string    `json:"architecture"`
-	PublishedAt             string    `json:"published_at,omitempty"`
-	ReleaseNotesURL         string    `json:"release_notes_url,omitempty"`
-	ReleaseNotesText        string    `json:"release_notes_text,omitempty"`
-	MinimumSupportedVersion string    `json:"minimum_supported_version,omitempty"`
-	RequiredRestart         bool      `json:"required_restart,omitempty"`
-	ApplyBehavior           string    `json:"apply_behavior,omitempty"`
-	ArtifactName            string    `json:"artifact_name,omitempty"`
-	ArtifactSHA256          string    `json:"artifact_sha256,omitempty"`
-	ArtifactSize            int64     `json:"artifact_size,omitempty"`
-	CheckedAt               time.Time `json:"checked_at,omitempty"`
+	Source                  SourceSummary `json:"source"`
+	AppID                   string        `json:"app_id"`
+	Version                 string        `json:"version"`
+	Channel                 Channel       `json:"channel"`
+	Platform                string        `json:"platform"`
+	Architecture            string        `json:"architecture"`
+	PublishedAt             string        `json:"published_at,omitempty"`
+	ReleaseNotesURL         string        `json:"release_notes_url,omitempty"`
+	ReleaseNotesText        string        `json:"release_notes_text,omitempty"`
+	MinimumSupportedVersion string        `json:"minimum_supported_version,omitempty"`
+	RequiredRestart         bool          `json:"required_restart,omitempty"`
+	ApplyBehavior           string        `json:"apply_behavior,omitempty"`
+	ArtifactName            string        `json:"artifact_name,omitempty"`
+	ArtifactSHA256          string        `json:"artifact_sha256,omitempty"`
+	ArtifactSize            int64         `json:"artifact_size,omitempty"`
+	CheckedAt               time.Time     `json:"checked_at,omitempty"`
 }
 
 type CurrentState struct {
-	AppID             string       `json:"app_id"`
-	DisplayName       string       `json:"display_name"`
-	CurrentVersion    string       `json:"current_version"`
-	Channel           Channel      `json:"channel"`
-	Platform          string       `json:"platform"`
-	Architecture      string       `json:"architecture"`
-	Provider          ProviderKind `json:"provider"`
-	Configured        bool         `json:"configured"`
-	UpdateAvailable   bool         `json:"update_available"`
-	LatestRelease     *Release     `json:"latest_release,omitempty"`
-	StagedVersion     string       `json:"staged_version,omitempty"`
-	Verified          bool         `json:"verified"`
-	RollbackAvailable bool         `json:"rollback_available"`
-	Message           string       `json:"message,omitempty"`
-	LastError         string       `json:"last_error,omitempty"`
+	Source            SourceSummary `json:"source"`
+	AppID             string        `json:"app_id"`
+	DisplayName       string        `json:"display_name"`
+	CurrentVersion    string        `json:"current_version"`
+	Channel           Channel       `json:"channel"`
+	Platform          string        `json:"platform"`
+	Architecture      string        `json:"architecture"`
+	Provider          ProviderKind  `json:"provider"`
+	Configured        bool          `json:"configured"`
+	UpdateAvailable   bool          `json:"update_available"`
+	LatestRelease     *Release      `json:"latest_release,omitempty"`
+	StagedVersion     string        `json:"staged_version,omitempty"`
+	Verified          bool          `json:"verified"`
+	RollbackAvailable bool          `json:"rollback_available"`
+	Message           string        `json:"message,omitempty"`
+	LastError         string        `json:"last_error,omitempty"`
 }
 
 type CheckResult struct {
@@ -229,43 +239,48 @@ type ClearResult struct {
 }
 
 type StagedUpdate struct {
-	AppID           string    `json:"app_id"`
-	Version         string    `json:"version"`
-	Channel         Channel   `json:"channel"`
-	Platform        string    `json:"platform"`
-	Architecture    string    `json:"architecture"`
-	ArtifactName    string    `json:"artifact_name"`
-	ArtifactPath    string    `json:"-"`
-	SHA256          string    `json:"sha256"`
-	Size            int64     `json:"size,omitempty"`
-	StagedAt        time.Time `json:"staged_at"`
-	RequiredRestart bool      `json:"required_restart,omitempty"`
-	ApplyBehavior   string    `json:"apply_behavior,omitempty"`
+	Source          SourceSummary `json:"source"`
+	SourceKey       string        `json:"source_key"`
+	PolicyKey       string        `json:"policy_key"`
+	AppID           string        `json:"app_id"`
+	Version         string        `json:"version"`
+	Channel         Channel       `json:"channel"`
+	Platform        string        `json:"platform"`
+	Architecture    string        `json:"architecture"`
+	ArtifactName    string        `json:"artifact_name"`
+	ArtifactPath    string        `json:"-"`
+	SHA256          string        `json:"sha256"`
+	Size            int64         `json:"size,omitempty"`
+	StagedAt        time.Time     `json:"staged_at"`
+	RequiredRestart bool          `json:"required_restart,omitempty"`
+	ApplyBehavior   string        `json:"apply_behavior,omitempty"`
 }
 
 type StagedUpdateSummary struct {
-	AppID           string    `json:"app_id"`
-	Version         string    `json:"version"`
-	Channel         Channel   `json:"channel"`
-	Platform        string    `json:"platform"`
-	Architecture    string    `json:"architecture"`
-	ArtifactName    string    `json:"artifact_name"`
-	SHA256          string    `json:"sha256"`
-	Size            int64     `json:"size,omitempty"`
-	StagedAt        time.Time `json:"staged_at"`
-	RequiredRestart bool      `json:"required_restart,omitempty"`
-	ApplyBehavior   string    `json:"apply_behavior,omitempty"`
-	Message         string    `json:"message,omitempty"`
+	Source          SourceSummary `json:"source"`
+	AppID           string        `json:"app_id"`
+	Version         string        `json:"version"`
+	Channel         Channel       `json:"channel"`
+	Platform        string        `json:"platform"`
+	Architecture    string        `json:"architecture"`
+	ArtifactName    string        `json:"artifact_name"`
+	SHA256          string        `json:"sha256"`
+	Size            int64         `json:"size,omitempty"`
+	StagedAt        time.Time     `json:"staged_at"`
+	RequiredRestart bool          `json:"required_restart,omitempty"`
+	ApplyBehavior   string        `json:"apply_behavior,omitempty"`
+	Message         string        `json:"message,omitempty"`
 }
 
 type ApplyPlan struct {
-	Version         string   `json:"version"`
-	ArtifactName    string   `json:"artifact_name,omitempty"`
-	RequiredRestart bool     `json:"required_restart,omitempty"`
-	ApplyBehavior   string   `json:"apply_behavior,omitempty"`
-	AppOwnedApply   bool     `json:"app_owned_apply"`
-	Summary         string   `json:"summary"`
-	Steps           []string `json:"steps,omitempty"`
+	Source          SourceSummary `json:"source"`
+	Version         string        `json:"version"`
+	ArtifactName    string        `json:"artifact_name,omitempty"`
+	RequiredRestart bool          `json:"required_restart,omitempty"`
+	ApplyBehavior   string        `json:"apply_behavior,omitempty"`
+	AppOwnedApply   bool          `json:"app_owned_apply"`
+	Summary         string        `json:"summary"`
+	Steps           []string      `json:"steps,omitempty"`
 }
 
 type ApplyStrategy interface {
@@ -301,47 +316,92 @@ type Service struct {
 	provider Provider
 	apply    ApplyStrategy
 	client   *http.Client
-	mu       sync.Mutex
+	options  ServiceOptions
+	revision uint64
+
+	mu              sync.Mutex
+	workflowMu      sync.Mutex
+	applyInProgress bool
 }
 
 func NewService(cfg AppConfig, apply ApplyStrategy) (*Service, error) {
+	return NewServiceWithOptions(cfg, apply, ServiceOptions{})
+}
+
+func NewServiceWithOptions(cfg AppConfig, apply ApplyStrategy, options ServiceOptions) (*Service, error) {
 	cfg = normalizeConfig(cfg)
-	if err := validateConfig(cfg); err != nil {
+	if err := validateConfigWithOptions(cfg, options); err != nil {
 		return nil, err
 	}
 	st, err := newStore(cfg)
 	if err != nil {
 		return nil, err
 	}
-	provider, err := newProvider(cfg)
+	client, err := clientForSource(cfg, options)
+	if err != nil {
+		return nil, err
+	}
+	provider, err := newProvider(cfg, client)
 	if err != nil {
 		return nil, err
 	}
 	if apply == nil {
 		apply = ManualApplyStrategy{}
 	}
-	timeout := cfg.HTTPTimeout
-	if timeout <= 0 {
-		timeout = defaultHTTPTimeout
-	}
-	return &Service{cfg: cfg, store: st, provider: provider, apply: apply, client: &http.Client{Timeout: timeout}}, nil
+	return &Service{
+		cfg: cfg, store: st, provider: provider, apply: apply,
+		client: client, options: options, revision: 1,
+	}, nil
 }
 
 func NewServiceWithAdapter(cfg AppConfig, adapter ApplyAdapter) (*Service, error) {
+	return NewServiceWithAdapterOptions(cfg, adapter, ServiceOptions{})
+}
+
+func NewServiceWithAdapterOptions(cfg AppConfig, adapter ApplyAdapter, options ServiceOptions) (*Service, error) {
 	var strategy ApplyStrategy
 	if adapter != nil {
 		strategy = applyAdapterStrategy{adapter: adapter}
 	}
-	return NewService(cfg, strategy)
+	return NewServiceWithOptions(cfg, strategy, options)
+}
+
+type serviceSnapshot struct {
+	cfg      AppConfig
+	store    *store
+	provider Provider
+	client   *http.Client
+	revision uint64
+}
+
+func (s *Service) snapshotLocked() serviceSnapshot {
+	return serviceSnapshot{
+		cfg: cloneConfig(s.cfg), store: s.store, provider: s.provider,
+		client: s.client, revision: s.revision,
+	}
+}
+
+func (s *Service) operationSnapshot() (serviceSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.applyInProgress {
+		return serviceSnapshot{}, ErrApplyInProgress
+	}
+	return s.snapshotLocked(), nil
+}
+
+func (s *Service) currentLocked(snapshot serviceSnapshot) bool {
+	return s.revision == snapshot.revision && s.store == snapshot.store && sourceAndPolicyMatch(s.cfg, sourceKey(snapshot.cfg.Source), policyKey(snapshot.cfg.Policy)) && s.cfg.Channel == snapshot.cfg.Channel
 }
 
 func (s *Service) ValidateConfig() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return validateConfig(s.cfg)
+	return validateConfigWithOptions(s.cfg, s.options)
 }
 
 func (s *Service) GetStatus(ctx context.Context) (CurrentState, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return CurrentState{}, err
 	}
@@ -352,6 +412,7 @@ func (s *Service) GetStatus(ctx context.Context) (CurrentState, error) {
 
 func (s *Service) getStatusLocked() (CurrentState, error) {
 	state := CurrentState{
+		Source:         sourceSummary(s.cfg.Source),
 		AppID:          s.cfg.AppID,
 		DisplayName:    s.cfg.DisplayName,
 		CurrentVersion: s.cfg.CurrentVersion,
@@ -363,21 +424,20 @@ func (s *Service) getStatusLocked() (CurrentState, error) {
 		Message:        "updates configured",
 	}
 	if cached, err := s.store.readSelected(); err == nil {
-		if cached.SourceKey != sourceKey(s.cfg.Source) || cached.Manifest.Channel != s.cfg.Channel {
-			// A source/channel change intentionally makes the prior selection out of
-			// scope; it is not storage corruption and must not surface as an error.
-		} else if err := validateSelectedUpdate(s.cfg, cached); err == nil {
-			release := releaseFromSelection(cached.Manifest, cached.Artifact, time.Time{})
-			state.LatestRelease = &release
-			state.UpdateAvailable = compareVersions(cached.Manifest.Version, s.cfg.CurrentVersion) > 0
-		} else {
-			state.LastError = safeStatusMessage(err)
+		if sourceAndPolicyMatch(s.cfg, cached.SourceKey, cached.PolicyKey) && cached.Manifest.Channel == s.cfg.Channel {
+			if err := validateSelectedUpdate(s.cfg, cached); err == nil {
+				release := releaseFromSelection(cached.Manifest, cached.Artifact, time.Time{}, sourceSummary(s.cfg.Source))
+				state.LatestRelease = &release
+				state.UpdateAvailable = compareVersions(cached.Manifest.Version, s.cfg.CurrentVersion) > 0
+			} else {
+				state.LastError = safeStatusMessage(err)
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		state.LastError = "stored update metadata is invalid"
 	}
 	if staged, err := s.store.readStaged(); err == nil {
-		if err := s.validateStagedUpdateReady(staged, time.Now().UTC()); err == nil {
+		if err := validateStagedUpdateReadyFor(s.cfg, s.store, staged, time.Now().UTC()); err == nil {
 			state.StagedVersion = staged.Version
 			state.Verified = true
 		} else {
@@ -390,36 +450,58 @@ func (s *Service) getStatusLocked() (CurrentState, error) {
 }
 
 func (s *Service) ConfigureSource(ctx context.Context, source SourceConfig) (CurrentState, error) {
-	if err := contextError(ctx); err != nil {
-		return CurrentState{}, err
+	if source.Provider == "" {
+		return CurrentState{}, ErrInvalidProvider
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	next := s.cfg
-	next.Source = normalizeSource(source)
-	if err := validateSource(next.Source); err != nil {
-		return CurrentState{}, err
-	}
-	provider, err := newProvider(next)
-	if err != nil {
-		return CurrentState{}, err
-	}
-	s.cfg = next
-	s.provider = provider
-	return s.getStatusLocked()
+	return s.ConfigureLane(ctx, LaneConfig{Source: source})
 }
 
 func (s *Service) SetChannel(ctx context.Context, channel Channel) (CurrentState, error) {
-	if err := contextError(ctx); err != nil {
-		return CurrentState{}, err
-	}
 	channel = Channel(strings.TrimSpace(string(channel)))
 	if channel == "" || !validSafeName(string(channel)) {
 		return CurrentState{}, ErrInvalidConfig
 	}
+	return s.ConfigureLane(ctx, LaneConfig{Channel: channel, Source: SourceConfig{}})
+}
+
+func (s *Service) ConfigureLane(ctx context.Context, lane LaneConfig) (CurrentState, error) {
+	ctx = normalizeContext(ctx)
+	if err := contextError(ctx); err != nil {
+		return CurrentState{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cfg.Channel = channel
+	if s.applyInProgress {
+		return CurrentState{}, ErrApplyInProgress
+	}
+	next := cloneConfig(s.cfg)
+	if lane.Channel != "" {
+		next.Channel = Channel(strings.TrimSpace(string(lane.Channel)))
+	}
+	if lane.Source.Provider != "" {
+		next.Source = lane.Source
+	}
+	if lane.Policy != nil {
+		next.Policy = *lane.Policy
+	}
+	next = normalizeConfig(next)
+	if err := validateConfigWithOptions(next, s.options); err != nil {
+		return CurrentState{}, err
+	}
+	st, err := newStore(next)
+	if err != nil {
+		return CurrentState{}, err
+	}
+	client, err := clientForSource(next, s.options)
+	if err != nil {
+		return CurrentState{}, err
+	}
+	provider, err := newProvider(next, client)
+	if err != nil {
+		return CurrentState{}, err
+	}
+	s.cfg, s.store, s.client, s.provider = next, st, client, provider
+	s.revision++
 	return s.getStatusLocked()
 }
 
@@ -428,55 +510,103 @@ func (s *Service) CheckForUpdates(ctx context.Context) (CheckResult, error) {
 	if err := contextError(ctx); err != nil {
 		return CheckResult{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.checkForUpdatesLocked(ctx)
+	s.workflowMu.Lock()
+	defer s.workflowMu.Unlock()
+	for attempt := 0; attempt < 4; attempt++ {
+		snapshot, err := s.operationSnapshot()
+		if err != nil {
+			return CheckResult{}, err
+		}
+		result, err := s.checkForUpdatesSnapshot(ctx, snapshot)
+		if !errors.Is(err, ErrUpdateStateChanged) || snapshot.cfg.Source.SourceID != "" {
+			return result, err
+		}
+	}
+	// Legacy callers did not opt into explicit source identity. A concurrent
+	// source change supersedes the check without becoming a fatal error.
+	return CheckResult{Message: "update check superseded by source change"}, nil
 }
 
-func (s *Service) checkForUpdatesLocked(ctx context.Context) (CheckResult, error) {
-	manifest, err := s.provider.LoadManifest(ctx)
+func (s *Service) checkForUpdatesSnapshot(ctx context.Context, snapshot serviceSnapshot) (CheckResult, error) {
+	manifest, err := snapshot.provider.LoadManifest(ctx)
 	if err != nil {
 		return CheckResult{}, sanitizeProviderError(err)
 	}
-	artifact, err := s.selectArtifact(manifest)
+	artifact, err := selectArtifactForConfig(snapshot.cfg, manifest)
 	if err != nil {
 		if errors.Is(err, ErrNoUpdateAvailable) || errors.Is(err, ErrNoCompatibleArtifact) {
-			if clearErr := s.store.clearCandidateState(); clearErr != nil {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if !s.currentLocked(snapshot) {
+				return CheckResult{}, ErrUpdateStateChanged
+			}
+			if clearErr := snapshot.store.clearCandidateState(); clearErr != nil {
 				return CheckResult{}, clearErr
 			}
 		}
 		return CheckResult{}, err
 	}
-	release := releaseFromSelection(manifest, artifact, time.Now().UTC())
-	available := compareVersions(manifest.Version, s.cfg.CurrentVersion) > 0
+	release := releaseFromSelection(manifest, artifact, time.Now().UTC(), sourceSummary(snapshot.cfg.Source))
+	available := compareVersions(manifest.Version, snapshot.cfg.CurrentVersion) > 0
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.applyInProgress {
+		return CheckResult{}, ErrApplyInProgress
+	}
+	if !s.currentLocked(snapshot) {
+		return CheckResult{}, ErrUpdateStateChanged
+	}
 	if !available {
-		if err := s.store.clearCandidateState(); err != nil {
+		if err := snapshot.store.clearCandidateState(); err != nil {
 			return CheckResult{}, err
 		}
 		return CheckResult{UpdateAvailable: false, LatestRelease: &release, Message: "no update available"}, nil
 	}
 	selected := selectedUpdate{
 		SchemaVersion: SchemaVersion,
-		SourceKey:     sourceKey(s.cfg.Source),
-		Manifest:      manifest,
-		Artifact:      artifact,
-		UpdatedAt:     time.Now().UTC(),
+		SourceKey:     sourceKey(snapshot.cfg.Source), PolicyKey: policyKey(snapshot.cfg.Policy),
+		Manifest: manifest, Artifact: artifact, UpdatedAt: time.Now().UTC(),
 	}
-	if previous, readErr := s.store.readSelected(); readErr == nil {
+	if previous, readErr := snapshot.store.readSelected(); readErr == nil {
 		if !sameSelectedUpdate(previous, selected) {
-			if err := s.store.clearDownloadedState(); err != nil {
+			if err := snapshot.store.clearDownloadedState(); err != nil {
 				return CheckResult{}, err
 			}
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
-		if err := s.store.clearCandidateState(); err != nil {
+		if err := snapshot.store.clearCandidateState(); err != nil {
 			return CheckResult{}, err
 		}
 	}
-	if err := s.store.writeSelected(selected); err != nil {
+	if err := snapshot.store.writeSelected(selected); err != nil {
 		return CheckResult{}, err
 	}
 	return CheckResult{UpdateAvailable: true, LatestRelease: &release, Message: "update available"}, nil
+}
+
+func (s *Service) selectionForSnapshot(ctx context.Context, snapshot serviceSnapshot, version string) (selectedUpdate, error) {
+	version = strings.TrimSpace(version)
+	selected, err := snapshot.store.readSelected()
+	if err == nil && (version == "" || selected.Manifest.Version == version) && validateSelectedUpdate(snapshot.cfg, selected) == nil {
+		return selected, nil
+	}
+	if _, err := s.checkForUpdatesSnapshot(ctx, snapshot); err != nil {
+		return selectedUpdate{}, err
+	}
+	selected, err = snapshot.store.readSelected()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return selectedUpdate{}, ErrNoUpdateAvailable
+		}
+		return selectedUpdate{}, err
+	}
+	if version != "" && selected.Manifest.Version != version {
+		return selectedUpdate{}, ErrNoUpdateAvailable
+	}
+	if err := validateSelectedUpdate(snapshot.cfg, selected); err != nil {
+		return selectedUpdate{}, err
+	}
+	return selected, nil
 }
 
 func (s *Service) DownloadUpdate(ctx context.Context, version string) (DownloadResult, error) {
@@ -484,85 +614,101 @@ func (s *Service) DownloadUpdate(ctx context.Context, version string) (DownloadR
 	if err := contextError(ctx); err != nil {
 		return DownloadResult{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	selected, err := s.selectionForVersionLocked(ctx, version)
+	s.workflowMu.Lock()
+	defer s.workflowMu.Unlock()
+	snapshot, err := s.operationSnapshot()
+	if err != nil {
+		return DownloadResult{}, err
+	}
+	selected, err := s.selectionForSnapshot(ctx, snapshot, version)
 	if err != nil {
 		return DownloadResult{}, err
 	}
 	artifact := selected.Artifact
-	if err := validateArtifact(s.cfg, artifact); err != nil {
+	if err := validateArtifact(snapshot.cfg, artifact); err != nil {
 		return DownloadResult{}, err
 	}
-	if err := secureMkdirAll(s.store.downloadsDir()); err != nil {
+	if err := secureMkdirAll(snapshot.store.downloadsDir()); err != nil {
 		return DownloadResult{}, ErrStorageUnavailable
 	}
-	tmpPath := filepath.Join(s.store.downloadsDir(), artifact.Filename+".tmp")
-	finalPath := filepath.Join(s.store.downloadsDir(), artifact.Filename)
-	n, err := s.downloadArtifact(ctx, artifact, tmpPath)
+	tmpPath := filepath.Join(snapshot.store.downloadsDir(), artifact.Filename+".tmp")
+	finalPath := filepath.Join(snapshot.store.downloadsDir(), artifact.Filename)
+	n, err := downloadArtifactFor(ctx, snapshot.cfg, snapshot.client, artifact, tmpPath)
 	if err != nil {
 		_ = os.Remove(tmpPath)
 		return DownloadResult{}, err
 	}
-	if artifact.Size > 0 && n != artifact.Size {
+	if (artifact.Size > 0 && n != artifact.Size) || (snapshot.cfg.Policy.MaximumArtifactSize > 0 && n > snapshot.cfg.Policy.MaximumArtifactSize) {
 		_ = os.Remove(tmpPath)
 		return DownloadResult{}, ErrDownloadFailed
 	}
-	if s.cfg.Policy.MaximumArtifactSize > 0 && n > s.cfg.Policy.MaximumArtifactSize {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.applyInProgress {
 		_ = os.Remove(tmpPath)
-		return DownloadResult{}, ErrDownloadFailed
+		return DownloadResult{}, ErrApplyInProgress
+	}
+	if !s.currentLocked(snapshot) {
+		_ = os.Remove(tmpPath)
+		return DownloadResult{}, ErrUpdateStateChanged
 	}
 	if err := replaceFile(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return DownloadResult{}, ErrStorageUnavailable
 	}
 	meta := downloadedUpdate{
-		SchemaVersion: SchemaVersion,
-		SourceKey:     selected.SourceKey,
-		Manifest:      selected.Manifest,
-		Artifact:      artifact,
-		ArtifactPath:  finalPath,
-		BytesWritten:  n,
-		DownloadedAt:  time.Now().UTC(),
+		SchemaVersion: SchemaVersion, SourceKey: selected.SourceKey, PolicyKey: selected.PolicyKey,
+		Manifest: selected.Manifest, Artifact: artifact, ArtifactPath: finalPath,
+		BytesWritten: n, DownloadedAt: time.Now().UTC(),
 	}
-	if err := s.store.writeDownloaded(meta); err != nil {
+	if err := snapshot.store.writeDownloaded(meta); err != nil {
 		return DownloadResult{}, err
 	}
 	return DownloadResult{Version: selected.Manifest.Version, ArtifactName: artifact.Filename, BytesWritten: n, Message: "update downloaded"}, nil
 }
 
 func (s *Service) VerifyUpdate(ctx context.Context, version string) (VerifyResult, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return VerifyResult{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.verifyUpdateLocked(version)
+	s.workflowMu.Lock()
+	defer s.workflowMu.Unlock()
+	snapshot, err := s.operationSnapshot()
+	if err != nil {
+		return VerifyResult{}, err
+	}
+	return s.verifyUpdateSnapshot(snapshot, version)
 }
 
-func (s *Service) verifyUpdateLocked(version string) (VerifyResult, error) {
-	downloaded, err := s.store.readDownloaded()
+func (s *Service) verifyUpdateSnapshot(snapshot serviceSnapshot, version string) (VerifyResult, error) {
+	downloaded, err := snapshot.store.readDownloaded()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return VerifyResult{}, ErrVerificationFailed
 		}
 		return VerifyResult{}, err
 	}
-	if version != "" && downloaded.Manifest.Version != version {
+	if version != "" && downloaded.Manifest.Version != strings.TrimSpace(version) {
 		return VerifyResult{}, ErrVerificationFailed
 	}
-	if err := s.validateDownloadedUpdate(downloaded); err != nil {
+	if err := validateDownloadedUpdateFor(snapshot.cfg, snapshot.store, downloaded); err != nil {
 		return VerifyResult{}, err
 	}
 	got, err := fileSHA256(downloaded.ArtifactPath)
-	if err != nil {
+	if err != nil || !strings.EqualFold(got, downloaded.Artifact.SHA256) {
 		return VerifyResult{}, ErrVerificationFailed
 	}
-	if !strings.EqualFold(got, downloaded.Artifact.SHA256) {
-		return VerifyResult{}, ErrVerificationFailed
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.applyInProgress {
+		return VerifyResult{}, ErrApplyInProgress
+	}
+	if !s.currentLocked(snapshot) {
+		return VerifyResult{}, ErrUpdateStateChanged
 	}
 	verified := verifiedUpdate{SchemaVersion: SchemaVersion, Downloaded: downloaded, VerifiedAt: time.Now().UTC()}
-	if err := s.store.writeVerified(verified); err != nil {
+	if err := snapshot.store.writeVerified(verified); err != nil {
 		return VerifyResult{}, err
 	}
 	return VerifyResult{Version: downloaded.Manifest.Version, ArtifactName: downloaded.Artifact.Filename, OK: true, Message: "update verified"}, nil
@@ -573,63 +719,88 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 	if err := contextError(ctx); err != nil {
 		return StageResult{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	verified, err := s.store.readVerified()
+	s.workflowMu.Lock()
+	defer s.workflowMu.Unlock()
+	snapshot, err := s.operationSnapshot()
 	if err != nil {
-		if _, verifyErr := s.verifyUpdateLocked(version); verifyErr != nil {
+		return StageResult{}, err
+	}
+	verified, err := snapshot.store.readVerified()
+	if err != nil {
+		if _, verifyErr := s.verifyUpdateSnapshot(snapshot, version); verifyErr != nil {
 			return StageResult{}, verifyErr
 		}
-		verified, err = s.store.readVerified()
+		verified, err = snapshot.store.readVerified()
 	}
 	if err != nil {
 		return StageResult{}, err
 	}
-	if version != "" && verified.Downloaded.Manifest.Version != version {
+	if version != "" && verified.Downloaded.Manifest.Version != strings.TrimSpace(version) {
 		return StageResult{}, ErrVerificationFailed
 	}
 	if verified.SchemaVersion != SchemaVersion || verified.VerifiedAt.IsZero() {
 		return StageResult{}, ErrStorageUnavailable
 	}
-	if err := s.validateDownloadedUpdate(verified.Downloaded); err != nil {
+	if err := validateDownloadedUpdateFor(snapshot.cfg, snapshot.store, verified.Downloaded); err != nil {
 		return StageResult{}, err
 	}
 	got, err := fileSHA256(verified.Downloaded.ArtifactPath)
 	if err != nil || !strings.EqualFold(got, verified.Downloaded.Artifact.SHA256) {
 		return StageResult{}, ErrVerificationFailed
 	}
-	if err := secureMkdirAll(s.store.stagedDir()); err != nil {
+	if err := secureMkdirAll(snapshot.store.stagedDir()); err != nil {
 		return StageResult{}, ErrStorageUnavailable
 	}
-	target := filepath.Join(s.store.stagedDir(), verified.Downloaded.Artifact.Filename)
-	if err := copyFileAtomic(ctx, verified.Downloaded.ArtifactPath, target); err != nil {
+	target := filepath.Join(snapshot.store.stagedDir(), verified.Downloaded.Artifact.Filename)
+	pendingFile, err := os.CreateTemp(snapshot.store.stagedDir(), ".pending-*")
+	if err != nil {
+		return StageResult{}, ErrStorageUnavailable
+	}
+	pending := pendingFile.Name()
+	if err := pendingFile.Close(); err != nil {
+		_ = os.Remove(pending)
+		return StageResult{}, ErrStorageUnavailable
+	}
+	_ = os.Remove(pending)
+	if err := copyFileAtomic(ctx, verified.Downloaded.ArtifactPath, pending); err != nil {
+		_ = os.Remove(pending)
 		return StageResult{}, err
 	}
 	staged := StagedUpdate{
-		AppID:           s.cfg.AppID,
-		Version:         verified.Downloaded.Manifest.Version,
-		Channel:         verified.Downloaded.Manifest.Channel,
-		Platform:        verified.Downloaded.Artifact.Platform,
-		Architecture:    verified.Downloaded.Artifact.Architecture,
-		ArtifactName:    verified.Downloaded.Artifact.Filename,
-		ArtifactPath:    target,
-		SHA256:          verified.Downloaded.Artifact.SHA256,
-		Size:            verified.Downloaded.BytesWritten,
-		StagedAt:        time.Now().UTC(),
-		RequiredRestart: verified.Downloaded.Manifest.RequiredRestart,
-		ApplyBehavior:   verified.Downloaded.Manifest.ApplyBehavior,
+		Source: sourceSummary(snapshot.cfg.Source), SourceKey: sourceKey(snapshot.cfg.Source), PolicyKey: policyKey(snapshot.cfg.Policy),
+		AppID: snapshot.cfg.AppID, Version: verified.Downloaded.Manifest.Version,
+		Channel: verified.Downloaded.Manifest.Channel, Platform: verified.Downloaded.Artifact.Platform,
+		Architecture: verified.Downloaded.Artifact.Architecture, ArtifactName: verified.Downloaded.Artifact.Filename,
+		ArtifactPath: target, SHA256: verified.Downloaded.Artifact.SHA256, Size: verified.Downloaded.BytesWritten,
+		StagedAt: time.Now().UTC(), RequiredRestart: verified.Downloaded.Manifest.RequiredRestart,
+		ApplyBehavior: verified.Downloaded.Manifest.ApplyBehavior,
 	}
-	if err := s.validateStagedUpdateReady(staged, time.Now().UTC()); err != nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.applyInProgress {
+		_ = os.Remove(pending)
+		return StageResult{}, ErrApplyInProgress
+	}
+	if !s.currentLocked(snapshot) {
+		_ = os.Remove(pending)
+		return StageResult{}, ErrUpdateStateChanged
+	}
+	if err := replaceFile(pending, target); err != nil {
+		_ = os.Remove(pending)
+		return StageResult{}, ErrStorageUnavailable
+	}
+	if err := validateStagedUpdateReadyFor(snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
 		_ = os.Remove(target)
 		return StageResult{}, err
 	}
-	if err := s.store.writeStaged(staged); err != nil {
+	if err := snapshot.store.writeStaged(staged); err != nil {
 		return StageResult{}, err
 	}
 	return StageResult{Version: staged.Version, ArtifactName: staged.ArtifactName, Staged: true, Message: "update staged"}, nil
 }
 
 func (s *Service) DescribeStagedUpdate(ctx context.Context) (StagedUpdateSummary, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return StagedUpdateSummary{}, err
 	}
@@ -642,13 +813,14 @@ func (s *Service) DescribeStagedUpdate(ctx context.Context) (StagedUpdateSummary
 		}
 		return StagedUpdateSummary{}, ErrStorageUnavailable
 	}
-	if err := s.validateStagedUpdateReady(staged, time.Now().UTC()); err != nil {
+	if err := validateStagedUpdateReadyFor(s.cfg, s.store, staged, time.Now().UTC()); err != nil {
 		return StagedUpdateSummary{}, err
 	}
 	return stagedSummaryFrom(staged), nil
 }
 
 func (s *Service) BuildApplyPlan(ctx context.Context) (ApplyPlan, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return ApplyPlan{}, err
 	}
@@ -661,21 +833,14 @@ func (s *Service) BuildApplyPlan(ctx context.Context) (ApplyPlan, error) {
 		}
 		return ApplyPlan{}, ErrStorageUnavailable
 	}
-	if err := s.validateStagedUpdateReady(staged, time.Now().UTC()); err != nil {
+	if err := validateStagedUpdateReadyFor(s.cfg, s.store, staged, time.Now().UTC()); err != nil {
 		return ApplyPlan{}, err
 	}
 	return ApplyPlan{
-		Version:         staged.Version,
-		ArtifactName:    staged.ArtifactName,
-		RequiredRestart: staged.RequiredRestart,
-		ApplyBehavior:   staged.ApplyBehavior,
-		AppOwnedApply:   true,
-		Summary:         "staged update is ready for app-owned apply",
-		Steps: []string{
-			"consumer app reviews the staged update",
-			"consumer app runs its own apply strategy",
-			"consumer app handles shutdown, restart, and rollback policy",
-		},
+		Source: staged.Source, Version: staged.Version, ArtifactName: staged.ArtifactName,
+		RequiredRestart: staged.RequiredRestart, ApplyBehavior: staged.ApplyBehavior, AppOwnedApply: true,
+		Summary: "staged update is ready for app-owned apply",
+		Steps:   []string{"consumer app reviews the staged update", "consumer app runs its own apply strategy", "consumer app handles shutdown, restart, and rollback policy"},
 	}, nil
 }
 
@@ -692,10 +857,17 @@ func (s *Service) applyExpectedVersion(ctx context.Context, version string) (App
 	if version != "" && !validVersion(version) {
 		return ApplyResult{}, ErrNoUpdateAvailable
 	}
+	s.workflowMu.Lock()
 	s.mu.Lock()
+	if s.applyInProgress {
+		s.mu.Unlock()
+		s.workflowMu.Unlock()
+		return ApplyResult{}, ErrApplyInProgress
+	}
 	staged, err := s.store.readStaged()
 	if err != nil {
 		s.mu.Unlock()
+		s.workflowMu.Unlock()
 		if errors.Is(err, os.ErrNotExist) {
 			return ApplyResult{}, ErrStagedUpdateNotFound
 		}
@@ -703,16 +875,28 @@ func (s *Service) applyExpectedVersion(ctx context.Context, version string) (App
 	}
 	if version != "" && staged.Version != version {
 		s.mu.Unlock()
+		s.workflowMu.Unlock()
 		return ApplyResult{}, ErrNoUpdateAvailable
 	}
-	if err := s.validateStagedUpdateReady(staged, time.Now().UTC()); err != nil {
+	if err := validateStagedUpdateReadyFor(s.cfg, s.store, staged, time.Now().UTC()); err != nil {
 		s.mu.Unlock()
+		s.workflowMu.Unlock()
 		return ApplyResult{}, err
 	}
 	strategy := s.apply
+	s.applyInProgress = true
 	s.mu.Unlock()
+	s.workflowMu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.applyInProgress = false
+		s.mu.Unlock()
+	}()
 	result, err := strategy.Apply(ctx, staged)
 	if err != nil {
+		if contextError(ctx) != nil {
+			return ApplyResult{}, ErrContextCanceled
+		}
 		return ApplyResult{}, ErrApplyFailed
 	}
 	result.Version = staged.Version
@@ -723,11 +907,17 @@ func (s *Service) applyExpectedVersion(ctx context.Context, version string) (App
 }
 
 func (s *Service) ClearStagedUpdate(ctx context.Context) (ClearResult, error) {
+	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
 		return ClearResult{}, err
 	}
+	s.workflowMu.Lock()
+	defer s.workflowMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.applyInProgress {
+		return ClearResult{}, ErrApplyInProgress
+	}
 	if err := os.RemoveAll(s.store.stagedDir()); err != nil {
 		return ClearResult{}, ErrStorageUnavailable
 	}
@@ -741,70 +931,51 @@ func (s *Service) ClearStagedUpdate(ctx context.Context) (ClearResult, error) {
 }
 
 func (s *Service) State(ctx context.Context) (CurrentState, error) { return s.GetStatus(ctx) }
-
-func (s *Service) Check(ctx context.Context) (CheckResult, error) { return s.CheckForUpdates(ctx) }
-
+func (s *Service) Check(ctx context.Context) (CheckResult, error)  { return s.CheckForUpdates(ctx) }
 func (s *Service) Download(ctx context.Context, version string) (DownloadResult, error) {
 	return s.DownloadUpdate(ctx, version)
 }
-
 func (s *Service) Verify(ctx context.Context, version string) (VerifyResult, error) {
 	return s.VerifyUpdate(ctx, version)
 }
-
 func (s *Service) Stage(ctx context.Context, version string) (StageResult, error) {
 	return s.StageUpdate(ctx, version)
 }
-
 func (s *Service) Describe(ctx context.Context) (StagedUpdateSummary, error) {
 	return s.DescribeStagedUpdate(ctx)
 }
-
-func (s *Service) PlanApply(ctx context.Context) (ApplyPlan, error) {
-	return s.BuildApplyPlan(ctx)
-}
-
+func (s *Service) PlanApply(ctx context.Context) (ApplyPlan, error) { return s.BuildApplyPlan(ctx) }
 func (s *Service) Apply(ctx context.Context, version string) (ApplyResult, error) {
 	return s.applyExpectedVersion(ctx, version)
 }
 
-func (s *Service) selectionForVersionLocked(ctx context.Context, version string) (selectedUpdate, error) {
-	version = strings.TrimSpace(version)
-	selected, err := s.store.readSelected()
-	if err == nil && (version == "" || selected.Manifest.Version == version) {
-		if err := validateSelectedUpdate(s.cfg, selected); err == nil {
-			return selected, nil
-		}
-	}
-	check, err := s.checkForUpdatesLocked(ctx)
-	if err != nil {
-		return selectedUpdate{}, err
-	}
-	if !check.UpdateAvailable {
-		return selectedUpdate{}, ErrNoUpdateAvailable
-	}
-	selected, err = s.store.readSelected()
-	if err != nil {
-		return selectedUpdate{}, err
-	}
-	if version != "" && selected.Manifest.Version != version {
-		return selectedUpdate{}, ErrNoUpdateAvailable
-	}
-	if err := validateSelectedUpdate(s.cfg, selected); err != nil {
-		return selectedUpdate{}, err
-	}
-	return selected, nil
+func (s *Service) selectArtifact(manifest Manifest) (Artifact, error) {
+	s.mu.Lock()
+	cfg := cloneConfig(s.cfg)
+	s.mu.Unlock()
+	return selectArtifactForConfig(cfg, manifest)
 }
 
-func (s *Service) selectArtifact(manifest Manifest) (Artifact, error) {
-	if err := validateManifest(s.cfg, manifest); err != nil {
+func (s *Service) downloadArtifact(ctx context.Context, artifact Artifact, target string) (int64, error) {
+	s.mu.Lock()
+	cfg := cloneConfig(s.cfg)
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		client, _ = clientForSource(cfg, s.options)
+	}
+	return downloadArtifactFor(normalizeContext(ctx), cfg, client, artifact, target)
+}
+
+func selectArtifactForConfig(cfg AppConfig, manifest Manifest) (Artifact, error) {
+	if err := validateManifest(cfg, manifest); err != nil {
 		return Artifact{}, err
 	}
 	for _, artifact := range sortedArtifacts(manifest.Artifacts) {
-		if artifact.Platform != s.cfg.Platform || artifact.Architecture != s.cfg.Architecture {
+		if artifact.Platform != cfg.Platform || artifact.Architecture != cfg.Architecture {
 			continue
 		}
-		if err := validateArtifact(s.cfg, artifact); err != nil {
+		if err := validateArtifact(cfg, artifact); err != nil {
 			return Artifact{}, err
 		}
 		return artifact, nil
@@ -812,9 +983,9 @@ func (s *Service) selectArtifact(manifest Manifest) (Artifact, error) {
 	return Artifact{}, ErrNoCompatibleArtifact
 }
 
-func (s *Service) downloadArtifact(ctx context.Context, artifact Artifact, target string) (int64, error) {
+func downloadArtifactFor(ctx context.Context, cfg AppConfig, client *http.Client, artifact Artifact, target string) (int64, error) {
 	if filepath.IsAbs(artifact.DownloadURL) {
-		if s.cfg.Source.Provider != ProviderFileManifest {
+		if cfg.Source.Provider != ProviderFileManifest {
 			return 0, ErrInvalidManifest
 		}
 		src, err := os.Open(artifact.DownloadURL)
@@ -822,7 +993,7 @@ func (s *Service) downloadArtifact(ctx context.Context, artifact Artifact, targe
 			return 0, ErrDownloadFailed
 		}
 		defer src.Close()
-		return writeStreamToFile(ctx, src, target, s.cfg.Policy.MaximumArtifactSize)
+		return writeStreamToFile(ctx, src, target, cfg.Policy.MaximumArtifactSize)
 	}
 	u, err := url.Parse(artifact.DownloadURL)
 	if err != nil || artifact.DownloadURL == "" {
@@ -830,7 +1001,7 @@ func (s *Service) downloadArtifact(ctx context.Context, artifact Artifact, targe
 	}
 	switch u.Scheme {
 	case "", "file":
-		if s.cfg.Source.Provider != ProviderFileManifest {
+		if cfg.Source.Provider != ProviderFileManifest {
 			return 0, ErrInvalidManifest
 		}
 		path := artifact.DownloadURL
@@ -845,27 +1016,27 @@ func (s *Service) downloadArtifact(ctx context.Context, artifact Artifact, targe
 			return 0, ErrDownloadFailed
 		}
 		defer src.Close()
-		return writeStreamToFile(ctx, src, target, s.cfg.Policy.MaximumArtifactSize)
+		return writeStreamToFile(ctx, src, target, cfg.Policy.MaximumArtifactSize)
 	case "http", "https":
+		if err := validateSourceURL(cfg.Source, artifact.DownloadURL, false); err != nil {
+			return 0, err
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, artifact.DownloadURL, nil)
 		if err != nil {
 			return 0, ErrInvalidManifest
 		}
-		resp, err := s.client.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
-			if contextError(ctx) != nil {
-				return 0, ErrContextCanceled
-			}
-			return 0, ErrDownloadFailed
+			return 0, sourceOperationError(ctx, err, ErrDownloadFailed)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
 			return 0, ErrDownloadFailed
 		}
-		if s.cfg.Policy.MaximumArtifactSize > 0 && resp.ContentLength > s.cfg.Policy.MaximumArtifactSize {
+		if cfg.Policy.MaximumArtifactSize > 0 && resp.ContentLength > cfg.Policy.MaximumArtifactSize {
 			return 0, ErrDownloadFailed
 		}
-		return writeStreamToFile(ctx, resp.Body, target, s.cfg.Policy.MaximumArtifactSize)
+		return writeStreamToFile(ctx, resp.Body, target, cfg.Policy.MaximumArtifactSize)
 	default:
 		return 0, ErrInvalidManifest
 	}
@@ -877,14 +1048,17 @@ type applyAdapterStrategy struct {
 
 func (s applyAdapterStrategy) Apply(ctx context.Context, staged StagedUpdate) (ApplyResult, error) {
 	release := Release{
-		AppID:          staged.AppID,
-		Version:        staged.Version,
-		Channel:        staged.Channel,
-		Platform:       staged.Platform,
-		Architecture:   staged.Architecture,
-		ArtifactName:   staged.ArtifactName,
-		ArtifactSHA256: staged.SHA256,
-		ArtifactSize:   staged.Size,
+		Source:          staged.Source,
+		AppID:           staged.AppID,
+		Version:         staged.Version,
+		Channel:         staged.Channel,
+		Platform:        staged.Platform,
+		Architecture:    staged.Architecture,
+		RequiredRestart: staged.RequiredRestart,
+		ApplyBehavior:   staged.ApplyBehavior,
+		ArtifactName:    staged.ArtifactName,
+		ArtifactSHA256:  staged.SHA256,
+		ArtifactSize:    staged.Size,
 	}
 	return s.adapter.ApplyUpdate(ctx, staged.ArtifactPath, release)
 }
@@ -941,7 +1115,7 @@ func normalizeSource(src SourceConfig) SourceConfig {
 	if src.GitHubRef == "" {
 		src.GitHubRef = "main"
 	}
-	return src
+	return normalizeSourceAccess(src)
 }
 
 func validateConfig(cfg AppConfig) error {
@@ -969,7 +1143,20 @@ func validateConfig(cfg AppConfig) error {
 	if cfg.Policy.RequireManifestSignature && len(cfg.Policy.ManifestVerificationKeys) == 0 {
 		return ErrInvalidConfig
 	}
-	return validateSource(cfg.Source)
+	if err := validateSource(cfg.Source); err != nil {
+		return err
+	}
+	return validateSourceAccess(cfg.Source, cfg.Policy)
+}
+
+func validateConfigWithOptions(cfg AppConfig, options ServiceOptions) error {
+	if err := validateConfig(cfg); err != nil {
+		return err
+	}
+	if cfg.Source.Access == SourceAccessAppOwnedAuthenticated && options.AuthenticatedHTTPClient == nil {
+		return ErrInvalidConfig
+	}
+	return nil
 }
 
 func validateSource(src SourceConfig) error {
@@ -979,11 +1166,14 @@ func validateSource(src SourceConfig) error {
 			return ErrInvalidProvider
 		}
 	case ProviderHTTPManifest:
-		if src.ManifestURL == "" || !validHTTPURL(src.ManifestURL) {
+		if src.ManifestURL == "" || validateSourceURL(src, src.ManifestURL, false) != nil {
 			return ErrInvalidProvider
 		}
 	case ProviderGitHubRawManifest, ProviderGitHubManifest:
 		if !validSafeName(src.GitHubOwner) || !validSafeName(src.GitHubRepo) || !validSafeName(src.GitHubRef) || !validManifestPath(src.GitHubManifestPath) {
+			return ErrInvalidProvider
+		}
+		if validateSourceURL(src, githubRawManifestURL(src), false) != nil {
 			return ErrInvalidProvider
 		}
 	default:
@@ -1018,6 +1208,9 @@ func validateManifest(cfg AppConfig, manifest Manifest) error {
 	if err := verifyManifestSignature(cfg.Policy, manifest); err != nil {
 		return err
 	}
+	if !requiredManifestKeyMatches(cfg, manifest) {
+		return ErrVerificationFailed
+	}
 	if err := classifyRollbackFreezePolicy(cfg, manifest); err != nil {
 		return err
 	}
@@ -1032,7 +1225,7 @@ func validateManifest(cfg AppConfig, manifest Manifest) error {
 }
 
 func validateSelectedUpdate(cfg AppConfig, selected selectedUpdate) error {
-	if selected.SchemaVersion != SchemaVersion || selected.SourceKey != sourceKey(cfg.Source) || selected.UpdatedAt.IsZero() {
+	if selected.SchemaVersion != SchemaVersion || !sourceAndPolicyMatch(cfg, selected.SourceKey, selected.PolicyKey) || selected.UpdatedAt.IsZero() {
 		return ErrStorageUnavailable
 	}
 	if err := validateManifest(cfg, selected.Manifest); err != nil {
@@ -1091,7 +1284,7 @@ func validateArtifact(cfg AppConfig, artifact Artifact) error {
 	if err := validateSignatureMetadata(artifact.Signature); err != nil {
 		return err
 	}
-	return validateArtifactDownloadURL(cfg.Source.Provider, artifact.DownloadURL)
+	return validateArtifactDownloadURL(cfg.Source, artifact.DownloadURL)
 }
 
 func validateManifestText(manifest Manifest) error {
@@ -1213,13 +1406,13 @@ func decodeEd25519Signature(encoded string) ([]byte, error) {
 	return raw, nil
 }
 
-func validateArtifactDownloadURL(provider ProviderKind, raw string) error {
+func validateArtifactDownloadURL(source SourceConfig, raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ErrInvalidManifest
 	}
 	if filepath.IsAbs(raw) {
-		if provider != ProviderFileManifest || hasPathTraversal(raw) {
+		if source.Provider != ProviderFileManifest || hasPathTraversal(raw) {
 			return ErrInvalidManifest
 		}
 		return nil
@@ -1230,12 +1423,12 @@ func validateArtifactDownloadURL(provider ProviderKind, raw string) error {
 	}
 	switch u.Scheme {
 	case "http", "https":
-		if u.Host == "" || unsafeUpdateDetail(raw) {
+		if unsafeUpdateDetail(raw) || validateSourceURL(source, raw, false) != nil {
 			return ErrInvalidManifest
 		}
 		return nil
 	case "file":
-		if provider != ProviderFileManifest || u.Host != "" {
+		if source.Provider != ProviderFileManifest || u.Host != "" {
 			return ErrInvalidManifest
 		}
 		path := u.Path
@@ -1252,6 +1445,11 @@ func validateArtifactDownloadURL(provider ProviderKind, raw string) error {
 }
 
 func validateStagedUpdate(cfg AppConfig, staged StagedUpdate) error {
+	if cfg.Source.SourceID != "" {
+		if !sourceAndPolicyMatch(cfg, staged.SourceKey, staged.PolicyKey) || staged.Source != sourceSummary(cfg.Source) {
+			return ErrStorageUnavailable
+		}
+	}
 	switch {
 	case staged.AppID == "", staged.Version == "", staged.Channel == "", staged.Platform == "", staged.Architecture == "", staged.ArtifactName == "", staged.SHA256 == "":
 		return ErrStorageUnavailable
@@ -1276,16 +1474,20 @@ func validateStagedUpdate(cfg AppConfig, staged StagedUpdate) error {
 }
 
 func (s *Service) validateDownloadedUpdate(downloaded downloadedUpdate) error {
-	if downloaded.SchemaVersion != SchemaVersion || downloaded.SourceKey != sourceKey(s.cfg.Source) || downloaded.DownloadedAt.IsZero() || downloaded.BytesWritten < 0 {
+	return validateDownloadedUpdateFor(s.cfg, s.store, downloaded)
+}
+
+func validateDownloadedUpdateFor(cfg AppConfig, st *store, downloaded downloadedUpdate) error {
+	if downloaded.SchemaVersion != SchemaVersion || !sourceAndPolicyMatch(cfg, downloaded.SourceKey, downloaded.PolicyKey) || downloaded.DownloadedAt.IsZero() || downloaded.BytesWritten < 0 {
 		return ErrStorageUnavailable
 	}
-	if err := validateManifest(s.cfg, downloaded.Manifest); err != nil {
+	if err := validateManifest(cfg, downloaded.Manifest); err != nil {
 		return err
 	}
-	if err := validateArtifact(s.cfg, downloaded.Artifact); err != nil {
+	if err := validateArtifact(cfg, downloaded.Artifact); err != nil {
 		return err
 	}
-	expectedPath := filepath.Join(s.store.downloadsDir(), downloaded.Artifact.Filename)
+	expectedPath := filepath.Join(st.downloadsDir(), downloaded.Artifact.Filename)
 	if downloaded.ArtifactPath == "" || !samePath(downloaded.ArtifactPath, expectedPath) {
 		return ErrStorageUnavailable
 	}
@@ -1293,29 +1495,30 @@ func (s *Service) validateDownloadedUpdate(downloaded downloadedUpdate) error {
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return ErrVerificationFailed
 	}
-	if info.Size() != downloaded.BytesWritten {
+	if info.Size() != downloaded.BytesWritten || (downloaded.Artifact.Size > 0 && info.Size() != downloaded.Artifact.Size) {
 		return ErrVerificationFailed
 	}
-	if downloaded.Artifact.Size > 0 && info.Size() != downloaded.Artifact.Size {
-		return ErrVerificationFailed
-	}
-	if s.cfg.Policy.MaximumArtifactSize > 0 && info.Size() > s.cfg.Policy.MaximumArtifactSize {
+	if cfg.Policy.MaximumArtifactSize > 0 && info.Size() > cfg.Policy.MaximumArtifactSize {
 		return ErrVerificationFailed
 	}
 	return nil
 }
 
 func (s *Service) validateStagedUpdateReady(staged StagedUpdate, now time.Time) error {
-	if err := validateStagedUpdate(s.cfg, staged); err != nil {
+	return validateStagedUpdateReadyFor(s.cfg, s.store, staged, now)
+}
+
+func validateStagedUpdateReadyFor(cfg AppConfig, st *store, staged StagedUpdate, now time.Time) error {
+	if err := validateStagedUpdate(cfg, staged); err != nil {
 		return err
 	}
-	if s.cfg.Policy.MaximumFutureSkew > 0 && staged.StagedAt.After(now.Add(s.cfg.Policy.MaximumFutureSkew)) {
+	if cfg.Policy.MaximumFutureSkew > 0 && staged.StagedAt.After(now.Add(cfg.Policy.MaximumFutureSkew)) {
 		return ErrManifestFutureDated
 	}
-	if s.cfg.Policy.MaximumStagedAge > 0 && staged.StagedAt.Before(now.Add(-s.cfg.Policy.MaximumStagedAge)) {
+	if cfg.Policy.MaximumStagedAge > 0 && staged.StagedAt.Before(now.Add(-cfg.Policy.MaximumStagedAge)) {
 		return ErrStagedUpdateStale
 	}
-	expectedPath := filepath.Join(s.store.stagedDir(), staged.ArtifactName)
+	expectedPath := filepath.Join(st.stagedDir(), staged.ArtifactName)
 	if staged.ArtifactPath == "" || !samePath(staged.ArtifactPath, expectedPath) {
 		return ErrStorageUnavailable
 	}
@@ -1327,10 +1530,7 @@ func (s *Service) validateStagedUpdateReady(staged StagedUpdate, now time.Time) 
 		return ErrVerificationFailed
 	}
 	got, err := fileSHA256(expectedPath)
-	if err != nil {
-		return ErrVerificationFailed
-	}
-	if !strings.EqualFold(got, staged.SHA256) {
+	if err != nil || !strings.EqualFold(got, staged.SHA256) {
 		return ErrVerificationFailed
 	}
 	return nil
@@ -1357,22 +1557,20 @@ func safeStatusMessage(err error) string {
 	}
 }
 
-func newProvider(cfg AppConfig) (Provider, error) {
+func newProvider(cfg AppConfig, client *http.Client) (Provider, error) {
 	switch cfg.Source.Provider {
 	case ProviderFileManifest:
 		return fileManifestProvider{path: cfg.Source.ManifestPath}, nil
 	case ProviderHTTPManifest:
-		return httpManifestProvider{url: cfg.Source.ManifestURL, timeout: cfg.HTTPTimeout}, nil
+		return httpManifestProvider{url: cfg.Source.ManifestURL, client: client, source: cfg.Source}, nil
 	case ProviderGitHubRawManifest, ProviderGitHubManifest:
-		return httpManifestProvider{url: githubRawManifestURL(cfg.Source), timeout: cfg.HTTPTimeout}, nil
+		return httpManifestProvider{url: githubRawManifestURL(cfg.Source), client: client, source: cfg.Source}, nil
 	default:
 		return nil, ErrInvalidProvider
 	}
 }
 
-type fileManifestProvider struct {
-	path string
-}
+type fileManifestProvider struct{ path string }
 
 func (p fileManifestProvider) LoadManifest(ctx context.Context) (Manifest, error) {
 	if err := contextError(ctx); err != nil {
@@ -1387,8 +1585,9 @@ func (p fileManifestProvider) LoadManifest(ctx context.Context) (Manifest, error
 }
 
 type httpManifestProvider struct {
-	url     string
-	timeout time.Duration
+	url    string
+	client *http.Client
+	source SourceConfig
 }
 
 func (p httpManifestProvider) LoadManifest(ctx context.Context) (Manifest, error) {
@@ -1396,21 +1595,16 @@ func (p httpManifestProvider) LoadManifest(ctx context.Context) (Manifest, error
 	if err := contextError(ctx); err != nil {
 		return Manifest{}, err
 	}
-	timeout := p.timeout
-	if timeout <= 0 {
-		timeout = defaultHTTPTimeout
+	if p.client == nil || validateSourceURL(p.source, p.url, false) != nil {
+		return Manifest{}, ErrInvalidProvider
 	}
-	client := &http.Client{Timeout: timeout}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url, nil)
 	if err != nil {
 		return Manifest{}, ErrInvalidProvider
 	}
-	resp, err := client.Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
-		if contextError(ctx) != nil {
-			return Manifest{}, ErrContextCanceled
-		}
-		return Manifest{}, ErrProviderUnavailable
+		return Manifest{}, sourceOperationError(ctx, err, ErrProviderUnavailable)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -1447,15 +1641,20 @@ func readManifestPayload(r io.Reader) ([]byte, error) {
 	return b, nil
 }
 
-func releaseFromSelection(manifest Manifest, artifact Artifact, checkedAt time.Time) Release {
+func releaseFromSelection(manifest Manifest, artifact Artifact, checkedAt time.Time, source SourceSummary) Release {
+	releaseNotesURL := manifest.ReleaseNotesURL
+	if source.Authenticated {
+		releaseNotesURL = ""
+	}
 	return Release{
+		Source:                  source,
 		AppID:                   manifest.AppID,
 		Version:                 manifest.Version,
 		Channel:                 manifest.Channel,
 		Platform:                artifact.Platform,
 		Architecture:            artifact.Architecture,
 		PublishedAt:             manifest.PublishedAt,
-		ReleaseNotesURL:         manifest.ReleaseNotesURL,
+		ReleaseNotesURL:         releaseNotesURL,
 		ReleaseNotesText:        manifest.ReleaseNotesText,
 		MinimumSupportedVersion: manifest.MinimumSupportedVersion,
 		RequiredRestart:         manifest.RequiredRestart,
@@ -1469,6 +1668,7 @@ func releaseFromSelection(manifest Manifest, artifact Artifact, checkedAt time.T
 
 func stagedSummaryFrom(staged StagedUpdate) StagedUpdateSummary {
 	return StagedUpdateSummary{
+		Source:          staged.Source,
 		AppID:           staged.AppID,
 		Version:         staged.Version,
 		Channel:         staged.Channel,
@@ -1496,8 +1696,21 @@ func validSafeName(s string) bool {
 }
 
 func validArtifactFilename(name string) bool {
+	return validFilenameSegment(name) && !reservedUpdateMetadataName(name)
+}
+
+func validFilenameSegment(name string) bool {
 	name = strings.TrimSpace(name)
 	return safeFilenamePattern.MatchString(name) && filepath.Base(name) == name && !strings.Contains(name, "..") && !strings.ContainsAny(name, `/\`) && !windowsReservedName(name)
+}
+
+func reservedUpdateMetadataName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "selected_update.json", "downloaded_update.json", "verified_update.json", "staged_update.json":
+		return true
+	default:
+		return false
+	}
 }
 
 func windowsReservedName(name string) bool {
@@ -1521,7 +1734,7 @@ func validManifestPath(path string) bool {
 		return false
 	}
 	for _, part := range strings.Split(path, "/") {
-		if !validArtifactFilename(part) {
+		if !validFilenameSegment(part) {
 			return false
 		}
 	}
@@ -1610,24 +1823,8 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func sourceKey(src SourceConfig) string {
-	src = normalizeSource(src)
-	value := strings.Join([]string{
-		string(src.Provider),
-		src.ManifestPath,
-		src.ManifestURL,
-		src.Feed,
-		src.GitHubOwner,
-		src.GitHubRepo,
-		src.GitHubRef,
-		src.GitHubManifestPath,
-	}, "\x00")
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
-}
-
 func sameSelectedUpdate(a, b selectedUpdate) bool {
-	if a.SourceKey != b.SourceKey {
+	if a.SourceKey != b.SourceKey || a.PolicyKey != b.PolicyKey {
 		return false
 	}
 	left, leftErr := json.Marshal(struct {

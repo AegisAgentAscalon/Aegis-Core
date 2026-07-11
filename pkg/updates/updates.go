@@ -3,6 +3,8 @@ package updates
 
 import (
 	"context"
+	"net/http"
+	"strings"
 	"time"
 
 	internal "github.com/AegisAgentAscalon/aegis-core/internal/updates"
@@ -27,6 +29,8 @@ var (
 	ErrApplyFailed          = internal.ErrApplyFailed
 	ErrStorageUnavailable   = internal.ErrStorageUnavailable
 	ErrContextCanceled      = internal.ErrContextCanceled
+	ErrUpdateStateChanged   = internal.ErrUpdateStateChanged
+	ErrApplyInProgress      = internal.ErrApplyInProgress
 )
 
 type Channel string
@@ -46,6 +50,22 @@ const (
 	ProviderGitHubRawManifest ProviderKind = "github_raw_manifest"
 	ProviderGitHubManifest    ProviderKind = "github_manifest"
 )
+
+type SourceAccess string
+
+const (
+	SourceAccessLocal                 SourceAccess = "local"
+	SourceAccessPublic                SourceAccess = "public"
+	SourceAccessAppOwnedAuthenticated SourceAccess = "app_owned_authenticated"
+)
+
+// SourceSummary is safe provenance. It never contains URLs or credentials.
+type SourceSummary struct {
+	ID            string       `json:"id,omitempty"`
+	Access        SourceAccess `json:"access"`
+	Provider      ProviderKind `json:"provider"`
+	Authenticated bool         `json:"authenticated"`
+}
 
 type AppConfig struct {
 	AppID          string
@@ -73,6 +93,17 @@ type SourceConfig struct {
 	GitHubRepo         string
 	GitHubRef          string
 	GitHubManifestPath string
+	// SourceID is a non-secret, stable lane identifier. A non-empty value opts
+	// into source-, channel-, and policy-scoped persistence.
+	SourceID string
+	// Access selects local, public, or app-owned authenticated transport.
+	Access SourceAccess
+	// RequiredManifestKeyID optionally pins this source to one configured
+	// manifest verification key; authenticated sources require it.
+	RequiredManifestKeyID string
+	// AllowedHTTPHosts contains exact authorities. Authenticated sources require
+	// at least one; entries without a port mean HTTPS/443.
+	AllowedHTTPHosts []string
 }
 
 type Policy struct {
@@ -89,6 +120,19 @@ type Policy struct {
 	MaximumManifestAge       time.Duration
 	MaximumFutureSkew        time.Duration
 	MaximumStagedAge         time.Duration
+}
+
+// LaneConfig atomically switches source, channel and optionally trust policy.
+type LaneConfig struct {
+	Channel Channel
+	Source  SourceConfig
+	Policy  *Policy
+}
+
+// ServiceOptions keeps public and credential-scoped transports separate.
+type ServiceOptions struct {
+	HTTPClient              *http.Client
+	AuthenticatedHTTPClient *http.Client
 }
 
 type Manifest struct {
@@ -125,39 +169,41 @@ type SignatureMetadata struct {
 }
 
 type Release struct {
-	AppID                   string    `json:"app_id"`
-	Version                 string    `json:"version"`
-	Channel                 Channel   `json:"channel"`
-	Platform                string    `json:"platform"`
-	Architecture            string    `json:"architecture"`
-	PublishedAt             string    `json:"published_at,omitempty"`
-	ReleaseNotesURL         string    `json:"release_notes_url,omitempty"`
-	ReleaseNotesText        string    `json:"release_notes_text,omitempty"`
-	MinimumSupportedVersion string    `json:"minimum_supported_version,omitempty"`
-	RequiredRestart         bool      `json:"required_restart,omitempty"`
-	ApplyBehavior           string    `json:"apply_behavior,omitempty"`
-	ArtifactName            string    `json:"artifact_name,omitempty"`
-	ArtifactSHA256          string    `json:"artifact_sha256,omitempty"`
-	ArtifactSize            int64     `json:"artifact_size,omitempty"`
-	CheckedAt               time.Time `json:"checked_at,omitempty"`
+	Source                  SourceSummary `json:"source"`
+	AppID                   string        `json:"app_id"`
+	Version                 string        `json:"version"`
+	Channel                 Channel       `json:"channel"`
+	Platform                string        `json:"platform"`
+	Architecture            string        `json:"architecture"`
+	PublishedAt             string        `json:"published_at,omitempty"`
+	ReleaseNotesURL         string        `json:"release_notes_url,omitempty"`
+	ReleaseNotesText        string        `json:"release_notes_text,omitempty"`
+	MinimumSupportedVersion string        `json:"minimum_supported_version,omitempty"`
+	RequiredRestart         bool          `json:"required_restart,omitempty"`
+	ApplyBehavior           string        `json:"apply_behavior,omitempty"`
+	ArtifactName            string        `json:"artifact_name,omitempty"`
+	ArtifactSHA256          string        `json:"artifact_sha256,omitempty"`
+	ArtifactSize            int64         `json:"artifact_size,omitempty"`
+	CheckedAt               time.Time     `json:"checked_at,omitempty"`
 }
 
 type CurrentState struct {
-	AppID             string       `json:"app_id"`
-	DisplayName       string       `json:"display_name"`
-	CurrentVersion    string       `json:"current_version"`
-	Channel           Channel      `json:"channel"`
-	Platform          string       `json:"platform"`
-	Architecture      string       `json:"architecture"`
-	Provider          ProviderKind `json:"provider"`
-	Configured        bool         `json:"configured"`
-	UpdateAvailable   bool         `json:"update_available"`
-	LatestRelease     *Release     `json:"latest_release,omitempty"`
-	StagedVersion     string       `json:"staged_version,omitempty"`
-	Verified          bool         `json:"verified"`
-	RollbackAvailable bool         `json:"rollback_available"`
-	Message           string       `json:"message,omitempty"`
-	LastError         string       `json:"last_error,omitempty"`
+	Source            SourceSummary `json:"source"`
+	AppID             string        `json:"app_id"`
+	DisplayName       string        `json:"display_name"`
+	CurrentVersion    string        `json:"current_version"`
+	Channel           Channel       `json:"channel"`
+	Platform          string        `json:"platform"`
+	Architecture      string        `json:"architecture"`
+	Provider          ProviderKind  `json:"provider"`
+	Configured        bool          `json:"configured"`
+	UpdateAvailable   bool          `json:"update_available"`
+	LatestRelease     *Release      `json:"latest_release,omitempty"`
+	StagedVersion     string        `json:"staged_version,omitempty"`
+	Verified          bool          `json:"verified"`
+	RollbackAvailable bool          `json:"rollback_available"`
+	Message           string        `json:"message,omitempty"`
+	LastError         string        `json:"last_error,omitempty"`
 }
 
 type CheckResult struct {
@@ -199,43 +245,46 @@ type ClearResult struct {
 }
 
 type StagedUpdate struct {
-	AppID           string    `json:"app_id"`
-	Version         string    `json:"version"`
-	Channel         Channel   `json:"channel"`
-	Platform        string    `json:"platform"`
-	Architecture    string    `json:"architecture"`
-	ArtifactName    string    `json:"artifact_name"`
-	ArtifactPath    string    `json:"-"`
-	SHA256          string    `json:"sha256"`
-	Size            int64     `json:"size,omitempty"`
-	StagedAt        time.Time `json:"staged_at"`
-	RequiredRestart bool      `json:"required_restart,omitempty"`
-	ApplyBehavior   string    `json:"apply_behavior,omitempty"`
+	Source          SourceSummary `json:"source"`
+	AppID           string        `json:"app_id"`
+	Version         string        `json:"version"`
+	Channel         Channel       `json:"channel"`
+	Platform        string        `json:"platform"`
+	Architecture    string        `json:"architecture"`
+	ArtifactName    string        `json:"artifact_name"`
+	ArtifactPath    string        `json:"-"`
+	SHA256          string        `json:"sha256"`
+	Size            int64         `json:"size,omitempty"`
+	StagedAt        time.Time     `json:"staged_at"`
+	RequiredRestart bool          `json:"required_restart,omitempty"`
+	ApplyBehavior   string        `json:"apply_behavior,omitempty"`
 }
 
 type StagedUpdateSummary struct {
-	AppID           string    `json:"app_id"`
-	Version         string    `json:"version"`
-	Channel         Channel   `json:"channel"`
-	Platform        string    `json:"platform"`
-	Architecture    string    `json:"architecture"`
-	ArtifactName    string    `json:"artifact_name"`
-	SHA256          string    `json:"sha256"`
-	Size            int64     `json:"size,omitempty"`
-	StagedAt        time.Time `json:"staged_at"`
-	RequiredRestart bool      `json:"required_restart,omitempty"`
-	ApplyBehavior   string    `json:"apply_behavior,omitempty"`
-	Message         string    `json:"message,omitempty"`
+	Source          SourceSummary `json:"source"`
+	AppID           string        `json:"app_id"`
+	Version         string        `json:"version"`
+	Channel         Channel       `json:"channel"`
+	Platform        string        `json:"platform"`
+	Architecture    string        `json:"architecture"`
+	ArtifactName    string        `json:"artifact_name"`
+	SHA256          string        `json:"sha256"`
+	Size            int64         `json:"size,omitempty"`
+	StagedAt        time.Time     `json:"staged_at"`
+	RequiredRestart bool          `json:"required_restart,omitempty"`
+	ApplyBehavior   string        `json:"apply_behavior,omitempty"`
+	Message         string        `json:"message,omitempty"`
 }
 
 type ApplyPlan struct {
-	Version         string   `json:"version"`
-	ArtifactName    string   `json:"artifact_name,omitempty"`
-	RequiredRestart bool     `json:"required_restart,omitempty"`
-	ApplyBehavior   string   `json:"apply_behavior,omitempty"`
-	AppOwnedApply   bool     `json:"app_owned_apply"`
-	Summary         string   `json:"summary"`
-	Steps           []string `json:"steps,omitempty"`
+	Source          SourceSummary `json:"source"`
+	Version         string        `json:"version"`
+	ArtifactName    string        `json:"artifact_name,omitempty"`
+	RequiredRestart bool          `json:"required_restart,omitempty"`
+	ApplyBehavior   string        `json:"apply_behavior,omitempty"`
+	AppOwnedApply   bool          `json:"app_owned_apply"`
+	Summary         string        `json:"summary"`
+	Steps           []string      `json:"steps,omitempty"`
 }
 
 type ApplyStrategy interface {
@@ -251,7 +300,13 @@ type ManualApplyStrategy struct {
 }
 
 func (m ManualApplyStrategy) Apply(ctx context.Context, staged StagedUpdate) (ApplyResult, error) {
-	message := m.Message
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return ApplyResult{}, ErrContextCanceled
+	}
+	message := strings.TrimSpace(m.Message)
 	if message == "" {
 		message = "update is staged for app-owned manual apply"
 	}
@@ -267,7 +322,11 @@ type Service struct {
 }
 
 func NewService(cfg AppConfig, apply ApplyStrategy) (*Service, error) {
-	svc, err := internal.NewService(toInternalConfig(cfg), publicApplyStrategy{apply: apply})
+	return NewServiceWithOptions(cfg, apply, ServiceOptions{})
+}
+
+func NewServiceWithOptions(cfg AppConfig, apply ApplyStrategy, options ServiceOptions) (*Service, error) {
+	svc, err := internal.NewServiceWithOptions(toInternalConfig(cfg), publicApplyStrategy{apply: apply}, toInternalOptions(options))
 	if err != nil {
 		return nil, err
 	}
@@ -275,11 +334,15 @@ func NewService(cfg AppConfig, apply ApplyStrategy) (*Service, error) {
 }
 
 func NewServiceWithAdapter(cfg AppConfig, apply ApplyAdapter) (*Service, error) {
+	return NewServiceWithAdapterOptions(cfg, apply, ServiceOptions{})
+}
+
+func NewServiceWithAdapterOptions(cfg AppConfig, apply ApplyAdapter, options ServiceOptions) (*Service, error) {
 	var strategy ApplyStrategy
 	if apply != nil {
 		strategy = publicApplyAdapter{adapter: apply}
 	}
-	return NewService(cfg, strategy)
+	return NewServiceWithOptions(cfg, strategy, options)
 }
 
 func (s *Service) ValidateConfig() error { return s.svc.ValidateConfig() }
@@ -302,6 +365,21 @@ func (s *Service) ConfigureSource(ctx context.Context, source SourceConfig) (Cur
 
 func (s *Service) SetChannel(ctx context.Context, channel Channel) (CurrentState, error) {
 	st, err := s.svc.SetChannel(ctx, internal.Channel(channel))
+	if err != nil {
+		return CurrentState{}, err
+	}
+	return fromInternalState(st), nil
+}
+
+func (s *Service) ConfigureLane(ctx context.Context, lane LaneConfig) (CurrentState, error) {
+	var policy *internal.Policy
+	if lane.Policy != nil {
+		converted := toInternalPolicy(*lane.Policy)
+		policy = &converted
+	}
+	st, err := s.svc.ConfigureLane(ctx, internal.LaneConfig{
+		Channel: internal.Channel(lane.Channel), Source: toInternalSource(lane.Source), Policy: policy,
+	})
 	if err != nil {
 		return CurrentState{}, err
 	}
@@ -391,8 +469,9 @@ type publicApplyAdapter struct{ adapter ApplyAdapter }
 
 func (p publicApplyAdapter) Apply(ctx context.Context, staged StagedUpdate) (ApplyResult, error) {
 	return p.adapter.ApplyUpdate(ctx, staged.ArtifactPath, Release{
-		AppID: staged.AppID, Version: staged.Version, Channel: staged.Channel, Platform: staged.Platform,
-		Architecture: staged.Architecture, ArtifactName: staged.ArtifactName, ArtifactSHA256: staged.SHA256,
+		Source: staged.Source, AppID: staged.AppID, Version: staged.Version, Channel: staged.Channel,
+		Platform: staged.Platform, Architecture: staged.Architecture, RequiredRestart: staged.RequiredRestart,
+		ApplyBehavior: staged.ApplyBehavior, ArtifactName: staged.ArtifactName, ArtifactSHA256: staged.SHA256,
 		ArtifactSize: staged.Size,
 	})
 }
@@ -401,16 +480,32 @@ func toInternalConfig(cfg AppConfig) internal.AppConfig {
 	return internal.AppConfig{
 		AppID: cfg.AppID, DisplayName: cfg.DisplayName, AppName: cfg.AppName, CurrentVersion: cfg.CurrentVersion,
 		Channel: internal.Channel(cfg.Channel), Platform: cfg.Platform, Architecture: cfg.Architecture, Namespace: cfg.Namespace,
-		Source: toInternalSource(cfg.Source), Policy: internal.Policy(cfg.Policy), StagingDir: cfg.StagingDir,
+		Source: toInternalSource(cfg.Source), Policy: toInternalPolicy(cfg.Policy), StagingDir: cfg.StagingDir,
 		StateDir: cfg.StateDir, CacheDir: cfg.CacheDir, HTTPTimeout: cfg.HTTPTimeout,
 	}
+}
+
+func toInternalPolicy(policy Policy) internal.Policy {
+	return internal.Policy{
+		RequireSHA256: policy.RequireSHA256, AllowPrerelease: policy.AllowPrerelease,
+		MinimumVersion: policy.MinimumVersion, MaximumArtifactSize: policy.MaximumArtifactSize,
+		RequireManifestSignature: policy.RequireManifestSignature,
+		ManifestVerificationKeys: cloneStringMap(policy.ManifestVerificationKeys), FreezeUpdates: policy.FreezeUpdates,
+		RejectRollbackCandidates: policy.RejectRollbackCandidates, MaximumManifestAge: policy.MaximumManifestAge,
+		MaximumFutureSkew: policy.MaximumFutureSkew, MaximumStagedAge: policy.MaximumStagedAge,
+	}
+}
+
+func toInternalOptions(options ServiceOptions) internal.ServiceOptions {
+	return internal.ServiceOptions{HTTPClient: options.HTTPClient, AuthenticatedHTTPClient: options.AuthenticatedHTTPClient}
 }
 
 func toInternalSource(src SourceConfig) internal.SourceConfig {
 	return internal.SourceConfig{
 		Provider: internal.ProviderKind(src.Provider), ManifestPath: src.ManifestPath, ManifestURL: src.ManifestURL,
 		Feed: src.Feed, GitHubOwner: src.GitHubOwner, GitHubRepo: src.GitHubRepo, GitHubRef: src.GitHubRef,
-		GitHubManifestPath: src.GitHubManifestPath,
+		GitHubManifestPath: src.GitHubManifestPath, SourceID: src.SourceID, Access: internal.SourceAccess(src.Access),
+		RequiredManifestKeyID: src.RequiredManifestKeyID, AllowedHTTPHosts: append([]string(nil), src.AllowedHTTPHosts...),
 	}
 }
 
@@ -421,7 +516,8 @@ func fromInternalState(st internal.CurrentState) CurrentState {
 		release = &r
 	}
 	return CurrentState{
-		AppID: st.AppID, DisplayName: st.DisplayName, CurrentVersion: st.CurrentVersion, Channel: Channel(st.Channel),
+		Source: fromInternalSourceSummary(st.Source),
+		AppID:  st.AppID, DisplayName: st.DisplayName, CurrentVersion: st.CurrentVersion, Channel: Channel(st.Channel),
 		Platform: st.Platform, Architecture: st.Architecture, Provider: ProviderKind(st.Provider), Configured: st.Configured,
 		UpdateAvailable: st.UpdateAvailable, LatestRelease: release, StagedVersion: st.StagedVersion, Verified: st.Verified,
 		RollbackAvailable: st.RollbackAvailable, Message: st.Message, LastError: st.LastError,
@@ -439,7 +535,8 @@ func fromInternalCheck(res internal.CheckResult) CheckResult {
 
 func fromInternalRelease(r internal.Release) Release {
 	return Release{
-		AppID: r.AppID, Version: r.Version, Channel: Channel(r.Channel), Platform: r.Platform, Architecture: r.Architecture,
+		Source: fromInternalSourceSummary(r.Source),
+		AppID:  r.AppID, Version: r.Version, Channel: Channel(r.Channel), Platform: r.Platform, Architecture: r.Architecture,
 		PublishedAt: r.PublishedAt, ReleaseNotesURL: r.ReleaseNotesURL, ReleaseNotesText: r.ReleaseNotesText,
 		MinimumSupportedVersion: r.MinimumSupportedVersion, RequiredRestart: r.RequiredRestart, ApplyBehavior: r.ApplyBehavior,
 		ArtifactName: r.ArtifactName, ArtifactSHA256: r.ArtifactSHA256, ArtifactSize: r.ArtifactSize, CheckedAt: r.CheckedAt,
@@ -448,7 +545,8 @@ func fromInternalRelease(r internal.Release) Release {
 
 func fromInternalStaged(staged internal.StagedUpdate) StagedUpdate {
 	return StagedUpdate{
-		AppID: staged.AppID, Version: staged.Version, Channel: Channel(staged.Channel), Platform: staged.Platform,
+		Source: fromInternalSourceSummary(staged.Source),
+		AppID:  staged.AppID, Version: staged.Version, Channel: Channel(staged.Channel), Platform: staged.Platform,
 		Architecture: staged.Architecture, ArtifactName: staged.ArtifactName, ArtifactPath: staged.ArtifactPath,
 		SHA256: staged.SHA256, Size: staged.Size, StagedAt: staged.StagedAt, RequiredRestart: staged.RequiredRestart,
 		ApplyBehavior: staged.ApplyBehavior,
@@ -457,7 +555,8 @@ func fromInternalStaged(staged internal.StagedUpdate) StagedUpdate {
 
 func fromInternalStagedSummary(summary internal.StagedUpdateSummary) StagedUpdateSummary {
 	return StagedUpdateSummary{
-		AppID: summary.AppID, Version: summary.Version, Channel: Channel(summary.Channel), Platform: summary.Platform,
+		Source: fromInternalSourceSummary(summary.Source),
+		AppID:  summary.AppID, Version: summary.Version, Channel: Channel(summary.Channel), Platform: summary.Platform,
 		Architecture: summary.Architecture, ArtifactName: summary.ArtifactName, SHA256: summary.SHA256, Size: summary.Size,
 		StagedAt: summary.StagedAt, RequiredRestart: summary.RequiredRestart, ApplyBehavior: summary.ApplyBehavior, Message: summary.Message,
 	}
@@ -465,8 +564,24 @@ func fromInternalStagedSummary(summary internal.StagedUpdateSummary) StagedUpdat
 
 func fromInternalApplyPlan(plan internal.ApplyPlan) ApplyPlan {
 	return ApplyPlan{
+		Source:  fromInternalSourceSummary(plan.Source),
 		Version: plan.Version, ArtifactName: plan.ArtifactName, RequiredRestart: plan.RequiredRestart,
 		ApplyBehavior: plan.ApplyBehavior, AppOwnedApply: plan.AppOwnedApply, Summary: plan.Summary,
 		Steps: append([]string{}, plan.Steps...),
 	}
+}
+
+func fromInternalSourceSummary(summary internal.SourceSummary) SourceSummary {
+	return SourceSummary{ID: summary.ID, Access: SourceAccess(summary.Access), Provider: ProviderKind(summary.Provider), Authenticated: summary.Authenticated}
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }

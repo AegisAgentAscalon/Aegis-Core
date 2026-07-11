@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -15,6 +16,7 @@ type store struct {
 type selectedUpdate struct {
 	SchemaVersion int       `json:"schema_version"`
 	SourceKey     string    `json:"source_key"`
+	PolicyKey     string    `json:"policy_key"`
 	Manifest      Manifest  `json:"manifest"`
 	Artifact      Artifact  `json:"artifact"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -23,6 +25,7 @@ type selectedUpdate struct {
 type downloadedUpdate struct {
 	SchemaVersion int       `json:"schema_version"`
 	SourceKey     string    `json:"source_key"`
+	PolicyKey     string    `json:"policy_key"`
 	Manifest      Manifest  `json:"manifest"`
 	Artifact      Artifact  `json:"artifact"`
 	ArtifactPath  string    `json:"artifact_path"`
@@ -38,6 +41,9 @@ type verifiedUpdate struct {
 
 func newStore(cfg AppConfig) (*store, error) {
 	dir := filepath.Join(cfg.StagingDir, cfg.AppID, cfg.Namespace, "updates")
+	if scope := stateScopeKey(cfg); scope != "" {
+		dir = filepath.Join(dir, scope)
+	}
 	if err := secureMkdirAll(dir); err != nil {
 		return nil, ErrStorageUnavailable
 	}
@@ -185,12 +191,49 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 }
 
 func secureMkdirAll(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
 		return ErrStorageUnavailable
 	}
-	return os.Chmod(dir, 0o700)
+	volume := filepath.VolumeName(absolute)
+	rest := strings.TrimPrefix(absolute, volume)
+	parts := strings.FieldsFunc(rest, func(r rune) bool { return r == '/' || r == '\\' })
+	current := volume + string(filepath.Separator)
+	if volume == "" {
+		current = string(filepath.Separator)
+	}
+	firstMissing := len(parts)
+	for index, part := range parts {
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if errors.Is(statErr, os.ErrNotExist) {
+			firstMissing = index
+			break
+		}
+		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return ErrStorageUnavailable
+		}
+	}
+	if err := os.MkdirAll(absolute, 0o700); err != nil {
+		return ErrStorageUnavailable
+	}
+	current = volume + string(filepath.Separator)
+	if volume == "" {
+		current = string(filepath.Separator)
+	}
+	for index, part := range parts {
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return ErrStorageUnavailable
+		}
+		// Repair only package-created directories (and the requested final
+		// directory), never caller-owned ancestors such as /tmp or a home dir.
+		if index >= firstMissing || index == len(parts)-1 {
+			if err := os.Chmod(current, 0o700); err != nil {
+				return ErrStorageUnavailable
+			}
+		}
+	}
+	return nil
 }

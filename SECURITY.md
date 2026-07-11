@@ -21,4 +21,6 @@ See [`docs/audits/2026-07-11-internal-hardening.md`](docs/audits/2026-07-11-inte
 
 Apps using Aegis Core own their own production security posture, including OAuth credential storage, update signing policy, update apply behavior, relay hosting, TLS, access control, logging, monitoring, conflict review, backup/rollback, and user-facing disclosure.
 
+For authenticated update sources, applications must keep credentials in an app-owned HTTP transport or cookie jar, use separate signing keys for development and stable lanes, restrict every manifest/artifact/redirect destination, and protect the release pipeline. Do not put tokens, signed query parameters, or credentials in persisted source or manifest URLs. Aegis source/lane isolation is not a substitute for TUF/Sigstore-equivalent metadata, key revocation, build provenance, destination-IP policy, or installer rollback safety.
+
 Do not expose an unauthenticated relay handler outside isolated local/dev tests. Public or shared relay endpoints need an app-owned authorizer, TLS, abuse controls, and operational monitoring.

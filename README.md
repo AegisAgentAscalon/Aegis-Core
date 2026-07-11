@@ -57,7 +57,7 @@ go get github.com/AegisAgentAscalon/aegis-core
 | `pkg/appbridge` | Generic app-facing setup overview facade built over the public packages. |
 | `pkg/securityposture` | Read-only DTO vocabulary, redaction helpers, and trust-boundary classification helpers. |
 
-See [docs/CODE_TRANSLATION.md](docs/CODE_TRANSLATION.md) for a human-oriented walkthrough of how the code is shaped.
+See [docs/CODE_TRANSLATION.md](docs/CODE_TRANSLATION.md) for a human-oriented walkthrough of how the code is shaped. Public/private update-source configuration is documented in [docs/UPDATE_SOURCES.md](docs/UPDATE_SOURCES.md).
 
 The current Core-side priorities and consumer/Core ownership boundary are tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -83,6 +83,7 @@ Consumer apps remain responsible for:
 - securing deployment, TLS, logs, monitoring, and access control.
 
 Update artifact SHA-256 verification is always enforced by the service.
+Host applications may provide separate public and credential-scoped HTTP clients. Authenticated sources require a non-secret source identity, exact destination restrictions, a signed manifest, and a source-pinned verification key. Aegis isolates persisted update state by explicit source, channel, and effective policy; credentials remain entirely app-owned.
 
 The HTTP relay handler now requires either an explicit `Authorizer` or an explicit local/dev opt-in through `AllowUnauthenticated`; do not set that opt-in on a public endpoint. Handler access control is route-wide, including `/status`, so public unauthenticated health checks should be hosted separately by the caller.
 
