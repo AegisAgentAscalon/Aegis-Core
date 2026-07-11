@@ -16,15 +16,16 @@ jobs:
           ref: agent/aegis-core-audit-hardening
           fetch-depth: 0
 
-      - name: Apply exact audited patch
+      - name: Apply exact audited code and documentation patch
         shell: bash
         run: |
+          cp .github/workflows/go.yml /tmp/apply-go.yml
           cat .github/audit-patch/part-*.b64 | base64 --decode | gzip --decompress > /tmp/aegis-hardening.patch
           test "$(sha256sum /tmp/aegis-hardening.patch | awk '{print $1}')" = "1cb059b709479331ec15a3049cd32100eae469a82268e03a9785a7fae048a0e3"
           git show 667746197a933dc6cdbfe14ccc2feacfb24fd12f:.github/workflows/go.yml > .github/workflows/go.yml
           git apply --check /tmp/aegis-hardening.patch
           git apply /tmp/aegis-hardening.patch
-          rm -rf .github/audit-patch .github/workflows/agent-source-snapshot.yml
+          cp /tmp/apply-go.yml .github/workflows/go.yml
           git diff --check
 
       - uses: actions/setup-go@v5
@@ -51,11 +52,12 @@ jobs:
           fi
           git diff --check
 
-      - name: Commit reconciled audit hardening
+      - name: Commit reconciled code and documentation
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add CHANGELOG.md README.md SECURITY.md docs internal pkg
+          git diff --cached --check
           git commit -m "fix: reconcile Aegis Core audit hardening"
           git push origin HEAD:agent/aegis-core-audit-hardening
