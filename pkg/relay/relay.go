@@ -490,6 +490,9 @@ func containsUnsafeDetail(s string) bool {
 	if lower == "" {
 		return false
 	}
+	if strings.ContainsAny(s, `/\`) {
+		return true
+	}
 	for _, marker := range secretIndicators {
 		if strings.Contains(lower, marker) {
 			return true

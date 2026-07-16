@@ -19,11 +19,10 @@ import (
 )
 
 const (
-	EnvelopeSchemaVersion             = 1
-	DefaultEnvelopeTTL                = 5 * time.Minute
-	MaxEnvelopeSignatureEvidenceBytes = 4 * 1024
-	defaultClockSkew                  = 2 * time.Minute
-	deterministicMailboxDomain        = "aegis.profilesync.mailbox.v1"
+	EnvelopeSchemaVersion      = 1
+	DefaultEnvelopeTTL         = 5 * time.Minute
+	defaultClockSkew           = 2 * time.Minute
+	deterministicMailboxDomain = "aegis.profilesync.mailbox.v1"
 )
 
 var (
@@ -198,10 +197,13 @@ type SyncTransport interface {
 }
 
 type SyncTransportStatus struct {
-	Available  bool        `json:"available"`
-	ProviderID string      `json:"provider_id,omitempty"`
-	Summary    string      `json:"summary,omitempty"`
-	Issues     []SyncIssue `json:"issues,omitempty"`
+	Available         bool        `json:"available"`
+	ProviderAvailable bool        `json:"provider_available"`
+	PushAvailable     bool        `json:"push_available"`
+	PullAvailable     bool        `json:"pull_available"`
+	ProviderID        string      `json:"provider_id,omitempty"`
+	Summary           string      `json:"summary,omitempty"`
+	Issues            []SyncIssue `json:"issues,omitempty"`
 }
 
 // RelaySyncDiagnostics is a redacted capability view of a relay-backed Profile
@@ -219,29 +221,19 @@ type RelaySyncDiagnostics struct {
 	MailboxExpiresAtRFC3339 string      `json:"mailbox_expires_at_rfc3339,omitempty"`
 	MessageTTLSeconds       int64       `json:"message_ttl_seconds,omitempty"`
 	MaximumPayloadBytes     int         `json:"maximum_payload_bytes"`
-	MaximumSignatureBytes   int         `json:"maximum_signature_bytes"`
 	Summary                 string      `json:"summary,omitempty"`
 	Issues                  []SyncIssue `json:"issues,omitempty"`
 }
 
-// EnvelopeSignatureEvidence preserves caller-owned opaque signature bytes as
-// bounded metadata. Profile Sync does not verify, trust, execute, or persist it.
-type EnvelopeSignatureEvidence struct {
-	Algorithm string `json:"algorithm"`
-	KeyID     string `json:"key_id,omitempty"`
-	Signature []byte `json:"signature"`
-}
-
 type SyncEnvelope struct {
-	SchemaVersion     int                                `json:"schema_version"`
-	Kind              EnvelopeKind                       `json:"kind"`
-	ProfileNamespace  string                             `json:"profile_namespace"`
-	SourceDeviceID    string                             `json:"source_device_id"`
-	MessageID         string                             `json:"message_id"`
-	CreatedAt         time.Time                          `json:"created_at"`
-	SignatureEvidence *EnvelopeSignatureEvidence         `json:"signature_evidence,omitempty"`
-	Snapshot          *profilemesh.SignedProfileSnapshot `json:"snapshot,omitempty"`
-	Proposal          *profilemesh.ProfileChangeProposal `json:"proposal,omitempty"`
+	SchemaVersion    int                                `json:"schema_version"`
+	Kind             EnvelopeKind                       `json:"kind"`
+	ProfileNamespace string                             `json:"profile_namespace"`
+	SourceDeviceID   string                             `json:"source_device_id"`
+	MessageID        string                             `json:"message_id"`
+	CreatedAt        time.Time                          `json:"created_at"`
+	Snapshot         *profilemesh.SignedProfileSnapshot `json:"snapshot,omitempty"`
+	Proposal         *profilemesh.ProfileChangeProposal `json:"proposal,omitempty"`
 }
 
 type RelaySyncTransportConfig struct {
@@ -524,8 +516,8 @@ func (m *SyncManager) BuildSyncPlan(ctx context.Context) (SyncPlan, error) {
 
 func (m *SyncManager) PushLocalSnapshot(ctx context.Context) (PushResult, error) {
 	result := PushResult{}
-	if err := m.ensureReadyForExchange(); err != nil {
-		result.Issues = append(result.Issues, syncIssue("sync_not_ready", err.Error(), true))
+	if err := m.ensureReadyForPush(ctx); err != nil {
+		result.Issues = append(result.Issues, syncOperationReadinessIssue(err))
 		return result, err
 	}
 	snapshot, err := m.snapshots.LoadLocalSnapshot(ctx)
@@ -555,8 +547,8 @@ func (m *SyncManager) PushLocalSnapshot(ctx context.Context) (PushResult, error)
 
 func (m *SyncManager) PushLocalProposals(ctx context.Context) (PushResult, error) {
 	result := PushResult{}
-	if err := m.ensureReadyForExchange(); err != nil {
-		result.Issues = append(result.Issues, syncIssue("sync_not_ready", err.Error(), true))
+	if err := m.ensureReadyForPush(ctx); err != nil {
+		result.Issues = append(result.Issues, syncOperationReadinessIssue(err))
 		return result, err
 	}
 	if m.proposals == nil {
@@ -596,8 +588,8 @@ func (m *SyncManager) PushLocalProposals(ctx context.Context) (PushResult, error
 
 func (m *SyncManager) PullRemote(ctx context.Context) (PullResult, error) {
 	result := PullResult{}
-	if err := m.ensureReadyForExchange(); err != nil {
-		result.Issues = append(result.Issues, syncIssue("sync_not_ready", err.Error(), true))
+	if err := m.ensureReadyForPull(ctx); err != nil {
+		result.Issues = append(result.Issues, syncOperationReadinessIssue(err))
 		return result, err
 	}
 	envelopes, err := m.transport.PullEnvelopes(ctx)
@@ -642,30 +634,47 @@ func (m *SyncManager) PullRemote(ctx context.Context) (PullResult, error) {
 func (m *SyncManager) Exchange(ctx context.Context) (ExchangeResult, error) {
 	started := m.now()
 	result := ExchangeResult{Session: SyncSession{SessionID: "sync-" + started.Format("20060102150405"), ProfileNamespace: m.cfg.ProfileNamespace, LocalDeviceID: m.cfg.LocalDeviceID, StartedAt: started}}
-	pushSnapshot, pushErr := m.PushLocalSnapshot(ctx)
-	result.Push = mergePushResults(result.Push, pushSnapshot)
-	if pushErr != nil {
-		result.Issues = append(result.Issues, pushSnapshot.Issues...)
+	if err := m.ensureReadyForExchange(); err != nil {
+		result.Issues = append(result.Issues, syncIssue("sync_not_ready", err.Error(), true))
 		result.Status = m.BuildStatus(ctx)
 		result.Session.CompletedAt = m.now()
-		return result, pushErr
+		return result, err
 	}
-	pushProposals, proposalErr := m.PushLocalProposals(ctx)
-	result.Push = mergePushResults(result.Push, pushProposals)
-	if proposalErr != nil {
-		result.Issues = append(result.Issues, pushProposals.Issues...)
+	pushAvailable, pullAvailable := transportOperationAvailability(m.transport.GetStatus(ctx))
+	if !pushAvailable && !pullAvailable {
+		result.Issues = append(result.Issues, syncIssue("transport_unavailable", ErrTransportUnavailable.Error(), true))
 		result.Status = m.BuildStatus(ctx)
 		result.Session.CompletedAt = m.now()
-		return result, proposalErr
+		return result, ErrTransportUnavailable
 	}
-	pull, pullErr := m.PullRemote(ctx)
-	result.Pull = pull
-	result.ReviewRequired = pull.ReviewRequired
-	result.Session.ReviewRequired = pull.ReviewRequired
+	if pushAvailable {
+		pushSnapshot, pushErr := m.PushLocalSnapshot(ctx)
+		result.Push = mergePushResults(result.Push, pushSnapshot)
+		if pushErr != nil {
+			result.Issues = append(result.Issues, pushSnapshot.Issues...)
+			result.Status = m.BuildStatus(ctx)
+			result.Session.CompletedAt = m.now()
+			return result, pushErr
+		}
+		pushProposals, proposalErr := m.PushLocalProposals(ctx)
+		result.Push = mergePushResults(result.Push, pushProposals)
+		if proposalErr != nil {
+			result.Issues = append(result.Issues, pushProposals.Issues...)
+			result.Status = m.BuildStatus(ctx)
+			result.Session.CompletedAt = m.now()
+			return result, proposalErr
+		}
+	}
+	var pullErr error
+	if pullAvailable {
+		result.Pull, pullErr = m.PullRemote(ctx)
+		result.ReviewRequired = result.Pull.ReviewRequired
+		result.Session.ReviewRequired = result.Pull.ReviewRequired
+	}
 	result.Session.CompletedAt = m.now()
 	result.Status = m.BuildStatus(ctx)
 	result.Issues = append(result.Issues, result.Push.Issues...)
-	result.Issues = append(result.Issues, pull.Issues...)
+	result.Issues = append(result.Issues, result.Pull.Issues...)
 	if pullErr != nil {
 		return result, pullErr
 	}
@@ -801,6 +810,54 @@ func (m *SyncManager) ensureReadyForExchange() error {
 	return nil
 }
 
+func (m *SyncManager) ensureReadyForPush(ctx context.Context) error {
+	if err := m.ensureReadyForExchange(); err != nil {
+		return err
+	}
+	pushAvailable, pullAvailable := transportOperationAvailability(m.transport.GetStatus(ctx))
+	if pushAvailable {
+		return nil
+	}
+	if pullAvailable {
+		return ErrReceiveOnlyTransport
+	}
+	return ErrTransportUnavailable
+}
+
+func (m *SyncManager) ensureReadyForPull(ctx context.Context) error {
+	if err := m.ensureReadyForExchange(); err != nil {
+		return err
+	}
+	_, pullAvailable := transportOperationAvailability(m.transport.GetStatus(ctx))
+	if !pullAvailable {
+		return ErrTransportUnavailable
+	}
+	return nil
+}
+
+func transportOperationAvailability(status SyncTransportStatus) (bool, bool) {
+	if !status.Available {
+		return false, false
+	}
+	if !status.PushAvailable && !status.PullAvailable {
+		// Status values from transports predating directional capabilities are
+		// interpreted as bidirectional for compatibility.
+		return true, true
+	}
+	return status.PushAvailable, status.PullAvailable
+}
+
+func syncOperationReadinessIssue(err error) SyncIssue {
+	switch {
+	case errors.Is(err, ErrReceiveOnlyTransport):
+		return syncIssue("push_unavailable", err.Error(), true)
+	case errors.Is(err, ErrTransportUnavailable):
+		return syncIssue("transport_unavailable", err.Error(), true)
+	default:
+		return syncIssue("sync_not_ready", err.Error(), true)
+	}
+}
+
 func (m *SyncManager) verifySnapshotSigner(ctx context.Context, snapshot profilemesh.SignedProfileSnapshot) (TrustState, SyncIssue) {
 	if m.trust == nil {
 		return TrustPending, syncIssue("trust_verifier_missing", ErrTrustVerification.Error(), false)
@@ -879,11 +936,30 @@ func (t *RelaySyncTransport) GetStatus(ctx context.Context) SyncTransportStatus 
 		return SyncTransportStatus{Available: false, Summary: ErrNoRelayProvider.Error(), Issues: []SyncIssue{syncIssue("relay_missing", ErrNoRelayProvider.Error(), false)}}
 	}
 	status := t.cfg.Provider.GetStatus(ctx)
-	out := SyncTransportStatus{Available: status.Available, ProviderID: safeID(status.ProviderID), Summary: safeSummary(status.Summary, "relay transport is unavailable")}
+	out := SyncTransportStatus{ProviderAvailable: status.Available, ProviderID: safeID(status.ProviderID)}
 	for _, issue := range status.Issues {
 		out.Issues = append(out.Issues, syncIssue(safeID(issue.Code), safeSummary(issue.Message, ErrTransportUnavailable.Error()), false))
 	}
-	if !out.Available && len(out.Issues) == 0 {
+	out.PushAvailable = out.ProviderAvailable && (t.cfg.TargetDeviceID != "" || t.cfg.TargetMailboxID != "")
+	out.PullAvailable = out.ProviderAvailable && t.cfg.Mailbox.MailboxID != ""
+	if out.PullAvailable && !t.cfg.Mailbox.ExpiresAt.IsZero() && !t.cfg.Mailbox.ExpiresAt.After(t.now()) {
+		out.PullAvailable = false
+		out.Issues = append(out.Issues, syncIssue("relay_mailbox_expired", relay.ErrMailboxExpired.Error(), false))
+	}
+	out.Available = out.PushAvailable || out.PullAvailable
+	switch {
+	case out.PushAvailable && out.PullAvailable:
+		out.Summary = "profile sync relay push and pull are available"
+	case out.PullAvailable:
+		out.Summary = "profile sync relay pull is available"
+	case out.PushAvailable:
+		out.Summary = "profile sync relay push is available"
+	case out.ProviderAvailable:
+		out.Summary = "profile sync relay provider has no available configured operation"
+	default:
+		out.Summary = "profile sync relay transport is unavailable"
+	}
+	if !out.ProviderAvailable && len(out.Issues) == 0 {
 		out.Issues = append(out.Issues, syncIssue("relay_unavailable", ErrTransportUnavailable.Error(), false))
 	}
 	return out
@@ -894,12 +970,14 @@ func (t *RelaySyncTransport) GetStatus(ctx context.Context) SyncTransportStatus 
 func (t *RelaySyncTransport) BuildDiagnostics(ctx context.Context) RelaySyncDiagnostics {
 	status := t.GetStatus(ctx)
 	diagnostics := RelaySyncDiagnostics{
-		ProviderAvailable:     status.Available,
-		ProviderID:            status.ProviderID,
-		Summary:               status.Summary,
-		Issues:                append([]SyncIssue(nil), status.Issues...),
-		MaximumPayloadBytes:   relay.DefaultMaxPayloadSize,
-		MaximumSignatureBytes: MaxEnvelopeSignatureEvidenceBytes,
+		Available:           status.Available,
+		ProviderAvailable:   status.ProviderAvailable,
+		SendAvailable:       status.PushAvailable,
+		ReceiveAvailable:    status.PullAvailable,
+		ProviderID:          status.ProviderID,
+		Summary:             status.Summary,
+		Issues:              append([]SyncIssue(nil), status.Issues...),
+		MaximumPayloadBytes: relay.DefaultMaxPayloadSize,
 	}
 	if t == nil {
 		return diagnostics
@@ -907,8 +985,6 @@ func (t *RelaySyncTransport) BuildDiagnostics(ctx context.Context) RelaySyncDiag
 	diagnostics.SendConfigured = t.cfg.TargetDeviceID != "" || t.cfg.TargetMailboxID != ""
 	diagnostics.ReceiveConfigured = t.cfg.Mailbox.MailboxID != ""
 	diagnostics.ReceiveOnly = diagnostics.ReceiveConfigured && !diagnostics.SendConfigured
-	diagnostics.SendAvailable = diagnostics.ProviderAvailable && diagnostics.SendConfigured
-	diagnostics.ReceiveAvailable = diagnostics.ProviderAvailable && diagnostics.ReceiveConfigured
 	if t.cfg.MaxPayloadBytes > 0 {
 		diagnostics.MaximumPayloadBytes = t.cfg.MaxPayloadBytes
 	}
@@ -921,23 +997,6 @@ func (t *RelaySyncTransport) BuildDiagnostics(ctx context.Context) RelaySyncDiag
 	}
 	if diagnostics.ReceiveConfigured {
 		diagnostics.MailboxExpiresAtRFC3339 = FormatStatusTimeRFC3339(t.cfg.Mailbox.ExpiresAt)
-		if !t.cfg.Mailbox.ExpiresAt.IsZero() && !t.cfg.Mailbox.ExpiresAt.After(t.now()) {
-			diagnostics.ReceiveAvailable = false
-			diagnostics.Issues = append(diagnostics.Issues, syncIssue("relay_mailbox_expired", relay.ErrMailboxExpired.Error(), false))
-		}
-	}
-	diagnostics.Available = diagnostics.SendAvailable || diagnostics.ReceiveAvailable
-	if diagnostics.ProviderAvailable {
-		switch {
-		case diagnostics.SendAvailable && diagnostics.ReceiveAvailable:
-			diagnostics.Summary = "profile sync relay send and receive are available"
-		case diagnostics.ReceiveAvailable:
-			diagnostics.Summary = "profile sync relay receive is available"
-		case diagnostics.SendAvailable:
-			diagnostics.Summary = "profile sync relay send is available"
-		default:
-			diagnostics.Summary = "profile sync relay transport is not configured for an available operation"
-		}
 	}
 	return diagnostics
 }
@@ -1195,9 +1254,6 @@ func validateEnvelopeHeaderAt(envelope SyncEnvelope, namespace string, now time.
 	if envelope.CreatedAt.After(now.Add(defaultClockSkew)) {
 		return ErrInvalidSyncEnvelope
 	}
-	if !validEnvelopeSignatureEvidence(envelope.SignatureEvidence) {
-		return ErrInvalidSyncEnvelope
-	}
 	switch envelope.Kind {
 	case EnvelopeKindSnapshot:
 		if envelope.Snapshot == nil {
@@ -1211,19 +1267,6 @@ func validateEnvelopeHeaderAt(envelope SyncEnvelope, namespace string, now time.
 		return ErrInvalidSyncEnvelope
 	}
 	return nil
-}
-
-func validEnvelopeSignatureEvidence(evidence *EnvelopeSignatureEvidence) bool {
-	if evidence == nil {
-		return true
-	}
-	if !validExactSyncName(evidence.Algorithm) {
-		return false
-	}
-	if evidence.KeyID != "" && !validExactSyncID(evidence.KeyID) {
-		return false
-	}
-	return len(evidence.Signature) > 0 && len(evidence.Signature) <= MaxEnvelopeSignatureEvidenceBytes
 }
 
 func duplicateSnapshot(ctx context.Context, store SnapshotStore, snapshotID string) (bool, error) {
@@ -1400,6 +1443,12 @@ func unsafeSyncText(value string) bool {
 	lower := strings.ToLower(strings.TrimSpace(value))
 	if lower == "" {
 		return false
+	}
+	// Status and exchange summaries never need filesystem paths. Reject any
+	// separator so absolute, UNC, drive-relative, and relative forms are covered
+	// consistently on every host OS.
+	if strings.ContainsAny(value, `/\`) {
+		return true
 	}
 	for _, marker := range []string{"client_secret", "refresh_token", "access_token", "id_token", "auth_code", "pkce", "verifier", "private_key", "begin private key", "github_pat", "ghp_", "api_key", "apikey", "access_key", "secret_key", "authorization:", "authorization=", "bearer ", "x-api-key", "token=", "password=", "secret=", `:\`, `/users/`, `/home/`, `/tmp/`, `\\`, "appdata", "downloads", "desktop"} {
 		if strings.Contains(lower, strings.ToLower(marker)) {

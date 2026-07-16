@@ -51,11 +51,10 @@ Consumer integrations have exposed recurring contract opportunities. These are *
 
 ### Profile Sync over relay/cloud
 
-- Receive-only relay transport construction.
-- A documented deterministic mailbox-ID helper or strategy.
-- Optional preservation of caller-owned signature bytes in sync envelopes.
-- Exchange-result persistence helpers for local metadata stores.
-- Safe relay Profile Sync diagnostics DTOs.
+Receive-only relay construction, deterministic mailbox IDs, directional capability diagnostics, pull-only exchange behavior, and local exchange-result persistence are now implemented. Strict exchange records use schema 2 and legacy schema 1 records remain readable.
+
+- A future caller-owned signature-evidence contract must use explicit schema 2 envelope APIs; `SyncEnvelope` schema 1 must keep its existing wire shape.
+- Longer exchange history remains a possible caller-owned storage extension; Core currently persists only the latest safe exchange summary.
 
 ### Update package and install handoff
 

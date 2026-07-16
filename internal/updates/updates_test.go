@@ -343,6 +343,38 @@ func TestManifestSignatureVerification(t *testing.T) {
 	}
 }
 
+func TestManifestSignaturePayloadGoldenVector(t *testing.T) {
+	manifest := Manifest{
+		SchemaVersion:           SchemaVersion,
+		AppID:                   "aegis-app",
+		Channel:                 ChannelDev,
+		Version:                 "1.2.3-dev.4",
+		ReleaseNotesURL:         "https://updates.example.test/releases/1.2.3",
+		ReleaseNotesText:        "metadata-only release",
+		PublishedAt:             "2026-07-16T16:00:00Z",
+		MinimumSupportedVersion: "1.0.0",
+		RequiredRestart:         true,
+		ApplyBehavior:           "consumer_handoff",
+		Artifacts: []Artifact{{
+			Platform: "windows", Architecture: "amd64", Filename: "aegis.zip",
+			DownloadURL: "https://updates.example.test/aegis.zip", Size: 42,
+			SHA256:    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			Signature: &SignatureMetadata{Kind: "ed25519", KeyID: "artifact-key", Signature: "artifact-signature"},
+		}},
+		Signature: &SignatureMetadata{Kind: "ed25519", KeyID: "manifest-key", Signature: "excluded-signature"},
+		Metadata:  map[string]string{"zeta": "last", "alpha": "first"},
+		Future:    map[string][]string{"later": {"one", "two"}},
+	}
+	payload, err := manifestSignaturePayload(manifest)
+	if err != nil {
+		t.Fatalf("manifestSignaturePayload: %v", err)
+	}
+	const golden = `{"schema_version":1,"app_id":"aegis-app","channel":"dev","version":"1.2.3-dev.4","release_notes_url":"https://updates.example.test/releases/1.2.3","release_notes_text":"metadata-only release","published_at":"2026-07-16T16:00:00Z","minimum_supported_version":"1.0.0","required_restart":true,"apply_behavior":"consumer_handoff","artifacts":[{"platform":"windows","architecture":"amd64","filename":"aegis.zip","download_url":"https://updates.example.test/aegis.zip","size":42,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","signature":{"kind":"ed25519","key_id":"artifact-key","signature":"artifact-signature"}}],"metadata":{"alpha":"first","zeta":"last"},"future":{"later":["one","two"]}}`
+	if string(payload) != golden {
+		t.Fatalf("manifest signature payload = %s\nwant                       = %s", payload, golden)
+	}
+}
+
 func TestUnsignedManifestRemainsShaOnlyWhenSignatureNotRequired(t *testing.T) {
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
 	cfg.Policy.RequireManifestSignature = false

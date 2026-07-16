@@ -237,6 +237,25 @@ func TestProviderUnavailableTimeoutAndStatusAreSafe(t *testing.T) {
 	}
 }
 
+func TestRelaySummaryRedactsCrossPlatformAndRelativePaths(t *testing.T) {
+	for name, value := range map[string]string{
+		"windows drive":    `C:\work\relay\status.json`,
+		"windows slash":    `C:/work/relay/status.json`,
+		"unc":              `\\server\share\status.json`,
+		"posix":            `/var/lib/relay/status.json`,
+		"relative posix":   `relay/status.json`,
+		"relative windows": `relay\status.json`,
+		"dot relative":     `./relay/status.json`,
+		"parent relative":  `../relay/status.json`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := safeSummary(value, "relay status redacted"); got != "relay status redacted" {
+				t.Fatalf("safeSummary(%q) = %q", value, got)
+			}
+		})
+	}
+}
+
 func TestRelayPackageDoesNotImportInternalsOrExamples(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {

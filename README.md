@@ -85,6 +85,8 @@ Consumer apps remain responsible for:
 Update artifact SHA-256 verification is always enforced by the service.
 Host applications may provide separate public and credential-scoped HTTP clients. Authenticated sources require a non-secret source identity, exact destination restrictions, a signed manifest, and a source-pinned verification key. Aegis isolates persisted update state by explicit source, channel, and effective policy; credentials remain entirely app-owned.
 
+Profile Sync relay status distinguishes provider, push, and pull availability. `SyncManager.Exchange` uses only the available directions, so a receive-only transport performs a pull exchange without attempting a push. New local exchange records use schema 2, while existing schema 1 records remain readable. `SyncEnvelope` schema 1 retains its original wire shape; caller-owned signature evidence is deferred to a future explicitly versioned envelope API.
+
 The HTTP relay handler now requires either an explicit `Authorizer` or an explicit local/dev opt-in through `AllowUnauthenticated`; do not set that opt-in on a public endpoint. Handler access control is route-wide, including `/status`, so public unauthenticated health checks should be hosted separately by the caller.
 
 ## Validation

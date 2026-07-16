@@ -1,6 +1,7 @@
 package updates
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,103 @@ import (
 	"testing"
 	"time"
 )
+
+func TestStageUpdatePreservesActiveLifecycleAndIsIdempotentOnlyBeforeHandoff(t *testing.T) {
+	ctx := context.Background()
+	svc, staged := stageInternalRecordOnlyUpdate(t, "1.2.0")
+	beforeEnvelope, err := svc.GetLifecycleEnvelope(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeLifecycle, err := os.ReadFile(svc.store.lifecyclePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeMetadata, err := os.ReadFile(svc.store.stagedMetaPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restage, err := svc.StageUpdate(ctx, staged.Version)
+	if err != nil || !restage.Staged || restage.Message != "update already staged" {
+		t.Fatalf("pre-handoff restage = %+v, %v", restage, err)
+	}
+	afterEnvelope, err := svc.GetLifecycleEnvelope(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterLifecycle, err := os.ReadFile(svc.store.lifecyclePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterMetadata, err := os.ReadFile(svc.store.stagedMetaPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterEnvelope.LifecycleID != beforeEnvelope.LifecycleID || afterEnvelope.Revision != beforeEnvelope.Revision ||
+		!bytes.Equal(afterLifecycle, beforeLifecycle) || !bytes.Equal(afterMetadata, beforeMetadata) {
+		t.Fatalf("idempotent restage mutated lifecycle: before=%+v after=%+v", beforeEnvelope, afterEnvelope)
+	}
+
+	handoff, err := svc.RecordPackageHandoff(ctx, PackageHandoffRequest{
+		ExpectedRevision: afterEnvelope.Revision, IdempotencyKey: "restage-handoff", ConsumerID: "consumer-host",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handedOffLifecycle, err := os.ReadFile(svc.store.lifecyclePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.StageUpdate(ctx, staged.Version); !errors.Is(err, ErrLifecycleRestageConflict) {
+		t.Fatalf("post-handoff restage error = %v, want conflict", err)
+	}
+	preserved, err := svc.GetLifecycleEnvelope(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preservedLifecycle, err := os.ReadFile(svc.store.lifecyclePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.Revision != handoff.Envelope.Revision || preserved.Phase != LifecyclePhaseHandoffRecorded ||
+		!bytes.Equal(preservedLifecycle, handedOffLifecycle) {
+		t.Fatalf("post-handoff restage changed lifecycle: %+v", preserved)
+	}
+}
+
+func TestStageUpdateRejectsDifferentPackageWhileLifecycleIsActive(t *testing.T) {
+	ctx := context.Background()
+	svc, staged := stageInternalRecordOnlyUpdate(t, "1.2.0")
+	artifactPath := t.TempDir() + string(os.PathSeparator) + "aegis-1.3.0.zip"
+	if err := os.WriteFile(artifactPath, []byte("artifact-1.3.0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	artifactHash, err := fileSHA256(artifactPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeManifest(t, svc.cfg.Source.ManifestPath, testManifest(svc.cfg, "1.3.0", artifactPath, artifactHash))
+	if _, err := svc.CheckForUpdates(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.DownloadUpdate(ctx, "1.3.0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.VerifyUpdate(ctx, "1.3.0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.StageUpdate(ctx, "1.3.0"); !errors.Is(err, ErrLifecycleRestageConflict) {
+		t.Fatalf("different-package restage error = %v, want conflict", err)
+	}
+	preserved, err := svc.store.readStaged()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.Version != staged.Version || preserved.SHA256 != staged.SHA256 {
+		t.Fatalf("active staged package was replaced: before=%+v after=%+v", staged, preserved)
+	}
+}
 
 func TestRecordOnlyLifecycleTransitionsRevisionIdempotencyAndCapabilities(t *testing.T) {
 	ctx := context.Background()

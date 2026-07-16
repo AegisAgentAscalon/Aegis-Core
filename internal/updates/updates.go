@@ -788,6 +788,11 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 		StagedAt: time.Now().UTC(), RequiredRestart: verified.Downloaded.Manifest.RequiredRestart,
 		ApplyBehavior: verified.Downloaded.Manifest.ApplyBehavior,
 	}
+	if existing, handled, err := s.checkLifecycleBeforeRestage(snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
+		return StageResult{}, err
+	} else if handled {
+		return existing, nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.applyInProgress {
@@ -807,9 +812,6 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 		return StageResult{}, err
 	}
 	if err := snapshot.store.writeStaged(staged); err != nil {
-		return StageResult{}, err
-	}
-	if err := removeFiles(snapshot.store.lifecyclePath()); err != nil {
 		return StageResult{}, err
 	}
 	if err := snapshot.store.writeLifecycle(newLifecycleRecord(staged, time.Now().UTC())); err != nil {

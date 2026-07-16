@@ -33,6 +33,7 @@ var (
 	ErrApplyInProgress              = internal.ErrApplyInProgress
 	ErrLifecycleRevisionStale       = internal.ErrLifecycleRevisionStale
 	ErrLifecycleIdempotencyConflict = internal.ErrLifecycleIdempotencyConflict
+	ErrLifecycleRestageConflict     = internal.ErrLifecycleRestageConflict
 	ErrLifecycleTransition          = internal.ErrLifecycleTransition
 	ErrInvalidLifecycleRequest      = internal.ErrInvalidLifecycleRequest
 	ErrLegacyExecutionDisabled      = internal.ErrLegacyExecutionDisabled

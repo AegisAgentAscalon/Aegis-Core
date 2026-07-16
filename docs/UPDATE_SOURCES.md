@@ -88,6 +88,8 @@ can_rollback_application    = false
 
 Lifecycle mutations require both `ExpectedRevision` and a non-secret `IdempotencyKey`. A stale new request returns `ErrLifecycleRevisionStale`. Repeating an accepted request with the same key and fields returns the current envelope without adding history or incrementing the revision. Reusing that key for different fields returns `ErrLifecycleIdempotencyConflict`. The persisted idempotency window is bounded.
 
+`StageUpdate` never resets an existing lifecycle implicitly. Restaging the exact same package while its lifecycle is still in `staged` returns the existing stage without changing its lifecycle ID, revision, timestamps, metadata, or bytes. Once handoff has been recorded, or when the candidate is a different package, restaging returns `ErrLifecycleRestageConflict`. A caller must use an explicit lifecycle/reset workflow rather than silently replacing active history.
+
 Only the following transition order is legal:
 
 ```text

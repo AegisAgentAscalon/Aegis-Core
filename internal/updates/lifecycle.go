@@ -19,6 +19,7 @@ const (
 var (
 	ErrLifecycleRevisionStale       = errors.New("update lifecycle revision is stale")
 	ErrLifecycleIdempotencyConflict = errors.New("update lifecycle idempotency conflict")
+	ErrLifecycleRestageConflict     = errors.New("active update lifecycle conflicts with restaging")
 	ErrLifecycleTransition          = errors.New("illegal update lifecycle transition")
 	ErrInvalidLifecycleRequest      = errors.New("invalid update lifecycle request")
 	ErrLegacyExecutionDisabled      = errors.New("legacy update execution is disabled")
@@ -394,6 +395,39 @@ func (s *Service) lifecycleRecordLocked(now time.Time) (lifecycleRecord, StagedU
 		return lifecycleRecord{}, StagedUpdate{}, ErrStorageUnavailable
 	}
 	return record, staged, nil
+}
+
+func (s *Service) checkLifecycleBeforeRestage(cfg AppConfig, st *store, candidate StagedUpdate, now time.Time) (StageResult, bool, error) {
+	record, err := st.readLifecycle()
+	if errors.Is(err, os.ErrNotExist) {
+		return StageResult{}, false, nil
+	}
+	if err != nil {
+		return StageResult{}, false, ErrStorageUnavailable
+	}
+	existing, err := st.readStaged()
+	if err != nil || validateLifecycleRecord(record, existing) != nil {
+		return StageResult{}, false, ErrStorageUnavailable
+	}
+	if record.Envelope.Phase != LifecyclePhaseStaged || !sameStagedPackage(existing, candidate) {
+		return StageResult{}, false, ErrLifecycleRestageConflict
+	}
+	if err := validateStagedUpdateReadyFor(cfg, st, existing, now); err != nil {
+		return StageResult{}, false, err
+	}
+	return StageResult{
+		Version: existing.Version, ArtifactName: existing.ArtifactName, Staged: true,
+		Message: "update already staged",
+	}, true, nil
+}
+
+func sameStagedPackage(left, right StagedUpdate) bool {
+	return left.Source == right.Source && left.SourceKey == right.SourceKey && left.PolicyKey == right.PolicyKey &&
+		left.AppID == right.AppID && left.Version == right.Version && left.Channel == right.Channel &&
+		left.Platform == right.Platform && left.Architecture == right.Architecture &&
+		left.ArtifactName == right.ArtifactName && strings.EqualFold(left.SHA256, right.SHA256) &&
+		left.Size == right.Size && left.RequiredRestart == right.RequiredRestart &&
+		left.ApplyBehavior == right.ApplyBehavior
 }
 
 func newLifecycleRecord(staged StagedUpdate, now time.Time) lifecycleRecord {

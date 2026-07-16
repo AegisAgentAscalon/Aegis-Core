@@ -18,9 +18,14 @@ import (
 	"github.com/AegisAgentAscalon/aegis-core/pkg/profilemesh"
 )
 
+// LocalExchangeRecordSchemaVersion is the strict exchange-record format.
+// LoadLastExchange continues to accept legacy schema 1 records.
+const LocalExchangeRecordSchemaVersion = 2
+
 const (
-	localMetadataStoreSchemaVersion = 1
-	maxLocalJSONFileBytes           = 8 * 1024 * 1024
+	localMetadataStoreSchemaVersion   = 1
+	legacyExchangeRecordSchemaVersion = 1
+	maxLocalJSONFileBytes             = 8 * 1024 * 1024
 )
 
 type LocalMetadataStoreConfig struct {
@@ -431,7 +436,7 @@ func (s *LocalMetadataStore) SaveLastExchange(ctx context.Context, result Exchan
 		return err
 	}
 	record := LocalExchangeRecord{
-		SchemaVersion:     localMetadataStoreSchemaVersion,
+		SchemaVersion:     LocalExchangeRecordSchemaVersion,
 		ProfileNamespace:  s.namespace,
 		Session:           result.Session,
 		PushedSnapshots:   result.Push.PushedSnapshots,
@@ -467,10 +472,7 @@ func (s *LocalMetadataStore) LoadLastExchange(ctx context.Context) (LocalExchang
 	if err := readJSONFile(s.lastExchangePath(), &record); err != nil {
 		return LocalExchangeRecord{}, err
 	}
-	if record.SchemaVersion != localMetadataStoreSchemaVersion || record.ProfileNamespace != s.namespace || !validSyncID(record.Session.SessionID) {
-		return LocalExchangeRecord{}, ErrLocalStoreCorrupt
-	}
-	if err := validateExchangeSession(s.namespace, record.Session); err != nil || record.PushedSnapshots < 0 || record.PushedProposals < 0 || record.ReceivedSnapshots < 0 || record.ReceivedProposals < 0 || record.Rejected < 0 {
+	if err := validateStoredExchangeRecord(s.namespace, record); err != nil {
 		return LocalExchangeRecord{}, ErrLocalStoreCorrupt
 	}
 	record.StatusSummary = safeSummary(record.StatusSummary, "profile sync exchange status")
@@ -478,6 +480,31 @@ func (s *LocalMetadataStore) LoadLastExchange(ctx context.Context) (LocalExchang
 		record.Issues[i] = syncIssue(issue.Code, issue.Message, issue.Blocking)
 	}
 	return record, nil
+}
+
+func validateStoredExchangeRecord(namespace string, record LocalExchangeRecord) error {
+	if record.ProfileNamespace != namespace {
+		return ErrLocalStoreCorrupt
+	}
+	switch record.SchemaVersion {
+	case legacyExchangeRecordSchemaVersion:
+		// Schema 1 records were written before strict session and counter
+		// validation. Preserve their original read contract.
+		if !validSyncID(record.Session.SessionID) {
+			return ErrLocalStoreCorrupt
+		}
+		return nil
+	case LocalExchangeRecordSchemaVersion:
+		if err := validateExchangeSession(namespace, record.Session); err != nil ||
+			record.PushedSnapshots < 0 || record.PushedProposals < 0 ||
+			record.ReceivedSnapshots < 0 || record.ReceivedProposals < 0 || record.Rejected < 0 ||
+			record.RecordedAt.IsZero() {
+			return ErrLocalStoreCorrupt
+		}
+		return nil
+	default:
+		return ErrLocalStoreCorrupt
+	}
 }
 
 func validateExchangeResultForStore(namespace string, result ExchangeResult) error {
