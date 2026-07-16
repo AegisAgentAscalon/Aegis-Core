@@ -5,6 +5,8 @@ package profilesync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"regexp"
@@ -17,9 +19,11 @@ import (
 )
 
 const (
-	EnvelopeSchemaVersion = 1
-	DefaultEnvelopeTTL    = 5 * time.Minute
-	defaultClockSkew      = 2 * time.Minute
+	EnvelopeSchemaVersion             = 1
+	DefaultEnvelopeTTL                = 5 * time.Minute
+	MaxEnvelopeSignatureEvidenceBytes = 4 * 1024
+	defaultClockSkew                  = 2 * time.Minute
+	deterministicMailboxDomain        = "aegis.profilesync.mailbox.v1"
 )
 
 var (
@@ -38,6 +42,7 @@ var (
 	ErrMultiHostUnsupported = errors.New("profile sync multi-host merge is unsupported")
 	ErrLocalStoreCorrupt    = errors.New("profile sync local metadata store is corrupt")
 	ErrLocalStoreNotFound   = errors.New("profile sync local metadata record is not available")
+	ErrReceiveOnlyTransport = errors.New("profile sync relay transport is receive-only")
 )
 
 var syncNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
@@ -199,15 +204,44 @@ type SyncTransportStatus struct {
 	Issues     []SyncIssue `json:"issues,omitempty"`
 }
 
+// RelaySyncDiagnostics is a redacted capability view of a relay-backed Profile
+// Sync transport. It intentionally omits namespace, device, mailbox, target,
+// credential, payload, and signature values.
+type RelaySyncDiagnostics struct {
+	Available               bool        `json:"available"`
+	ProviderAvailable       bool        `json:"provider_available"`
+	SendConfigured          bool        `json:"send_configured"`
+	ReceiveConfigured       bool        `json:"receive_configured"`
+	SendAvailable           bool        `json:"send_available"`
+	ReceiveAvailable        bool        `json:"receive_available"`
+	ReceiveOnly             bool        `json:"receive_only"`
+	ProviderID              string      `json:"provider_id,omitempty"`
+	MailboxExpiresAtRFC3339 string      `json:"mailbox_expires_at_rfc3339,omitempty"`
+	MessageTTLSeconds       int64       `json:"message_ttl_seconds,omitempty"`
+	MaximumPayloadBytes     int         `json:"maximum_payload_bytes"`
+	MaximumSignatureBytes   int         `json:"maximum_signature_bytes"`
+	Summary                 string      `json:"summary,omitempty"`
+	Issues                  []SyncIssue `json:"issues,omitempty"`
+}
+
+// EnvelopeSignatureEvidence preserves caller-owned opaque signature bytes as
+// bounded metadata. Profile Sync does not verify, trust, execute, or persist it.
+type EnvelopeSignatureEvidence struct {
+	Algorithm string `json:"algorithm"`
+	KeyID     string `json:"key_id,omitempty"`
+	Signature []byte `json:"signature"`
+}
+
 type SyncEnvelope struct {
-	SchemaVersion    int                                `json:"schema_version"`
-	Kind             EnvelopeKind                       `json:"kind"`
-	ProfileNamespace string                             `json:"profile_namespace"`
-	SourceDeviceID   string                             `json:"source_device_id"`
-	MessageID        string                             `json:"message_id"`
-	CreatedAt        time.Time                          `json:"created_at"`
-	Snapshot         *profilemesh.SignedProfileSnapshot `json:"snapshot,omitempty"`
-	Proposal         *profilemesh.ProfileChangeProposal `json:"proposal,omitempty"`
+	SchemaVersion     int                                `json:"schema_version"`
+	Kind              EnvelopeKind                       `json:"kind"`
+	ProfileNamespace  string                             `json:"profile_namespace"`
+	SourceDeviceID    string                             `json:"source_device_id"`
+	MessageID         string                             `json:"message_id"`
+	CreatedAt         time.Time                          `json:"created_at"`
+	SignatureEvidence *EnvelopeSignatureEvidence         `json:"signature_evidence,omitempty"`
+	Snapshot          *profilemesh.SignedProfileSnapshot `json:"snapshot,omitempty"`
+	Proposal          *profilemesh.ProfileChangeProposal `json:"proposal,omitempty"`
 }
 
 type RelaySyncTransportConfig struct {
@@ -287,24 +321,61 @@ func NewRelaySyncTransport(config RelaySyncTransportConfig) (*RelaySyncTransport
 	if config.Provider == nil {
 		return nil, ErrNoRelayProvider
 	}
-	if !validSyncName(config.Namespace) || !validSyncID(config.SourceDeviceID) {
+	if !validExactSyncName(config.Namespace) || !validExactSyncID(config.SourceDeviceID) {
 		return nil, ErrInvalidConfig
 	}
-	if config.TargetDeviceID == "" && config.TargetMailboxID == "" {
+	hasSendTarget := config.TargetDeviceID != "" || config.TargetMailboxID != ""
+	hasReceiveMailbox := config.Mailbox.MailboxID != ""
+	if !hasSendTarget && !hasReceiveMailbox {
 		return nil, ErrInvalidConfig
 	}
-	if config.TargetDeviceID != "" && !validSyncID(config.TargetDeviceID) {
+	if config.TargetDeviceID != "" && !validExactSyncID(config.TargetDeviceID) {
 		return nil, ErrInvalidConfig
 	}
-	if config.TargetMailboxID != "" && !validSyncID(config.TargetMailboxID) {
+	if config.TargetMailboxID != "" && relay.ValidateMailboxID(config.TargetMailboxID) != nil {
 		return nil, ErrInvalidConfig
 	}
-	if config.Mailbox.MailboxID != "" {
+	if hasReceiveMailbox {
 		if err := relay.ValidateMailboxRef(config.Mailbox); err != nil {
+			return nil, ErrInvalidConfig
+		}
+		if config.Mailbox.Namespace != config.Namespace || config.Mailbox.OwnerDeviceID != config.SourceDeviceID {
 			return nil, ErrInvalidConfig
 		}
 	}
 	return &RelaySyncTransport{cfg: config}, nil
+}
+
+// NewReceiveOnlyRelaySyncTransport constructs a mailbox-backed transport that
+// can pull Profile Sync envelopes without requiring a placeholder send target.
+func NewReceiveOnlyRelaySyncTransport(config RelaySyncTransportConfig) (*RelaySyncTransport, error) {
+	if config.TargetDeviceID != "" || config.TargetMailboxID != "" || config.Mailbox.MailboxID == "" {
+		return nil, ErrInvalidConfig
+	}
+	return NewRelaySyncTransport(config)
+}
+
+// DeterministicRelayMailboxID returns a stable, domain-separated mailbox ID.
+// The digest isolates namespaces and owner devices without exposing either one.
+func DeterministicRelayMailboxID(namespace, ownerDeviceID string) (string, error) {
+	if !validExactSyncName(namespace) || !validExactSyncID(ownerDeviceID) {
+		return "", ErrInvalidConfig
+	}
+	sum := sha256.Sum256([]byte(deterministicMailboxDomain + "\x00" + namespace + "\x00" + ownerDeviceID))
+	mailboxID := "profilesync-" + hex.EncodeToString(sum[:])
+	if err := relay.ValidateMailboxID(mailboxID); err != nil {
+		return "", ErrInvalidConfig
+	}
+	return mailboxID, nil
+}
+
+// FormatStatusTimeRFC3339 converts a status timestamp to a browser-safe UTC
+// RFC 3339 string. Zero timestamps remain absent.
+func FormatStatusTimeRFC3339(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func (m *SyncManager) BuildStatus(ctx context.Context) SyncStatus {
@@ -818,9 +889,65 @@ func (t *RelaySyncTransport) GetStatus(ctx context.Context) SyncTransportStatus 
 	return out
 }
 
+// BuildDiagnostics reports safe relay capabilities without exposing routing
+// identifiers, caller signature evidence, payloads, or provider error details.
+func (t *RelaySyncTransport) BuildDiagnostics(ctx context.Context) RelaySyncDiagnostics {
+	status := t.GetStatus(ctx)
+	diagnostics := RelaySyncDiagnostics{
+		ProviderAvailable:     status.Available,
+		ProviderID:            status.ProviderID,
+		Summary:               status.Summary,
+		Issues:                append([]SyncIssue(nil), status.Issues...),
+		MaximumPayloadBytes:   relay.DefaultMaxPayloadSize,
+		MaximumSignatureBytes: MaxEnvelopeSignatureEvidenceBytes,
+	}
+	if t == nil {
+		return diagnostics
+	}
+	diagnostics.SendConfigured = t.cfg.TargetDeviceID != "" || t.cfg.TargetMailboxID != ""
+	diagnostics.ReceiveConfigured = t.cfg.Mailbox.MailboxID != ""
+	diagnostics.ReceiveOnly = diagnostics.ReceiveConfigured && !diagnostics.SendConfigured
+	diagnostics.SendAvailable = diagnostics.ProviderAvailable && diagnostics.SendConfigured
+	diagnostics.ReceiveAvailable = diagnostics.ProviderAvailable && diagnostics.ReceiveConfigured
+	if t.cfg.MaxPayloadBytes > 0 {
+		diagnostics.MaximumPayloadBytes = t.cfg.MaxPayloadBytes
+	}
+	if diagnostics.SendConfigured {
+		ttl := t.cfg.MessageTTL
+		if ttl <= 0 {
+			ttl = DefaultEnvelopeTTL
+		}
+		diagnostics.MessageTTLSeconds = int64(ttl / time.Second)
+	}
+	if diagnostics.ReceiveConfigured {
+		diagnostics.MailboxExpiresAtRFC3339 = FormatStatusTimeRFC3339(t.cfg.Mailbox.ExpiresAt)
+		if !t.cfg.Mailbox.ExpiresAt.IsZero() && !t.cfg.Mailbox.ExpiresAt.After(t.now()) {
+			diagnostics.ReceiveAvailable = false
+			diagnostics.Issues = append(diagnostics.Issues, syncIssue("relay_mailbox_expired", relay.ErrMailboxExpired.Error(), false))
+		}
+	}
+	diagnostics.Available = diagnostics.SendAvailable || diagnostics.ReceiveAvailable
+	if diagnostics.ProviderAvailable {
+		switch {
+		case diagnostics.SendAvailable && diagnostics.ReceiveAvailable:
+			diagnostics.Summary = "profile sync relay send and receive are available"
+		case diagnostics.ReceiveAvailable:
+			diagnostics.Summary = "profile sync relay receive is available"
+		case diagnostics.SendAvailable:
+			diagnostics.Summary = "profile sync relay send is available"
+		default:
+			diagnostics.Summary = "profile sync relay transport is not configured for an available operation"
+		}
+	}
+	return diagnostics
+}
+
 func (t *RelaySyncTransport) PushEnvelope(ctx context.Context, envelope SyncEnvelope) (relay.DeliveryReceipt, error) {
 	if t == nil || t.cfg.Provider == nil {
 		return relay.DeliveryReceipt{}, ErrNoRelayProvider
+	}
+	if t.cfg.TargetDeviceID == "" && t.cfg.TargetMailboxID == "" {
+		return relay.DeliveryReceipt{}, ErrReceiveOnlyTransport
 	}
 	if err := validateEnvelopeHeaderAt(envelope, t.cfg.Namespace, t.now()); err != nil {
 		return relay.DeliveryReceipt{}, err
@@ -1068,6 +1195,9 @@ func validateEnvelopeHeaderAt(envelope SyncEnvelope, namespace string, now time.
 	if envelope.CreatedAt.After(now.Add(defaultClockSkew)) {
 		return ErrInvalidSyncEnvelope
 	}
+	if !validEnvelopeSignatureEvidence(envelope.SignatureEvidence) {
+		return ErrInvalidSyncEnvelope
+	}
 	switch envelope.Kind {
 	case EnvelopeKindSnapshot:
 		if envelope.Snapshot == nil {
@@ -1081,6 +1211,19 @@ func validateEnvelopeHeaderAt(envelope SyncEnvelope, namespace string, now time.
 		return ErrInvalidSyncEnvelope
 	}
 	return nil
+}
+
+func validEnvelopeSignatureEvidence(evidence *EnvelopeSignatureEvidence) bool {
+	if evidence == nil {
+		return true
+	}
+	if !validExactSyncName(evidence.Algorithm) {
+		return false
+	}
+	if evidence.KeyID != "" && !validExactSyncID(evidence.KeyID) {
+		return false
+	}
+	return len(evidence.Signature) > 0 && len(evidence.Signature) <= MaxEnvelopeSignatureEvidenceBytes
 }
 
 func duplicateSnapshot(ctx context.Context, store SnapshotStore, snapshotID string) (bool, error) {
@@ -1240,9 +1383,17 @@ func validSyncName(value string) bool {
 	return syncNamePattern.MatchString(value) && !strings.Contains(value, "..") && !strings.ContainsAny(value, `/\`) && !reservedName(value) && !unsafeSyncText(value)
 }
 
+func validExactSyncName(value string) bool {
+	return value == strings.TrimSpace(value) && validSyncName(value)
+}
+
 func validSyncID(value string) bool {
 	value = strings.TrimSpace(value)
 	return syncIDPattern.MatchString(value) && !strings.Contains(value, "..") && !strings.ContainsAny(value, `/\`) && !unsafeSyncText(value)
+}
+
+func validExactSyncID(value string) bool {
+	return value == strings.TrimSpace(value) && validSyncID(value)
 }
 
 func unsafeSyncText(value string) bool {

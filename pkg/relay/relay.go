@@ -293,8 +293,10 @@ func ValidateMailboxOpenRequest(req MailboxOpenRequest) error {
 	if !validDeviceID(req.OwnerDeviceID) {
 		return ErrInvalidDeviceID
 	}
-	if req.MailboxID != "" && !validID(req.MailboxID) {
-		return ErrInvalidMailbox
+	if req.MailboxID != "" {
+		if err := ValidateMailboxID(req.MailboxID); err != nil {
+			return err
+		}
 	}
 	if err := validateTimes(req.CreatedAt, req.ExpiresAt, now, ErrMailboxExpired); err != nil {
 		return err
@@ -313,8 +315,8 @@ func ValidateMailboxRef(ref MailboxRef) error {
 	if !validDeviceID(ref.OwnerDeviceID) {
 		return ErrInvalidDeviceID
 	}
-	if !validID(ref.MailboxID) {
-		return ErrInvalidMailbox
+	if err := ValidateMailboxID(ref.MailboxID); err != nil {
+		return err
 	}
 	if ref.ProviderID != "" && !validID(ref.ProviderID) {
 		return ErrInvalidMailbox
@@ -323,6 +325,15 @@ func ValidateMailboxRef(ref MailboxRef) error {
 		return ErrMailboxExpired
 	}
 	return ValidateMetadata(ref.Metadata)
+}
+
+// ValidateMailboxID validates a standalone relay mailbox identifier without
+// requiring callers to construct a mailbox request or reference.
+func ValidateMailboxID(mailboxID string) error {
+	if mailboxID != strings.TrimSpace(mailboxID) || !validID(mailboxID) {
+		return ErrInvalidMailbox
+	}
+	return nil
 }
 
 func ValidateEnvelope(envelope RelayEnvelope) error {
@@ -346,8 +357,10 @@ func ValidateEnvelopeWithLimit(envelope RelayEnvelope, maxPayloadBytes int) erro
 	if envelope.TargetDeviceID != "" && !validDeviceID(envelope.TargetDeviceID) {
 		return ErrInvalidDeviceID
 	}
-	if envelope.TargetMailboxID != "" && !validID(envelope.TargetMailboxID) {
-		return ErrInvalidMailbox
+	if envelope.TargetMailboxID != "" {
+		if err := ValidateMailboxID(envelope.TargetMailboxID); err != nil {
+			return err
+		}
 	}
 	if !validMessageID(envelope.MessageID) || !validMessageKind(envelope.MessageKind) {
 		return ErrInvalidEnvelope

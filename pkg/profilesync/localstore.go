@@ -414,9 +414,21 @@ func (s *LocalMetadataStore) ListRemoteProposals(ctx context.Context) ([]RemoteP
 	return out, nil
 }
 
+// PersistExchangeResult records a completed Profile Sync exchange in the local
+// metadata store after confirming the result belongs to that store namespace.
+func PersistExchangeResult(ctx context.Context, store *LocalMetadataStore, result ExchangeResult) error {
+	if store == nil {
+		return ErrStoreUnavailable
+	}
+	return store.SaveLastExchange(ctx, result)
+}
+
 func (s *LocalMetadataStore) SaveLastExchange(ctx context.Context, result ExchangeResult) error {
 	if s == nil {
 		return ErrStoreUnavailable
+	}
+	if err := validateExchangeResultForStore(s.namespace, result); err != nil {
+		return err
 	}
 	record := LocalExchangeRecord{
 		SchemaVersion:     localMetadataStoreSchemaVersion,
@@ -433,9 +445,6 @@ func (s *LocalMetadataStore) SaveLastExchange(ctx context.Context, result Exchan
 	}
 	for _, issue := range append(result.Issues, append(result.Push.Issues, result.Pull.Issues...)...) {
 		record.Issues = append(record.Issues, syncIssue(issue.Code, issue.Message, issue.Blocking))
-	}
-	if !validSyncName(record.ProfileNamespace) || !validSyncID(record.Session.SessionID) {
-		return ErrInvalidConfig
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -461,11 +470,34 @@ func (s *LocalMetadataStore) LoadLastExchange(ctx context.Context) (LocalExchang
 	if record.SchemaVersion != localMetadataStoreSchemaVersion || record.ProfileNamespace != s.namespace || !validSyncID(record.Session.SessionID) {
 		return LocalExchangeRecord{}, ErrLocalStoreCorrupt
 	}
+	if err := validateExchangeSession(s.namespace, record.Session); err != nil || record.PushedSnapshots < 0 || record.PushedProposals < 0 || record.ReceivedSnapshots < 0 || record.ReceivedProposals < 0 || record.Rejected < 0 {
+		return LocalExchangeRecord{}, ErrLocalStoreCorrupt
+	}
 	record.StatusSummary = safeSummary(record.StatusSummary, "profile sync exchange status")
 	for i, issue := range record.Issues {
 		record.Issues[i] = syncIssue(issue.Code, issue.Message, issue.Blocking)
 	}
 	return record, nil
+}
+
+func validateExchangeResultForStore(namespace string, result ExchangeResult) error {
+	if err := validateExchangeSession(namespace, result.Session); err != nil {
+		return err
+	}
+	if result.Push.PushedSnapshots < 0 || result.Push.PushedProposals < 0 || result.Pull.ReceivedSnapshots < 0 || result.Pull.ReceivedProposals < 0 || result.Pull.Rejected < 0 {
+		return ErrInvalidConfig
+	}
+	return nil
+}
+
+func validateExchangeSession(namespace string, session SyncSession) error {
+	if !validExactSyncName(namespace) || session.ProfileNamespace != namespace || !validExactSyncID(session.SessionID) || !validExactSyncID(session.LocalDeviceID) {
+		return ErrInvalidConfig
+	}
+	if session.StartedAt.IsZero() || session.CompletedAt.IsZero() || session.CompletedAt.Before(session.StartedAt) {
+		return ErrInvalidConfig
+	}
+	return nil
 }
 
 func (s *LocalMetadataStore) ensureInitialized(ctx context.Context) error {

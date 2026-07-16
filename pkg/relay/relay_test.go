@@ -93,6 +93,17 @@ func TestMailboxValidationAndExpiry(t *testing.T) {
 	}
 }
 
+func TestValidateMailboxIDIsStrict(t *testing.T) {
+	if err := ValidateMailboxID("mailbox-a"); err != nil {
+		t.Fatalf("valid mailbox ID error = %v", err)
+	}
+	for _, mailboxID := range []string{"", " mailbox-a", "mailbox-a ", "../mailbox", "client_secret"} {
+		if err := ValidateMailboxID(mailboxID); !errors.Is(err, ErrInvalidMailbox) {
+			t.Fatalf("ValidateMailboxID(%q) error = %v", mailboxID, err)
+		}
+	}
+}
+
 func TestEnvelopeValidationFailureModes(t *testing.T) {
 	now := time.Now().UTC()
 	envelope := validEnvelope(now, []byte("hello"))
