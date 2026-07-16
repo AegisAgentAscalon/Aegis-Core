@@ -178,6 +178,9 @@ func (s *Service) RegisterProfileDevice(ctx context.Context, req RegisterProfile
 	if req.Status == "" {
 		req.Status = DeviceStatusActive
 	}
+	if !validDeviceTrustStatus(req.TrustStatus) || !validDeviceStatus(req.Status) {
+		return ProfileDeviceRecord{}, ErrDeviceNotAllowed
+	}
 	now := s.clock.Now().UTC()
 	reg, err := s.store.readDevices()
 	if err != nil {
@@ -224,6 +227,18 @@ func (s *Service) RegisterProfileDevice(ctx context.Context, req RegisterProfile
 		return ProfileDeviceRecord{}, err
 	}
 	return device, nil
+}
+
+// RegisterProfileDeviceStrict requires callers to make trust and lifecycle
+// state explicit. It does not infer app membership or passphrase policy.
+func (s *Service) RegisterProfileDeviceStrict(ctx context.Context, req RegisterProfileDeviceRequest) (ProfileDeviceRecord, error) {
+	if err := contextError(ctx); err != nil {
+		return ProfileDeviceRecord{}, err
+	}
+	if req.TrustStatus == "" || req.Status == "" {
+		return ProfileDeviceRecord{}, ErrDeviceNotAllowed
+	}
+	return s.RegisterProfileDevice(ctx, req)
 }
 
 func (s *Service) ListProfileDevices(ctx context.Context) ([]ProfileDeviceRecord, error) {
@@ -452,7 +467,8 @@ func (s *Service) ExportProfileMeshSnapshot(ctx context.Context) (ProfileMeshSna
 	if err != nil {
 		return ProfileMeshSnapshot{}, err
 	}
-	now := s.clock.Now().UTC()
+	createdAt := profile.CreatedAt.UTC()
+	updatedAt := latestTime(profile.UpdatedAt, hosting.UpdatedAt, devices.UpdatedAt, resources.UpdatedAt)
 	snapshot := ProfileMeshSnapshot{
 		SchemaVersion:   SchemaVersion,
 		AppID:           s.cfg.AppID,
@@ -461,8 +477,8 @@ func (s *Service) ExportProfileMeshSnapshot(ctx context.Context) (ProfileMeshSna
 		HostingConfig:   hosting,
 		Devices:         append([]ProfileDeviceRecord{}, devices.Devices...),
 		Resources:       append([]ProfileResourceRecord{}, resources.Resources...),
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		CreatedAt:       createdAt,
+		UpdatedAt:       updatedAt,
 		MetadataVersion: MetadataVersion,
 	}
 	snapshot.SnapshotFingerprint = snapshotFingerprint(snapshot)
@@ -490,10 +506,10 @@ func (s *Service) ImportProfileMeshSnapshot(ctx context.Context, snapshot Profil
 	if err := s.store.writeHosting(snapshot.HostingConfig); err != nil {
 		return err
 	}
-	if err := s.store.writeDevices(deviceRegistryFile{SchemaVersion: SchemaVersion, Devices: append([]ProfileDeviceRecord{}, snapshot.Devices...), UpdatedAt: s.clock.Now().UTC()}); err != nil {
+	if err := s.store.writeDevices(deviceRegistryFile{SchemaVersion: SchemaVersion, Devices: append([]ProfileDeviceRecord{}, snapshot.Devices...), UpdatedAt: snapshot.UpdatedAt}); err != nil {
 		return err
 	}
-	return s.store.writeResources(resourceRegistryFile{SchemaVersion: SchemaVersion, Resources: append([]ProfileResourceRecord{}, snapshot.Resources...), UpdatedAt: s.clock.Now().UTC()})
+	return s.store.writeResources(resourceRegistryFile{SchemaVersion: SchemaVersion, Resources: append([]ProfileResourceRecord{}, snapshot.Resources...), UpdatedAt: snapshot.UpdatedAt})
 }
 
 func (s *Service) BuildProfileMeshOverview(ctx context.Context) (ProfileMeshOverview, error) {
@@ -593,6 +609,16 @@ func validateSnapshot(snapshot ProfileMeshSnapshot) error {
 		if device.DeviceID == "" || !validID(device.DeviceID) || !validFingerprint(device.PublicKeyFingerprint) {
 			return ErrInvalidProfileSnapshot
 		}
+		if !validDeviceTrustStatus(device.TrustStatus) || !validDeviceStatus(device.Status) || device.RegisteredAt.IsZero() || device.UpdatedAt.IsZero() || device.UpdatedAt.Before(device.RegisteredAt) || device.ProfileMetadataVersion != MetadataVersion {
+			return ErrInvalidProfileSnapshot
+		}
+		if device.Status == DeviceStatusRemoved {
+			if device.TrustStatus != DeviceTrustRevoked || device.RemovedAt == nil || device.RemovedAt.Before(device.RegisteredAt) {
+				return ErrInvalidProfileSnapshot
+			}
+		} else if device.RemovedAt != nil {
+			return ErrInvalidProfileSnapshot
+		}
 		if old, ok := devices[device.DeviceID]; ok {
 			if old != device.PublicKeyFingerprint {
 				return ErrInvalidProfileSnapshot
@@ -651,6 +677,34 @@ func validAvailability(a ProfileResourceAvailability) bool {
 	default:
 		return false
 	}
+}
+
+func validDeviceTrustStatus(status ProfileDeviceTrustStatus) bool {
+	switch status {
+	case DeviceTrustUnknown, DeviceTrustTrusted, DeviceTrustRevoked, DeviceTrustStale:
+		return true
+	default:
+		return false
+	}
+}
+
+func validDeviceStatus(status ProfileDeviceStatus) bool {
+	switch status {
+	case DeviceStatusActive, DeviceStatusStale, DeviceStatusRevoked, DeviceStatusRemoved:
+		return true
+	default:
+		return false
+	}
+}
+
+func latestTime(values ...time.Time) time.Time {
+	var latest time.Time
+	for _, value := range values {
+		if value.After(latest) {
+			latest = value
+		}
+	}
+	return latest.UTC()
 }
 
 func displayOrID(displayName, id string) string {

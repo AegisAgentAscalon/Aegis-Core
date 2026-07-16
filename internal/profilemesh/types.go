@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"sort"
@@ -416,15 +417,61 @@ func cloneMetadata(in map[string]string) map[string]string {
 }
 
 func snapshotFingerprint(snapshot ProfileMeshSnapshot) string {
-	var parts []string
-	parts = append(parts, snapshot.AppID, snapshot.Namespace, snapshot.Profile.ProfileID)
-	for _, dev := range snapshot.Devices {
-		parts = append(parts, "d:"+dev.DeviceID+"="+dev.PublicKeyFingerprint+"="+string(dev.Status))
+	canonical := snapshot
+	canonical.SnapshotFingerprint = ""
+	canonical.Devices = append([]ProfileDeviceRecord{}, snapshot.Devices...)
+	for i := range canonical.Devices {
+		canonical.Devices[i].Capabilities = append([]string{}, canonical.Devices[i].Capabilities...)
+		sort.Strings(canonical.Devices[i].Capabilities)
 	}
-	for _, res := range snapshot.Resources {
-		parts = append(parts, "r:"+res.ResourceID+"="+res.ProfileOwnerID+"="+res.CurrentHostDeviceID)
+	sort.Slice(canonical.Devices, func(i, j int) bool {
+		return canonical.Devices[i].DeviceID < canonical.Devices[j].DeviceID
+	})
+	canonical.Resources = append([]ProfileResourceRecord{}, snapshot.Resources...)
+	for i := range canonical.Resources {
+		canonical.Resources[i].AllowedHostDeviceIDs = append([]string{}, canonical.Resources[i].AllowedHostDeviceIDs...)
+		canonical.Resources[i].Tags = append([]string{}, canonical.Resources[i].Tags...)
+		canonical.Resources[i].Metadata = cloneMetadataExact(canonical.Resources[i].Metadata)
+		sort.Strings(canonical.Resources[i].AllowedHostDeviceIDs)
+		sort.Strings(canonical.Resources[i].Tags)
 	}
-	sort.Strings(parts)
-	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	sort.Slice(canonical.Resources, func(i, j int) bool {
+		return canonical.Resources[i].ResourceID < canonical.Resources[j].ResourceID
+	})
+	canonical.RelayHints = append([]ProfileRelayHint{}, snapshot.RelayHints...)
+	for i := range canonical.RelayHints {
+		canonical.RelayHints[i].Capabilities = append([]string{}, canonical.RelayHints[i].Capabilities...)
+		canonical.RelayHints[i].Metadata = cloneMetadataExact(canonical.RelayHints[i].Metadata)
+		sort.Strings(canonical.RelayHints[i].Capabilities)
+	}
+	sort.Slice(canonical.RelayHints, func(i, j int) bool {
+		a := canonical.RelayHints[i]
+		b := canonical.RelayHints[j]
+		return a.ProfileID+"\x00"+a.DeviceID+"\x00"+a.RelayProviderID+"\x00"+string(a.EndpointType) < b.ProfileID+"\x00"+b.DeviceID+"\x00"+b.RelayProviderID+"\x00"+string(b.EndpointType)
+	})
+	canonical.EndpointHints = append([]ProfileEndpointHint{}, snapshot.EndpointHints...)
+	for i := range canonical.EndpointHints {
+		canonical.EndpointHints[i].Capabilities = append([]string{}, canonical.EndpointHints[i].Capabilities...)
+		canonical.EndpointHints[i].Metadata = cloneMetadataExact(canonical.EndpointHints[i].Metadata)
+		sort.Strings(canonical.EndpointHints[i].Capabilities)
+	}
+	sort.Slice(canonical.EndpointHints, func(i, j int) bool {
+		a := canonical.EndpointHints[i]
+		b := canonical.EndpointHints[j]
+		return a.ProfileID+"\x00"+a.DeviceID+"\x00"+string(a.EndpointType)+"\x00"+a.Address < b.ProfileID+"\x00"+b.DeviceID+"\x00"+string(b.EndpointType)+"\x00"+b.Address
+	})
+	raw, _ := json.Marshal(canonical)
+	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+func cloneMetadataExact(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }

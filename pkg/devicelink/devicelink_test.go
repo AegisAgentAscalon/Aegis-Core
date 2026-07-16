@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,17 @@ func TestPublicDeviceLinkDTOsHideKeyMaterialFromJSON(t *testing.T) {
 	assertSafeJSON(t, identity)
 	if identity.PublicKey == "" || identity.PublicKeyFingerprint == "" {
 		t.Fatal("public trust material should remain available for explicit trust exchange")
+	}
+	bundle, err := svc.ExportPublicIdentityBundle(ctx)
+	if err != nil {
+		t.Fatalf("ExportPublicIdentityBundle returned error: %v", err)
+	}
+	if err := ValidatePublicIdentityBundle(bundle); err != nil {
+		t.Fatalf("ValidatePublicIdentityBundle returned error: %v", err)
+	}
+	rawBundle, err := json.Marshal(bundle)
+	if err != nil || !strings.Contains(string(rawBundle), `"public_key":`) {
+		t.Fatalf("public identity bundle did not explicitly expose exchange key: %s %v", string(rawBundle), err)
 	}
 
 	peerKey, peerFingerprint := publicTrustMaterial(t)
@@ -53,6 +66,22 @@ func TestPublicDeviceLinkDTOsHideKeyMaterialFromJSON(t *testing.T) {
 	}
 	if err := other.ImportRegistrySnapshot(ctx, snapshot); err != nil {
 		t.Fatalf("ImportRegistrySnapshot should preserve Go-level behavior: %v", err)
+	}
+}
+
+func TestPublicBootstrapInspectionDoesNotCreateStorage(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := AppConfig{AppID: "aegis-test", DisplayName: "Aegis Test", DataDir: dataDir, Namespace: "inspect"}
+	status, err := InspectBootstrap(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != BootstrapAbsent || status.Ready {
+		t.Fatalf("unexpected bootstrap status: %+v", status)
+	}
+	storageDir := filepath.Join(dataDir, cfg.AppID, cfg.Namespace, "devicelink")
+	if _, err := os.Stat(storageDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inspection created storage or returned an unexpected stat error: %v", err)
 	}
 }
 

@@ -93,4 +93,10 @@ func TestProfileMeshRejectsInvalidPublicEnums(t *testing.T) {
 	if _, err := svc.SetProfileHostingMode(ctx, SetProfileHostingModeRequest{HostingMode: HostingMultiProfileDevices}); err == nil {
 		t.Fatal("expected deferred multi-host mode to be rejected")
 	}
+	if _, err := svc.RegisterProfileDeviceStrict(ctx, RegisterProfileDeviceRequest{DeviceID: "device-strict", PublicKeyFingerprint: "fp-device-strict"}); err == nil {
+		t.Fatal("expected strict registration to reject implicit trust defaults")
+	}
+	if _, err := svc.RegisterProfileDeviceStrict(ctx, RegisterProfileDeviceRequest{DeviceID: "device-strict", PublicKeyFingerprint: "fp-device-strict", TrustStatus: DeviceTrustTrusted, Status: DeviceStatusActive}); err != nil {
+		t.Fatalf("expected explicit strict registration to succeed: %v", err)
+	}
 }

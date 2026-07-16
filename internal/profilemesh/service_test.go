@@ -2,6 +2,7 @@ package profilemesh
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -144,6 +145,27 @@ func TestDeviceRegistryLifecycle(t *testing.T) {
 	}
 }
 
+func TestStrictDeviceRegistrationRequiresExplicitTrustState(t *testing.T) {
+	svc := newTestService(t, "strict-profile")
+	if _, err := svc.BootstrapProfile(context.Background(), BootstrapProfileRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := svc.RegisterProfileDevice(context.Background(), RegisterProfileDeviceRequest{DeviceID: "legacy-device", PublicKeyFingerprint: "fp-legacy-device"})
+	if err != nil || legacy.TrustStatus != DeviceTrustTrusted || legacy.Status != DeviceStatusActive {
+		t.Fatalf("legacy registration compatibility changed: %+v %v", legacy, err)
+	}
+	if _, err := svc.RegisterProfileDeviceStrict(context.Background(), RegisterProfileDeviceRequest{DeviceID: "strict-missing", PublicKeyFingerprint: "fp-strict-missing"}); !errors.Is(err, ErrDeviceNotAllowed) {
+		t.Fatalf("strict registration without trust state error = %v, want ErrDeviceNotAllowed", err)
+	}
+	strict, err := svc.RegisterProfileDeviceStrict(context.Background(), RegisterProfileDeviceRequest{DeviceID: "strict-device", PublicKeyFingerprint: "fp-strict-device", TrustStatus: DeviceTrustTrusted, Status: DeviceStatusActive})
+	if err != nil || strict.TrustStatus != DeviceTrustTrusted || strict.Status != DeviceStatusActive {
+		t.Fatalf("explicit strict registration failed: %+v %v", strict, err)
+	}
+	if _, err := svc.RegisterProfileDeviceStrict(context.Background(), RegisterProfileDeviceRequest{DeviceID: "strict-invalid", PublicKeyFingerprint: "fp-strict-invalid", TrustStatus: "accepted", Status: DeviceStatusActive}); !errors.Is(err, ErrDeviceNotAllowed) {
+		t.Fatalf("invalid explicit trust state error = %v, want ErrDeviceNotAllowed", err)
+	}
+}
+
 func TestResourceRegistryProfileOwnedDeviceHosted(t *testing.T) {
 	svc := newTestService(t, "profile")
 	profile, _ := svc.BootstrapProfile(context.Background(), BootstrapProfileRequest{})
@@ -231,6 +253,68 @@ func TestSnapshotExportImportValidation(t *testing.T) {
 	}
 	if profile.ProfileID == "" {
 		t.Fatalf("expected profile id")
+	}
+}
+
+func TestProfileMeshFingerprintCoversTrustCapabilityAndTimestampFields(t *testing.T) {
+	svc := newTestService(t, "fingerprint-profile")
+	profile, err := svc.BootstrapProfile(context.Background(), BootstrapProfileRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := registerDevice(t, svc, "device-1")
+	if _, err := svc.RegisterProfileResource(context.Background(), RegisterProfileResourceRequest{ResourceID: "tool-1", ResourceType: ResourceTool, CurrentHostDeviceID: device.DeviceID, AllowedHostDeviceIDs: []string{device.DeviceID}}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := svc.ExportProfileMeshSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := snapshot.UpdatedAt
+	snapshot.RelayHints = []ProfileRelayHint{{ProfileID: profile.ProfileID, DeviceID: device.DeviceID, RelayProviderID: "relay-1", EndpointType: EndpointRelay, ExpiresAt: now.Add(time.Hour), LastSeen: now, Capabilities: []string{"rendezvous"}}}
+	snapshot.EndpointHints = []ProfileEndpointHint{{ProfileID: profile.ProfileID, DeviceID: device.DeviceID, EndpointType: EndpointLocal, Address: "127.0.0.1", ExpiresAt: now.Add(time.Hour), LastSeen: now, Capabilities: []string{"lan"}}}
+	baseFingerprint := snapshotFingerprint(snapshot)
+	tests := map[string]func(*ProfileMeshSnapshot){
+		"snapshot created at":     func(s *ProfileMeshSnapshot) { s.CreatedAt = s.CreatedAt.Add(time.Second) },
+		"snapshot updated at":     func(s *ProfileMeshSnapshot) { s.UpdatedAt = s.UpdatedAt.Add(time.Second) },
+		"profile created at":      func(s *ProfileMeshSnapshot) { s.Profile.CreatedAt = s.Profile.CreatedAt.Add(time.Second) },
+		"profile updated at":      func(s *ProfileMeshSnapshot) { s.Profile.UpdatedAt = s.Profile.UpdatedAt.Add(time.Second) },
+		"hosting updated at":      func(s *ProfileMeshSnapshot) { s.HostingConfig.UpdatedAt = s.HostingConfig.UpdatedAt.Add(time.Second) },
+		"device trust":            func(s *ProfileMeshSnapshot) { s.Devices[0].TrustStatus = DeviceTrustRevoked },
+		"device status":           func(s *ProfileMeshSnapshot) { s.Devices[0].Status = DeviceStatusStale },
+		"device capabilities":     func(s *ProfileMeshSnapshot) { s.Devices[0].Capabilities = append(s.Devices[0].Capabilities, "runtime") },
+		"device last seen":        func(s *ProfileMeshSnapshot) { s.Devices[0].LastSeen = s.Devices[0].LastSeen.Add(time.Second) },
+		"device registered at":    func(s *ProfileMeshSnapshot) { s.Devices[0].RegisteredAt = s.Devices[0].RegisteredAt.Add(time.Second) },
+		"device updated at":       func(s *ProfileMeshSnapshot) { s.Devices[0].UpdatedAt = s.Devices[0].UpdatedAt.Add(time.Second) },
+		"device removed at":       func(s *ProfileMeshSnapshot) { value := now.Add(time.Second); s.Devices[0].RemovedAt = &value },
+		"device metadata version": func(s *ProfileMeshSnapshot) { s.Devices[0].ProfileMetadataVersion++ },
+		"resource host policy": func(s *ProfileMeshSnapshot) {
+			s.Resources[0].AllowedHostDeviceIDs = append(s.Resources[0].AllowedHostDeviceIDs, "device-2")
+		},
+		"resource updated at": func(s *ProfileMeshSnapshot) { s.Resources[0].UpdatedAt = s.Resources[0].UpdatedAt.Add(time.Second) },
+		"relay capabilities": func(s *ProfileMeshSnapshot) {
+			s.RelayHints[0].Capabilities = append(s.RelayHints[0].Capabilities, "proof")
+		},
+		"relay last seen":  func(s *ProfileMeshSnapshot) { s.RelayHints[0].LastSeen = s.RelayHints[0].LastSeen.Add(time.Second) },
+		"relay expiration": func(s *ProfileMeshSnapshot) { s.RelayHints[0].ExpiresAt = s.RelayHints[0].ExpiresAt.Add(time.Second) },
+		"endpoint capabilities": func(s *ProfileMeshSnapshot) {
+			s.EndpointHints[0].Capabilities = append(s.EndpointHints[0].Capabilities, "proof")
+		},
+		"endpoint last seen": func(s *ProfileMeshSnapshot) {
+			s.EndpointHints[0].LastSeen = s.EndpointHints[0].LastSeen.Add(time.Second)
+		},
+		"endpoint expiration": func(s *ProfileMeshSnapshot) {
+			s.EndpointHints[0].ExpiresAt = s.EndpointHints[0].ExpiresAt.Add(time.Second)
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			copy := cloneProfileMeshSnapshot(t, snapshot)
+			mutate(&copy)
+			if got := snapshotFingerprint(copy); got == baseFingerprint {
+				t.Fatalf("fingerprint did not cover %s", name)
+			}
+		})
 	}
 }
 
@@ -322,4 +406,17 @@ func registerDevice(t *testing.T, svc *Service, deviceID string) ProfileDeviceRe
 		t.Fatal(err)
 	}
 	return device
+}
+
+func cloneProfileMeshSnapshot(t *testing.T, snapshot ProfileMeshSnapshot) ProfileMeshSnapshot {
+	t.Helper()
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cloned ProfileMeshSnapshot
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		t.Fatal(err)
+	}
+	return cloned
 }
