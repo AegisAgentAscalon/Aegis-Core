@@ -28,6 +28,7 @@ var (
 	ErrProviderUnavailable     = errors.New("auth provider unavailable")
 	ErrInvalidProviderResponse = errors.New("auth provider returned an invalid response")
 	ErrStorageUnavailable      = errors.New("auth storage is unavailable; check app permissions")
+	ErrProtectedStorageCorrupt = errors.New("protected auth storage is invalid")
 	ErrAuthCanceled            = errors.New("auth request canceled")
 	ErrSignOutIncomplete       = errors.New("sign-out cleanup incomplete")
 
