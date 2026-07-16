@@ -311,13 +311,14 @@ type Provider interface {
 }
 
 type Service struct {
-	cfg      AppConfig
-	store    *store
-	provider Provider
-	apply    ApplyStrategy
-	client   *http.Client
-	options  ServiceOptions
-	revision uint64
+	cfg                AppConfig
+	store              *store
+	provider           Provider
+	apply              ApplyStrategy
+	client             *http.Client
+	options            ServiceOptions
+	revision           uint64
+	legacyApplyEnabled bool
 
 	mu              sync.Mutex
 	workflowMu      sync.Mutex
@@ -329,6 +330,18 @@ func NewService(cfg AppConfig, apply ApplyStrategy) (*Service, error) {
 }
 
 func NewServiceWithOptions(cfg AppConfig, apply ApplyStrategy, options ServiceOptions) (*Service, error) {
+	return newServiceWithOptions(cfg, apply, options, true)
+}
+
+func NewRecordOnlyService(cfg AppConfig) (*Service, error) {
+	return NewRecordOnlyServiceWithOptions(cfg, ServiceOptions{})
+}
+
+func NewRecordOnlyServiceWithOptions(cfg AppConfig, options ServiceOptions) (*Service, error) {
+	return newServiceWithOptions(cfg, ManualApplyStrategy{}, options, false)
+}
+
+func newServiceWithOptions(cfg AppConfig, apply ApplyStrategy, options ServiceOptions, legacyApplyEnabled bool) (*Service, error) {
 	cfg = normalizeConfig(cfg)
 	if err := validateConfigWithOptions(cfg, options); err != nil {
 		return nil, err
@@ -350,7 +363,7 @@ func NewServiceWithOptions(cfg AppConfig, apply ApplyStrategy, options ServiceOp
 	}
 	return &Service{
 		cfg: cfg, store: st, provider: provider, apply: apply,
-		client: client, options: options, revision: 1,
+		client: client, options: options, revision: 1, legacyApplyEnabled: legacyApplyEnabled,
 	}, nil
 }
 
@@ -796,6 +809,12 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 	if err := snapshot.store.writeStaged(staged); err != nil {
 		return StageResult{}, err
 	}
+	if err := removeFiles(snapshot.store.lifecyclePath()); err != nil {
+		return StageResult{}, err
+	}
+	if err := snapshot.store.writeLifecycle(newLifecycleRecord(staged, time.Now().UTC())); err != nil {
+		return StageResult{}, err
+	}
 	return StageResult{Version: staged.Version, ArtifactName: staged.ArtifactName, Staged: true, Message: "update staged"}, nil
 }
 
@@ -856,6 +875,12 @@ func (s *Service) applyExpectedVersion(ctx context.Context, version string) (App
 	version = strings.TrimSpace(version)
 	if version != "" && !validVersion(version) {
 		return ApplyResult{}, ErrNoUpdateAvailable
+	}
+	s.mu.Lock()
+	legacyApplyEnabled := s.legacyApplyEnabled
+	s.mu.Unlock()
+	if !legacyApplyEnabled {
+		return ApplyResult{}, ErrLegacyExecutionDisabled
 	}
 	s.workflowMu.Lock()
 	s.mu.Lock()
@@ -1706,7 +1731,7 @@ func validFilenameSegment(name string) bool {
 
 func reservedUpdateMetadataName(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "selected_update.json", "downloaded_update.json", "verified_update.json", "staged_update.json":
+	case "selected_update.json", "downloaded_update.json", "verified_update.json", "staged_update.json", "lifecycle_envelope.json":
 		return true
 	default:
 		return false

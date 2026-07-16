@@ -11,26 +11,31 @@ import (
 )
 
 var (
-	ErrNotConfigured        = internal.ErrNotConfigured
-	ErrInvalidConfig        = internal.ErrInvalidConfig
-	ErrInvalidProvider      = internal.ErrInvalidProvider
-	ErrProviderUnavailable  = internal.ErrProviderUnavailable
-	ErrInvalidManifest      = internal.ErrInvalidManifest
-	ErrNoUpdateAvailable    = internal.ErrNoUpdateAvailable
-	ErrNoCompatibleArtifact = internal.ErrNoCompatibleArtifact
-	ErrDownloadFailed       = internal.ErrDownloadFailed
-	ErrVerificationFailed   = internal.ErrVerificationFailed
-	ErrUpdateBlocked        = internal.ErrUpdateBlocked
-	ErrManifestStale        = internal.ErrManifestStale
-	ErrManifestFutureDated  = internal.ErrManifestFutureDated
-	ErrRollbackRisk         = internal.ErrRollbackRisk
-	ErrStagedUpdateStale    = internal.ErrStagedUpdateStale
-	ErrStagedUpdateNotFound = internal.ErrStagedUpdateNotFound
-	ErrApplyFailed          = internal.ErrApplyFailed
-	ErrStorageUnavailable   = internal.ErrStorageUnavailable
-	ErrContextCanceled      = internal.ErrContextCanceled
-	ErrUpdateStateChanged   = internal.ErrUpdateStateChanged
-	ErrApplyInProgress      = internal.ErrApplyInProgress
+	ErrNotConfigured                = internal.ErrNotConfigured
+	ErrInvalidConfig                = internal.ErrInvalidConfig
+	ErrInvalidProvider              = internal.ErrInvalidProvider
+	ErrProviderUnavailable          = internal.ErrProviderUnavailable
+	ErrInvalidManifest              = internal.ErrInvalidManifest
+	ErrNoUpdateAvailable            = internal.ErrNoUpdateAvailable
+	ErrNoCompatibleArtifact         = internal.ErrNoCompatibleArtifact
+	ErrDownloadFailed               = internal.ErrDownloadFailed
+	ErrVerificationFailed           = internal.ErrVerificationFailed
+	ErrUpdateBlocked                = internal.ErrUpdateBlocked
+	ErrManifestStale                = internal.ErrManifestStale
+	ErrManifestFutureDated          = internal.ErrManifestFutureDated
+	ErrRollbackRisk                 = internal.ErrRollbackRisk
+	ErrStagedUpdateStale            = internal.ErrStagedUpdateStale
+	ErrStagedUpdateNotFound         = internal.ErrStagedUpdateNotFound
+	ErrApplyFailed                  = internal.ErrApplyFailed
+	ErrStorageUnavailable           = internal.ErrStorageUnavailable
+	ErrContextCanceled              = internal.ErrContextCanceled
+	ErrUpdateStateChanged           = internal.ErrUpdateStateChanged
+	ErrApplyInProgress              = internal.ErrApplyInProgress
+	ErrLifecycleRevisionStale       = internal.ErrLifecycleRevisionStale
+	ErrLifecycleIdempotencyConflict = internal.ErrLifecycleIdempotencyConflict
+	ErrLifecycleTransition          = internal.ErrLifecycleTransition
+	ErrInvalidLifecycleRequest      = internal.ErrInvalidLifecycleRequest
+	ErrLegacyExecutionDisabled      = internal.ErrLegacyExecutionDisabled
 )
 
 type Channel string
@@ -287,14 +292,21 @@ type ApplyPlan struct {
 	Steps           []string      `json:"steps,omitempty"`
 }
 
+// ApplyStrategy permits arbitrary app callback execution.
+//
+// Deprecated: use NewRecordOnlyService and the lifecycle reporting APIs.
 type ApplyStrategy interface {
 	Apply(ctx context.Context, staged StagedUpdate) (ApplyResult, error)
 }
 
+// ApplyAdapter permits arbitrary app callback execution.
+//
+// Deprecated: use NewRecordOnlyService and the lifecycle reporting APIs.
 type ApplyAdapter interface {
 	ApplyUpdate(ctx context.Context, stagedPath string, release Release) (ApplyResult, error)
 }
 
+// Deprecated: use NewRecordOnlyService and the lifecycle reporting APIs.
 type ManualApplyStrategy struct {
 	Message string
 }
@@ -321,10 +333,14 @@ type Service struct {
 	svc *internal.Service
 }
 
+// Deprecated: this compatibility constructor accepts executable callbacks. Use
+// NewRecordOnlyService for the non-executing package lifecycle contract.
 func NewService(cfg AppConfig, apply ApplyStrategy) (*Service, error) {
 	return NewServiceWithOptions(cfg, apply, ServiceOptions{})
 }
 
+// Deprecated: this compatibility constructor accepts executable callbacks. Use
+// NewRecordOnlyServiceWithOptions for the non-executing package lifecycle contract.
 func NewServiceWithOptions(cfg AppConfig, apply ApplyStrategy, options ServiceOptions) (*Service, error) {
 	svc, err := internal.NewServiceWithOptions(toInternalConfig(cfg), publicApplyStrategy{apply: apply}, toInternalOptions(options))
 	if err != nil {
@@ -333,10 +349,27 @@ func NewServiceWithOptions(cfg AppConfig, apply ApplyStrategy, options ServiceOp
 	return &Service{svc: svc}, nil
 }
 
+// NewRecordOnlyService creates a service whose legacy apply methods are disabled.
+func NewRecordOnlyService(cfg AppConfig) (*Service, error) {
+	return NewRecordOnlyServiceWithOptions(cfg, ServiceOptions{})
+}
+
+// NewRecordOnlyServiceWithOptions creates a non-executing service. Its lifecycle
+// APIs only validate, reveal a verified path, and record consumer reports.
+func NewRecordOnlyServiceWithOptions(cfg AppConfig, options ServiceOptions) (*Service, error) {
+	svc, err := internal.NewRecordOnlyServiceWithOptions(toInternalConfig(cfg), toInternalOptions(options))
+	if err != nil {
+		return nil, err
+	}
+	return &Service{svc: svc}, nil
+}
+
+// Deprecated: use NewRecordOnlyService and the lifecycle reporting APIs.
 func NewServiceWithAdapter(cfg AppConfig, apply ApplyAdapter) (*Service, error) {
 	return NewServiceWithAdapterOptions(cfg, apply, ServiceOptions{})
 }
 
+// Deprecated: use NewRecordOnlyServiceWithOptions and the lifecycle reporting APIs.
 func NewServiceWithAdapterOptions(cfg AppConfig, apply ApplyAdapter, options ServiceOptions) (*Service, error) {
 	var strategy ApplyStrategy
 	if apply != nil {
@@ -425,6 +458,9 @@ func (s *Service) BuildApplyPlan(ctx context.Context) (ApplyPlan, error) {
 	return fromInternalApplyPlan(res), nil
 }
 
+// ApplyUpdate invokes the legacy callback strategy.
+//
+// Deprecated: use RecordPackageHandoff and consumer-reported lifecycle methods.
 func (s *Service) ApplyUpdate(ctx context.Context) (ApplyResult, error) {
 	res, err := s.svc.ApplyUpdate(ctx)
 	return ApplyResult(res), err
@@ -450,6 +486,10 @@ func (s *Service) Describe(ctx context.Context) (StagedUpdateSummary, error) {
 	return s.DescribeStagedUpdate(ctx)
 }
 func (s *Service) PlanApply(ctx context.Context) (ApplyPlan, error) { return s.BuildApplyPlan(ctx) }
+
+// Apply invokes the legacy callback strategy for a matching version.
+//
+// Deprecated: use RecordPackageHandoff and consumer-reported lifecycle methods.
 func (s *Service) Apply(ctx context.Context, version string) (ApplyResult, error) {
 	res, err := s.svc.Apply(ctx, version)
 	return ApplyResult(res), err

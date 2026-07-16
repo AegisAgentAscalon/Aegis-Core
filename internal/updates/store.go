@@ -54,8 +54,11 @@ func (s *store) selectedPath() string   { return filepath.Join(s.dir, "selected_
 func (s *store) downloadedPath() string { return filepath.Join(s.dir, "downloaded_update.json") }
 func (s *store) verifiedPath() string   { return filepath.Join(s.dir, "verified_update.json") }
 func (s *store) stagedMetaPath() string { return filepath.Join(s.stagedDir(), "staged_update.json") }
-func (s *store) downloadsDir() string   { return filepath.Join(s.dir, "downloads") }
-func (s *store) stagedDir() string      { return filepath.Join(s.dir, "staged") }
+func (s *store) lifecyclePath() string {
+	return filepath.Join(s.stagedDir(), "lifecycle_envelope.json")
+}
+func (s *store) downloadsDir() string { return filepath.Join(s.dir, "downloads") }
+func (s *store) stagedDir() string    { return filepath.Join(s.dir, "staged") }
 
 func (s *store) readSelected() (selectedUpdate, error) {
 	var out selectedUpdate
@@ -104,6 +107,17 @@ func (s *store) readStaged() (StagedUpdate, error) {
 
 func (s *store) writeStaged(v StagedUpdate) error {
 	return writeJSON(s.stagedMetaPath(), v)
+}
+
+func (s *store) readLifecycle() (lifecycleRecord, error) {
+	var out lifecycleRecord
+	err := readJSON(s.lifecyclePath(), &out)
+	return out, err
+}
+
+func (s *store) writeLifecycle(v lifecycleRecord) error {
+	v.SchemaVersion = lifecycleSchemaVersion
+	return writeJSON(s.lifecyclePath(), v)
 }
 
 func (s *store) clearCandidateState() error {
