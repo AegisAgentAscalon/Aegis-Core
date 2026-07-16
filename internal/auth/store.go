@@ -19,9 +19,12 @@ const maxPendingSessionFiles = 5
 
 const protectedSessionsVersion = 1
 
+const maxProtectedSessionCASAttempts = 32
+
 type store struct {
 	dir         string
 	protected   secretstore.Store
+	versioned   secretstore.VersionedStore
 	tokenKey    secretstore.Key
 	sessionsKey secretstore.Key
 }
@@ -32,6 +35,14 @@ type protectedPendingSessions struct {
 }
 
 func newStore(cfg AppConfig, protected secretstore.Store) (*store, error) {
+	var versioned secretstore.VersionedStore
+	if protected != nil {
+		var ok bool
+		versioned, ok = protected.(secretstore.VersionedStore)
+		if !ok || isNilSecretStore(versioned) {
+			return nil, ErrStorageUnavailable
+		}
+	}
 	base := strings.TrimSpace(cfg.TokenStore.BaseDir)
 	if base == "" {
 		userCfg, err := os.UserConfigDir()
@@ -47,6 +58,7 @@ func newStore(cfg AppConfig, protected secretstore.Store) (*store, error) {
 	st := &store{
 		dir:         dir,
 		protected:   protected,
+		versioned:   versioned,
 		tokenKey:    protectedKey(cfg, "oauth-token"),
 		sessionsKey: protectedKey(cfg, "pending-sessions"),
 	}
@@ -235,25 +247,18 @@ func (s *store) writeSession(sess pendingSession) error {
 		if err := validatePendingSession(sess); err != nil {
 			return ErrStorageUnavailable
 		}
-		sessions, err := s.readProtectedSessions()
-		if err != nil && !errors.Is(err, secretstore.ErrNotFound) {
-			return err
-		}
-		replaced := false
-		for i := range sessions {
-			if sessions[i].SessionID == sess.SessionID {
-				sessions[i] = sess
-				replaced = true
-				break
+		return s.mutateProtectedSessions(func(sessions []pendingSession) ([]pendingSession, error) {
+			for i := range sessions {
+				if sessions[i].SessionID == sess.SessionID {
+					sessions[i] = sess
+					return sessions, nil
+				}
 			}
-		}
-		if !replaced {
 			if len(sessions) >= maxPendingSessionFiles {
-				return ErrStorageUnavailable
+				return nil, ErrStorageUnavailable
 			}
-			sessions = append(sessions, sess)
-		}
-		return s.writeProtectedSessions(sessions)
+			return append(sessions, sess), nil
+		})
 	}
 	if err := ensurePrivateDir(s.sessionsDir()); err != nil {
 		return ErrStorageUnavailable
@@ -411,9 +416,51 @@ func unwrapAuthSentinel(err error) error {
 	return errors.New("auth operation failed")
 }
 
-func (s *store) consumeSession(sess pendingSession) error {
-	sess.Consumed = true
-	return s.writeSession(sess)
+func (s *store) consumeSessionByState(state string, now time.Time) (pendingSession, error) {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return pendingSession{}, errors.New("state is required")
+	}
+	if !s.isStrict() {
+		sess, err := s.findSessionByState(state)
+		if err != nil {
+			return pendingSession{}, err
+		}
+		if sess.Consumed {
+			return pendingSession{}, ErrSessionConsumed
+		}
+		if now.After(sess.ExpiresAt) {
+			return pendingSession{}, ErrSessionExpired
+		}
+		sess.Consumed = true
+		if err := s.writeSession(sess); err != nil {
+			return pendingSession{}, err
+		}
+		return sess, nil
+	}
+
+	var claimed pendingSession
+	err := s.mutateProtectedSessions(func(sessions []pendingSession) ([]pendingSession, error) {
+		for i := range sessions {
+			if sessions[i].State != state {
+				continue
+			}
+			if sessions[i].Consumed {
+				return nil, ErrSessionConsumed
+			}
+			if now.After(sessions[i].ExpiresAt) {
+				return nil, ErrSessionExpired
+			}
+			claimed = sessions[i]
+			sessions[i].Consumed = true
+			return sessions, nil
+		}
+		return nil, ErrSessionNotFound
+	})
+	if err != nil {
+		return pendingSession{}, err
+	}
+	return claimed, nil
 }
 
 func (s *store) clearSessions() error {
@@ -468,6 +515,39 @@ func (s *store) readProtectedSessions() ([]pendingSession, error) {
 	return decodeProtectedSessions(b)
 }
 
+func (s *store) mutateProtectedSessions(mutate func([]pendingSession) ([]pendingSession, error)) error {
+	for attempt := 0; attempt < maxProtectedSessionCASAttempts; attempt++ {
+		b, revision, err := s.versioned.GetWithRevision(context.Background(), s.sessionsKey)
+		var sessions []pendingSession
+		switch {
+		case err == nil:
+			sessions, err = decodeProtectedSessions(b)
+			if err != nil {
+				return err
+			}
+		case errors.Is(err, secretstore.ErrNotFound):
+			sessions = nil
+		default:
+			return ErrStorageUnavailable
+		}
+
+		updated, err := mutate(append([]pendingSession(nil), sessions...))
+		if err != nil {
+			return err
+		}
+		record, err := encodeProtectedSessions(updated)
+		if err != nil {
+			return err
+		}
+		if _, err := s.versioned.CompareAndSwap(context.Background(), s.sessionsKey, revision, record); err == nil {
+			return nil
+		} else if !errors.Is(err, secretstore.ErrConflict) {
+			return ErrStorageUnavailable
+		}
+	}
+	return ErrStorageUnavailable
+}
+
 func decodeProtectedSessions(b []byte) ([]pendingSession, error) {
 	var record protectedPendingSessions
 	if err := json.Unmarshal(b, &record); err != nil || record.Version != protectedSessionsVersion {
@@ -488,16 +568,16 @@ func decodeProtectedSessions(b []byte) ([]pendingSession, error) {
 	return append([]pendingSession(nil), record.Sessions...), nil
 }
 
-func (s *store) writeProtectedSessions(sessions []pendingSession) error {
+func encodeProtectedSessions(sessions []pendingSession) ([]byte, error) {
 	record := protectedPendingSessions{Version: protectedSessionsVersion, Sessions: append([]pendingSession(nil), sessions...)}
 	b, err := json.Marshal(record)
 	if err != nil {
-		return ErrStorageUnavailable
+		return nil, ErrStorageUnavailable
 	}
 	if _, err := decodeProtectedSessions(b); err != nil {
-		return ErrStorageUnavailable
+		return nil, ErrStorageUnavailable
 	}
-	return s.putProtected(s.sessionsKey, b)
+	return b, nil
 }
 
 func validatePendingSession(sess pendingSession) error {
@@ -532,79 +612,131 @@ func validSessionID(sessionID string) bool {
 	return true
 }
 
-func (s *store) migrateLegacySecrets(ctx context.Context) error {
-	if err := s.migrateLegacyToken(ctx); err != nil {
-		return err
-	}
-	return s.migrateLegacySessions(ctx)
+type migrationRecord struct {
+	key           secretstore.Key
+	value         []byte
+	expected      secretstore.Revision
+	needsWrite    bool
+	cleanupLegacy bool
 }
 
-func (s *store) migrateLegacyToken(ctx context.Context) error {
-	protectedRecord, err := s.protected.Get(ctx, s.tokenKey)
+type migrationWrite struct {
+	key      secretstore.Key
+	revision secretstore.Revision
+}
+
+func (s *store) migrateLegacySecrets(ctx context.Context) error {
+	tokenPlan, err := s.planLegacyToken(ctx)
+	if err != nil {
+		return err
+	}
+	sessionsPlan, err := s.planLegacySessions(ctx)
+	if err != nil {
+		return err
+	}
+
+	plans := []migrationRecord{tokenPlan, sessionsPlan}
+	writes := make([]migrationWrite, 0, len(plans))
+	for _, plan := range plans {
+		if !plan.needsWrite {
+			continue
+		}
+		revision, err := s.versioned.CompareAndSwap(ctx, plan.key, plan.expected, plan.value)
+		if err != nil {
+			s.rollbackMigrationWrites(ctx, writes)
+			return ErrStorageUnavailable
+		}
+		writes = append(writes, migrationWrite{key: plan.key, revision: revision})
+		readBack, readRevision, err := s.versioned.GetWithRevision(ctx, plan.key)
+		if err != nil || readRevision != revision || !bytes.Equal(readBack, plan.value) {
+			s.rollbackMigrationWrites(ctx, writes)
+			return ErrStorageUnavailable
+		}
+	}
+
+	if tokenPlan.cleanupLegacy {
+		if err := removeLegacyFile(s.tokenPath()); err != nil {
+			return err
+		}
+	}
+	if sessionsPlan.cleanupLegacy {
+		if err := removeLegacySessions(s.sessionsDir()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *store) planLegacyToken(ctx context.Context) (migrationRecord, error) {
+	plan := migrationRecord{key: s.tokenKey}
+	protectedRecord, revision, err := s.versioned.GetWithRevision(ctx, s.tokenKey)
 	switch {
 	case err == nil:
 		if _, decodeErr := decodeProtectedToken(protectedRecord); decodeErr != nil {
-			return ErrProtectedStorageCorrupt
+			return migrationRecord{}, ErrProtectedStorageCorrupt
 		}
-		return removeLegacyFile(s.tokenPath())
+		plan.cleanupLegacy = true
+		return plan, nil
 	case !errors.Is(err, secretstore.ErrNotFound):
-		return ErrStorageUnavailable
+		return migrationRecord{}, ErrStorageUnavailable
 	}
 
 	legacyRecord, err := os.ReadFile(s.tokenPath())
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return plan, nil
 	}
 	if err != nil {
-		return ErrStorageUnavailable
+		return migrationRecord{}, ErrStorageUnavailable
 	}
 	if _, err := decodeProtectedToken(legacyRecord); err != nil {
-		return ErrStorageUnavailable
+		return migrationRecord{}, ErrStorageUnavailable
 	}
-	if err := s.protected.Put(ctx, s.tokenKey, legacyRecord); err != nil {
-		return ErrStorageUnavailable
-	}
-	readBack, err := s.protected.Get(ctx, s.tokenKey)
-	if err != nil || !bytes.Equal(readBack, legacyRecord) {
-		return ErrStorageUnavailable
-	}
-	return removeLegacyFile(s.tokenPath())
+	plan.value = append([]byte(nil), legacyRecord...)
+	plan.expected = revision
+	plan.needsWrite = true
+	plan.cleanupLegacy = true
+	return plan, nil
 }
 
-func (s *store) migrateLegacySessions(ctx context.Context) error {
-	protectedRecord, err := s.protected.Get(ctx, s.sessionsKey)
+func (s *store) planLegacySessions(ctx context.Context) (migrationRecord, error) {
+	plan := migrationRecord{key: s.sessionsKey}
+	protectedRecord, revision, err := s.versioned.GetWithRevision(ctx, s.sessionsKey)
 	switch {
 	case err == nil:
 		if _, decodeErr := decodeProtectedSessions(protectedRecord); decodeErr != nil {
-			return ErrProtectedStorageCorrupt
+			return migrationRecord{}, ErrProtectedStorageCorrupt
 		}
-		return removeLegacySessions(s.sessionsDir())
+		plan.cleanupLegacy = true
+		return plan, nil
 	case !errors.Is(err, secretstore.ErrNotFound):
-		return ErrStorageUnavailable
+		return migrationRecord{}, ErrStorageUnavailable
 	}
 
 	sessions, exists, err := readLegacySessions(s.sessionsDir())
 	if err != nil {
-		return err
+		return migrationRecord{}, err
 	}
 	if !exists {
-		return nil
+		return plan, nil
 	}
+	plan.cleanupLegacy = true
 	if len(sessions) == 0 {
-		return removeLegacySessions(s.sessionsDir())
+		return plan, nil
 	}
-	record, err := json.Marshal(protectedPendingSessions{Version: protectedSessionsVersion, Sessions: sessions})
+	record, err := encodeProtectedSessions(sessions)
 	if err != nil {
-		return ErrStorageUnavailable
+		return migrationRecord{}, err
 	}
-	if err := s.protected.Put(ctx, s.sessionsKey, record); err != nil {
-		return ErrStorageUnavailable
+	plan.value = record
+	plan.expected = revision
+	plan.needsWrite = true
+	return plan, nil
+}
+
+func (s *store) rollbackMigrationWrites(ctx context.Context, writes []migrationWrite) {
+	for i := len(writes) - 1; i >= 0; i-- {
+		_, _ = s.versioned.CompareAndDelete(ctx, writes[i].key, writes[i].revision)
 	}
-	readBack, err := s.protected.Get(ctx, s.sessionsKey)
-	if err != nil || !bytes.Equal(readBack, record) {
-		return ErrStorageUnavailable
-	}
-	return removeLegacySessions(s.sessionsDir())
 }
 
 func readLegacySessions(dir string) ([]pendingSession, bool, error) {

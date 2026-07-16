@@ -9,6 +9,7 @@ import (
 
 	devsecretstore "github.com/AegisAgentAscalon/aegis-core/internal/secretstore"
 	"github.com/AegisAgentAscalon/aegis-core/pkg/auth"
+	"github.com/AegisAgentAscalon/aegis-core/pkg/secretstore"
 )
 
 func TestPublicServiceStatusUsesSafeAppConfig(t *testing.T) {
@@ -96,5 +97,9 @@ func TestPublicStrictProtectedStorageConstructors(t *testing.T) {
 	var typedNil *devsecretstore.MemoryStore
 	if _, err := auth.NewStrictService(cfg, typedNil); !errors.Is(err, auth.ErrStorageUnavailable) {
 		t.Fatalf("typed-nil protected store error = %v, want ErrStorageUnavailable", err)
+	}
+	baseOnly := struct{ secretstore.Store }{Store: protected}
+	if _, err := auth.NewStrictService(cfg, baseOnly); !errors.Is(err, auth.ErrStorageUnavailable) {
+		t.Fatalf("base-only protected store error = %v, want ErrStorageUnavailable", err)
 	}
 }

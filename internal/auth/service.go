@@ -124,9 +124,11 @@ func (s *Service) StartSignIn(ctx context.Context) (SignInStartResult, error) {
 		s.store.writeLastError(err)
 		return SignInStartResult{}, err
 	}
-	if err := s.store.clearSessions(); err != nil {
-		s.store.writeLastError(err)
-		return SignInStartResult{}, err
+	if !s.store.isStrict() {
+		if err := s.store.clearSessions(); err != nil {
+			s.store.writeLastError(err)
+			return SignInStartResult{}, err
+		}
 	}
 	redirectURI, err := s.redirectURI()
 	if err != nil {
@@ -214,25 +216,11 @@ func (s *Service) CompleteSignIn(ctx context.Context, req CompleteSignInRequest)
 	if req.Code == "" {
 		return CompleteSignInResult{}, errorsWithStore(s.store, "authorization code is required")
 	}
-	sess, err := s.store.findSessionByState(req.State)
+	sess, err := s.store.consumeSessionByState(req.State, time.Now().UTC())
 	if err != nil {
 		safeErr := safeStorageError(err)
 		s.store.writeLastError(safeErr)
 		return CompleteSignInResult{}, safeErr
-	}
-	if sess.Consumed {
-		err := ErrSessionConsumed
-		s.store.writeLastError(err)
-		return CompleteSignInResult{}, err
-	}
-	if time.Now().UTC().After(sess.ExpiresAt) {
-		err := ErrSessionExpired
-		s.store.writeLastError(err)
-		return CompleteSignInResult{}, err
-	}
-	if err := s.store.consumeSession(sess); err != nil {
-		s.store.writeLastError(err)
-		return CompleteSignInResult{}, err
 	}
 	tok, err := s.exchangeCode(ctx, req.Code, sess)
 	if err != nil {

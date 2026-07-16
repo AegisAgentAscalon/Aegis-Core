@@ -1,12 +1,14 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -251,6 +253,30 @@ func TestStrictMigrationRejectsInvalidLegacyWithoutDeletingIt(t *testing.T) {
 	})
 }
 
+func TestStrictMigrationPreflightsEveryLegacyRecordBeforeProtectedWrites(t *testing.T) {
+	cfg := testConfig(t)
+	legacy, err := NewService(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.store.writeToken(token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(legacy.store.sessionsDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy.store.sessionPath("invalid"), []byte(`{"session_id":"invalid"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	protected := devsecretstore.NewMemoryStore()
+
+	if _, err := NewStrictService(cfg, protected); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("invalid session preflight error = %v, want ErrStorageUnavailable", err)
+	}
+	assertLegacySecretsPresent(t, legacy.store)
+	assertProtectedMigrationDestinationsAbsent(t, protected, cfg)
+}
+
 func TestStrictProtectedCorruptionIsAuthoritativeAndFailsClosed(t *testing.T) {
 	cfg := testConfig(t)
 	legacy, err := NewService(cfg)
@@ -380,6 +406,299 @@ func TestStrictProtectedStoreFailuresAndSignOutAreRedacted(t *testing.T) {
 	})
 }
 
+func TestStrictMigrationFailuresPreserveAllLegacySourcesAndRetryCleanly(t *testing.T) {
+	tests := []struct {
+		name   string
+		inject func(*faultStore, AppConfig)
+		clear  func(*faultStore, AppConfig)
+	}{
+		{
+			name: "token destination preflight",
+			inject: func(store *faultStore, cfg AppConfig) {
+				store.failGet[protectedKey(cfg, "oauth-token")] = errors.New("token preflight failed")
+			},
+			clear: func(store *faultStore, cfg AppConfig) {
+				delete(store.failGet, protectedKey(cfg, "oauth-token"))
+			},
+		},
+		{
+			name: "session destination preflight",
+			inject: func(store *faultStore, cfg AppConfig) {
+				store.failGet[protectedKey(cfg, "pending-sessions")] = errors.New("session preflight failed")
+			},
+			clear: func(store *faultStore, cfg AppConfig) {
+				delete(store.failGet, protectedKey(cfg, "pending-sessions"))
+			},
+		},
+		{
+			name: "token stage",
+			inject: func(store *faultStore, cfg AppConfig) {
+				store.failPut[protectedKey(cfg, "oauth-token")] = errors.New("token stage failed")
+			},
+			clear: func(store *faultStore, cfg AppConfig) {
+				delete(store.failPut, protectedKey(cfg, "oauth-token"))
+			},
+		},
+		{
+			name: "token verification read",
+			inject: func(store *faultStore, cfg AppConfig) {
+				store.failVersionedGetAt[protectedKey(cfg, "oauth-token")] = 2
+			},
+			clear: func(store *faultStore, cfg AppConfig) {
+				delete(store.failVersionedGetAt, protectedKey(cfg, "oauth-token"))
+			},
+		},
+		{
+			name: "token verification mismatch",
+			inject: func(store *faultStore, cfg AppConfig) {
+				store.corruptPut[protectedKey(cfg, "oauth-token")] = true
+			},
+			clear: func(store *faultStore, cfg AppConfig) {
+				delete(store.corruptPut, protectedKey(cfg, "oauth-token"))
+			},
+		},
+		{
+			name: "session stage",
+			inject: func(store *faultStore, cfg AppConfig) {
+				store.failPut[protectedKey(cfg, "pending-sessions")] = errors.New("session stage failed")
+			},
+			clear: func(store *faultStore, cfg AppConfig) {
+				delete(store.failPut, protectedKey(cfg, "pending-sessions"))
+			},
+		},
+		{
+			name: "session verification read",
+			inject: func(store *faultStore, cfg AppConfig) {
+				store.failVersionedGetAt[protectedKey(cfg, "pending-sessions")] = 2
+			},
+			clear: func(store *faultStore, cfg AppConfig) {
+				delete(store.failVersionedGetAt, protectedKey(cfg, "pending-sessions"))
+			},
+		},
+		{
+			name: "session verification mismatch",
+			inject: func(store *faultStore, cfg AppConfig) {
+				store.corruptPut[protectedKey(cfg, "pending-sessions")] = true
+			},
+			clear: func(store *faultStore, cfg AppConfig) {
+				delete(store.corruptPut, protectedKey(cfg, "pending-sessions"))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			legacy, err := NewService(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := legacy.store.writeToken(token{AccessToken: "legacy-access", RefreshToken: "legacy-refresh", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := legacy.store.writeSession(migrationSession("legacy-session", "legacy-state")); err != nil {
+				t.Fatal(err)
+			}
+
+			faults := newFaultStore()
+			tt.inject(faults, cfg)
+			if _, err := NewStrictService(cfg, faults); !errors.Is(err, ErrStorageUnavailable) {
+				t.Fatalf("migration error = %v, want ErrStorageUnavailable", err)
+			}
+			assertLegacySecretsPresent(t, legacy.store)
+			assertProtectedMigrationDestinationsAbsent(t, faults.delegate, cfg)
+
+			tt.clear(faults, cfg)
+			strict, err := NewStrictService(cfg, faults)
+			if err != nil {
+				t.Fatalf("migration retry failed: %v", err)
+			}
+			assertLegacySecretsRemoved(t, strict.store)
+			if _, err := strict.store.readToken(); err != nil {
+				t.Fatalf("retried token migration failed: %v", err)
+			}
+			if _, err := strict.store.readSession("legacy-session"); err != nil {
+				t.Fatalf("retried session migration failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestStrictMigrationRollbackPreservesExistingProtectedDestinations(t *testing.T) {
+	t.Run("token", func(t *testing.T) {
+		cfg, legacy := legacyStoreWithTokenAndSession(t)
+		faults := newFaultStore()
+		protectedToken, err := json.Marshal(token{AccessToken: "protected-access", Expiry: time.Now().UTC().Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := faults.Put(context.Background(), protectedKey(cfg, "oauth-token"), protectedToken); err != nil {
+			t.Fatal(err)
+		}
+		faults.failPut[protectedKey(cfg, "pending-sessions")] = errors.New("session stage failed")
+
+		if _, err := NewStrictService(cfg, faults); !errors.Is(err, ErrStorageUnavailable) {
+			t.Fatalf("migration error = %v, want ErrStorageUnavailable", err)
+		}
+		assertLegacySecretsPresent(t, legacy.store)
+		got, err := faults.Get(context.Background(), protectedKey(cfg, "oauth-token"))
+		if err != nil || !jsonEqual(got, protectedToken) {
+			t.Fatalf("existing protected token changed: %s, %v", got, err)
+		}
+		delete(faults.failPut, protectedKey(cfg, "pending-sessions"))
+		strict, err := NewStrictService(cfg, faults)
+		if err != nil {
+			t.Fatalf("migration retry failed: %v", err)
+		}
+		assertLegacySecretsRemoved(t, strict.store)
+		got, err = faults.Get(context.Background(), protectedKey(cfg, "oauth-token"))
+		if err != nil || !jsonEqual(got, protectedToken) {
+			t.Fatalf("retry replaced authoritative protected token: %s, %v", got, err)
+		}
+	})
+
+	t.Run("pending sessions", func(t *testing.T) {
+		cfg, legacy := legacyStoreWithTokenAndSession(t)
+		faults := newFaultStore()
+		protectedSessions, err := encodeProtectedSessions([]pendingSession{migrationSession("protected-session", "protected-state")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := faults.Put(context.Background(), protectedKey(cfg, "pending-sessions"), protectedSessions); err != nil {
+			t.Fatal(err)
+		}
+		faults.failPut[protectedKey(cfg, "oauth-token")] = errors.New("token stage failed")
+
+		if _, err := NewStrictService(cfg, faults); !errors.Is(err, ErrStorageUnavailable) {
+			t.Fatalf("migration error = %v, want ErrStorageUnavailable", err)
+		}
+		assertLegacySecretsPresent(t, legacy.store)
+		got, err := faults.Get(context.Background(), protectedKey(cfg, "pending-sessions"))
+		if err != nil || !jsonEqual(got, protectedSessions) {
+			t.Fatalf("existing protected sessions changed: %s, %v", got, err)
+		}
+		delete(faults.failPut, protectedKey(cfg, "oauth-token"))
+		strict, err := NewStrictService(cfg, faults)
+		if err != nil {
+			t.Fatalf("migration retry failed: %v", err)
+		}
+		assertLegacySecretsRemoved(t, strict.store)
+		got, err = faults.Get(context.Background(), protectedKey(cfg, "pending-sessions"))
+		if err != nil || !jsonEqual(got, protectedSessions) {
+			t.Fatalf("retry replaced authoritative protected sessions: %s, %v", got, err)
+		}
+	})
+}
+
+func TestStrictPendingSessionAddsAreAtomicAcrossServices(t *testing.T) {
+	cfg := testConfig(t)
+	protected := devsecretstore.NewMemoryStore()
+	services := make([]*Service, 2)
+	for i := range services {
+		service, err := NewStrictService(cfg, protected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		services[i] = service
+	}
+
+	type startResult struct {
+		result SignInStartResult
+		err    error
+	}
+	ready := make(chan struct{})
+	results := make(chan startResult, len(services))
+	var wg sync.WaitGroup
+	for _, service := range services {
+		wg.Add(1)
+		go func(service *Service) {
+			defer wg.Done()
+			<-ready
+			result, err := service.StartSignIn(context.Background())
+			results <- startResult{result: result, err: err}
+		}(service)
+	}
+	close(ready)
+	wg.Wait()
+	close(results)
+
+	wantIDs := make(map[string]bool, len(services))
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("concurrent strict StartSignIn failed: %v", result.err)
+		}
+		wantIDs[result.result.SessionID] = true
+	}
+	record, err := protected.Get(context.Background(), services[0].store.sessionsKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := decodeProtectedSessions(record)
+	if err != nil || len(sessions) != len(services) {
+		t.Fatalf("protected sessions = %+v, %v", sessions, err)
+	}
+	for _, session := range sessions {
+		delete(wantIDs, session.SessionID)
+	}
+	if len(wantIDs) != 0 {
+		t.Fatalf("concurrent session additions were lost: %v", wantIDs)
+	}
+}
+
+func TestStrictPendingSessionConsumeIsAtomicAcrossServices(t *testing.T) {
+	tokenServer, userInfoServer := successOAuthServers(t)
+	defer tokenServer.Close()
+	defer userInfoServer.Close()
+	cfg := testConfig(t)
+	cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
+	cfg.OAuth.Endpoints.UserInfoURL = userInfoServer.URL
+	protected := devsecretstore.NewMemoryStore()
+	first, err := NewStrictService(cfg, protected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewStrictService(cfg, protected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, err := first.StartSignIn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := mustState(t, start.AuthorizationURL)
+
+	ready := make(chan struct{})
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, service := range []*Service{first, second} {
+		wg.Add(1)
+		go func(service *Service) {
+			defer wg.Done()
+			<-ready
+			_, err := service.CompleteSignIn(context.Background(), CompleteSignInRequest{State: state, Code: "code"})
+			results <- err
+		}(service)
+	}
+	close(ready)
+	wg.Wait()
+	close(results)
+
+	var succeeded, consumed int
+	for err := range results {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrSessionConsumed):
+			consumed++
+		default:
+			t.Fatalf("concurrent completion error = %v", err)
+		}
+	}
+	if succeeded != 1 || consumed != 1 {
+		t.Fatalf("concurrent completion outcomes = %d success, %d consumed", succeeded, consumed)
+	}
+}
+
 func migrationSession(id, state string) pendingSession {
 	now := time.Now().UTC()
 	return pendingSession{
@@ -391,6 +710,45 @@ func migrationSession(id, state string) pendingSession {
 		CreatedAt:   now,
 		ExpiresAt:   now.Add(10 * time.Minute),
 	}
+}
+
+func legacyStoreWithTokenAndSession(t *testing.T) (AppConfig, *Service) {
+	t.Helper()
+	cfg := testConfig(t)
+	legacy, err := NewService(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.store.writeToken(token{AccessToken: "legacy-access", RefreshToken: "legacy-refresh", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.store.writeSession(migrationSession("legacy-session", "legacy-state")); err != nil {
+		t.Fatal(err)
+	}
+	return cfg, legacy
+}
+
+func assertLegacySecretsPresent(t *testing.T, store *store) {
+	t.Helper()
+	if _, err := os.Stat(store.tokenPath()); err != nil {
+		t.Fatalf("legacy token was not preserved: %v", err)
+	}
+	if _, err := os.Stat(store.sessionsDir()); err != nil {
+		t.Fatalf("legacy pending sessions were not preserved: %v", err)
+	}
+}
+
+func assertProtectedMigrationDestinationsAbsent(t *testing.T, store secretstore.Store, cfg AppConfig) {
+	t.Helper()
+	for _, key := range []secretstore.Key{protectedKey(cfg, "oauth-token"), protectedKey(cfg, "pending-sessions")} {
+		if _, err := store.Get(context.Background(), key); !errors.Is(err, secretstore.ErrNotFound) {
+			t.Fatalf("failed migration left protected destination %q: %v", key, err)
+		}
+	}
+}
+
+func jsonEqual(left, right []byte) bool {
+	return bytes.Equal(left, right)
 }
 
 func assertLegacySecretsRemoved(t *testing.T, store *store) {
@@ -416,22 +774,30 @@ func assertSafeStorageError(t *testing.T, err, want error) {
 }
 
 type faultStore struct {
-	delegate    secretstore.Store
-	failGet     map[secretstore.Key]error
-	failPut     map[secretstore.Key]error
-	failDelete  map[secretstore.Key]error
-	corruptPut  map[secretstore.Key]bool
-	deleteCalls map[secretstore.Key]int
+	delegate              secretstore.VersionedStore
+	failGet               map[secretstore.Key]error
+	failVersionedGetAt    map[secretstore.Key]int
+	versionedGetCalls     map[secretstore.Key]int
+	failPut               map[secretstore.Key]error
+	failDelete            map[secretstore.Key]error
+	corruptPut            map[secretstore.Key]bool
+	deleteCalls           map[secretstore.Key]int
+	compareAndSwapCalls   map[secretstore.Key]int
+	compareAndDeleteCalls map[secretstore.Key]int
 }
 
 func newFaultStore() *faultStore {
 	return &faultStore{
-		delegate:    devsecretstore.NewMemoryStore(),
-		failGet:     make(map[secretstore.Key]error),
-		failPut:     make(map[secretstore.Key]error),
-		failDelete:  make(map[secretstore.Key]error),
-		corruptPut:  make(map[secretstore.Key]bool),
-		deleteCalls: make(map[secretstore.Key]int),
+		delegate:              devsecretstore.NewMemoryStore(),
+		failGet:               make(map[secretstore.Key]error),
+		failVersionedGetAt:    make(map[secretstore.Key]int),
+		versionedGetCalls:     make(map[secretstore.Key]int),
+		failPut:               make(map[secretstore.Key]error),
+		failDelete:            make(map[secretstore.Key]error),
+		corruptPut:            make(map[secretstore.Key]bool),
+		deleteCalls:           make(map[secretstore.Key]int),
+		compareAndSwapCalls:   make(map[secretstore.Key]int),
+		compareAndDeleteCalls: make(map[secretstore.Key]int),
 	}
 }
 
@@ -458,4 +824,35 @@ func (s *faultStore) Delete(ctx context.Context, key secretstore.Key) error {
 		return err
 	}
 	return s.delegate.Delete(ctx, key)
+}
+
+func (s *faultStore) GetWithRevision(ctx context.Context, key secretstore.Key) ([]byte, secretstore.Revision, error) {
+	s.versionedGetCalls[key]++
+	if err := s.failGet[key]; err != nil {
+		return nil, 0, err
+	}
+	if s.failVersionedGetAt[key] == s.versionedGetCalls[key] {
+		return nil, 0, errors.New("injected versioned get failure")
+	}
+	return s.delegate.GetWithRevision(ctx, key)
+}
+
+func (s *faultStore) CompareAndSwap(ctx context.Context, key secretstore.Key, expected secretstore.Revision, value []byte) (secretstore.Revision, error) {
+	s.compareAndSwapCalls[key]++
+	if err := s.failPut[key]; err != nil {
+		return 0, err
+	}
+	if s.corruptPut[key] {
+		value = append(append([]byte(nil), value...), byte('x'))
+	}
+	return s.delegate.CompareAndSwap(ctx, key, expected, value)
+}
+
+func (s *faultStore) CompareAndDelete(ctx context.Context, key secretstore.Key, expected secretstore.Revision) (secretstore.Revision, error) {
+	s.deleteCalls[key]++
+	s.compareAndDeleteCalls[key]++
+	if err := s.failDelete[key]; err != nil {
+		return 0, err
+	}
+	return s.delegate.CompareAndDelete(ctx, key, expected)
 }
