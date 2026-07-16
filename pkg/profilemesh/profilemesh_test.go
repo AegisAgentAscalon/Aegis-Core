@@ -2,6 +2,9 @@ package profilemesh
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -62,11 +65,19 @@ func TestProfileMeshPublicSnapshotFingerprintIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportProfileMeshSnapshot returned error: %v", err)
 	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("profile mesh snapshot marshal failed: %v", err)
+	}
+	var roundTrip ProfileMeshSnapshot
+	if err := json.Unmarshal(raw, &roundTrip); err != nil {
+		t.Fatalf("profile mesh snapshot unmarshal failed: %v", err)
+	}
 	importSvc, err := NewService(AppConfig{AppID: "aegis-test", DisplayName: "Aegis Test", DataDir: t.TempDir(), Namespace: "profilemesh-test"})
 	if err != nil {
 		t.Fatalf("NewService import returned error: %v", err)
 	}
-	if err := importSvc.ImportProfileMeshSnapshot(ctx, snapshot); err != nil {
+	if err := importSvc.ImportProfileMeshSnapshot(ctx, roundTrip); err != nil {
 		t.Fatalf("ImportProfileMeshSnapshot returned error: %v", err)
 	}
 	exported, err := importSvc.ExportProfileMeshSnapshot(ctx)
@@ -75,6 +86,31 @@ func TestProfileMeshPublicSnapshotFingerprintIsStable(t *testing.T) {
 	}
 	if exported.SnapshotFingerprint != snapshot.SnapshotFingerprint {
 		t.Fatalf("snapshot fingerprint changed after import/export: got %q want %q", exported.SnapshotFingerprint, snapshot.SnapshotFingerprint)
+	}
+}
+
+func TestProfileMeshImportsLegacySnapshotFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "profile_mesh_snapshot_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot ProfileMeshSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(AppConfig{AppID: "sample-app", DisplayName: "Sample App", DataDir: t.TempDir(), Namespace: "legacy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ImportProfileMeshSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatalf("schema-1 profile mesh fixture was rejected: %v", err)
+	}
+	exported, err := svc.ExportProfileMeshSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exported.SchemaVersion != ProfileMeshSnapshotSchemaVersion || len(exported.Devices) != 1 || exported.Devices[0].PublicKeyFingerprint != "fp-legacy-1234" {
+		t.Fatalf("legacy profile mesh snapshot was not migrated safely: %+v", exported)
 	}
 }
 

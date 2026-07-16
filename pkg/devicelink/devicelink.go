@@ -58,7 +58,10 @@ const (
 
 type RegistrySnapshotPurpose string
 
-const RegistrySnapshotLocalBackup RegistrySnapshotPurpose = "local_backup"
+const (
+	RegistrySnapshotSchemaVersion                         = internal.RegistrySnapshotSchemaVersion
+	RegistrySnapshotLocalBackup   RegistrySnapshotPurpose = "local_backup"
+)
 
 type ProofState string
 
@@ -183,17 +186,32 @@ type DeviceTrustStatus struct {
 	Reason      string      `json:"reason,omitempty"`
 }
 
+// RegistrySnapshotDevice is the public-key-bearing device record used only in
+// an explicit local registry backup. Ordinary TrustedDevice JSON stays redacted.
+type RegistrySnapshotDevice struct {
+	DeviceID               string      `json:"device_id"`
+	DisplayName            string      `json:"display_name"`
+	PublicKey              string      `json:"public_key"`
+	PublicKeyFingerprint   string      `json:"public_key_fingerprint"`
+	TrustStatus            TrustStatus `json:"trust_status"`
+	TrustedAt              time.Time   `json:"trusted_at,omitempty"`
+	RevokedAt              *time.Time  `json:"revoked_at,omitempty"`
+	LastSeen               time.Time   `json:"last_seen,omitempty"`
+	Capabilities           []string    `json:"capabilities"`
+	ProfileMetadataVersion int         `json:"profile_metadata_version"`
+}
+
 type RegistrySnapshot struct {
-	SchemaVersion          int                     `json:"schema_version"`
-	Purpose                RegistrySnapshotPurpose `json:"purpose"`
-	AppID                  string                  `json:"app_id"`
-	Namespace              string                  `json:"namespace"`
-	Devices                []TrustedDevice         `json:"devices"`
-	CreatedAt              time.Time               `json:"created_at"`
-	UpdatedAt              time.Time               `json:"updated_at"`
-	OriginDeviceID         string                  `json:"origin_device_id,omitempty"`
-	SnapshotFingerprint    string                  `json:"snapshot_fingerprint,omitempty"`
-	ProfileMetadataVersion int                     `json:"profile_metadata_version"`
+	SchemaVersion          int                      `json:"schema_version"`
+	Purpose                RegistrySnapshotPurpose  `json:"purpose"`
+	AppID                  string                   `json:"app_id"`
+	Namespace              string                   `json:"namespace"`
+	Devices                []RegistrySnapshotDevice `json:"devices"`
+	CreatedAt              time.Time                `json:"created_at"`
+	UpdatedAt              time.Time                `json:"updated_at"`
+	OriginDeviceID         string                   `json:"origin_device_id,omitempty"`
+	SnapshotFingerprint    string                   `json:"snapshot_fingerprint,omitempty"`
+	ProfileMetadataVersion int                      `json:"profile_metadata_version"`
 }
 
 type EndpointHint struct {
@@ -767,21 +785,6 @@ func fromInternalTrustedDevice(dev internal.TrustedDevice) TrustedDevice {
 	}
 }
 
-func toInternalTrustedDevice(dev TrustedDevice) internal.TrustedDevice {
-	return internal.TrustedDevice{
-		DeviceID:               dev.DeviceID,
-		DisplayName:            dev.DisplayName,
-		PublicKey:              dev.PublicKey,
-		PublicKeyFingerprint:   dev.PublicKeyFingerprint,
-		TrustStatus:            internal.TrustStatus(dev.TrustStatus),
-		TrustedAt:              dev.TrustedAt,
-		RevokedAt:              dev.RevokedAt,
-		LastSeen:               dev.LastSeen,
-		Capabilities:           append([]string{}, dev.Capabilities...),
-		ProfileMetadataVersion: dev.ProfileMetadataVersion,
-	}
-}
-
 func fromInternalTrustedDevices(in []internal.TrustedDevice) []TrustedDevice {
 	out := make([]TrustedDevice, 0, len(in))
 	for _, dev := range in {
@@ -789,11 +792,40 @@ func fromInternalTrustedDevices(in []internal.TrustedDevice) []TrustedDevice {
 	}
 	return out
 }
+func fromInternalRegistrySnapshotDevices(in []internal.TrustedDevice) []RegistrySnapshotDevice {
+	out := make([]RegistrySnapshotDevice, 0, len(in))
+	for _, dev := range in {
+		out = append(out, RegistrySnapshotDevice{
+			DeviceID:               dev.DeviceID,
+			DisplayName:            dev.DisplayName,
+			PublicKey:              dev.PublicKey,
+			PublicKeyFingerprint:   dev.PublicKeyFingerprint,
+			TrustStatus:            TrustStatus(dev.TrustStatus),
+			TrustedAt:              dev.TrustedAt,
+			RevokedAt:              dev.RevokedAt,
+			LastSeen:               dev.LastSeen,
+			Capabilities:           append([]string{}, dev.Capabilities...),
+			ProfileMetadataVersion: dev.ProfileMetadataVersion,
+		})
+	}
+	return out
+}
 
-func toInternalTrustedDevices(in []TrustedDevice) []internal.TrustedDevice {
+func toInternalRegistrySnapshotDevices(in []RegistrySnapshotDevice) []internal.TrustedDevice {
 	out := make([]internal.TrustedDevice, 0, len(in))
 	for _, dev := range in {
-		out = append(out, toInternalTrustedDevice(dev))
+		out = append(out, internal.TrustedDevice{
+			DeviceID:               dev.DeviceID,
+			DisplayName:            dev.DisplayName,
+			PublicKey:              dev.PublicKey,
+			PublicKeyFingerprint:   dev.PublicKeyFingerprint,
+			TrustStatus:            internal.TrustStatus(dev.TrustStatus),
+			TrustedAt:              dev.TrustedAt,
+			RevokedAt:              dev.RevokedAt,
+			LastSeen:               dev.LastSeen,
+			Capabilities:           append([]string{}, dev.Capabilities...),
+			ProfileMetadataVersion: dev.ProfileMetadataVersion,
+		})
 	}
 	return out
 }
@@ -808,7 +840,7 @@ func fromInternalRegistrySnapshot(snapshot internal.RegistrySnapshot) RegistrySn
 		Purpose:                RegistrySnapshotPurpose(snapshot.Purpose),
 		AppID:                  snapshot.AppID,
 		Namespace:              snapshot.Namespace,
-		Devices:                fromInternalTrustedDevices(snapshot.Devices),
+		Devices:                fromInternalRegistrySnapshotDevices(snapshot.Devices),
 		CreatedAt:              snapshot.CreatedAt,
 		UpdatedAt:              snapshot.UpdatedAt,
 		OriginDeviceID:         snapshot.OriginDeviceID,
@@ -823,7 +855,7 @@ func toInternalRegistrySnapshot(snapshot RegistrySnapshot) internal.RegistrySnap
 		Purpose:                internal.RegistrySnapshotPurpose(snapshot.Purpose),
 		AppID:                  snapshot.AppID,
 		Namespace:              snapshot.Namespace,
-		Devices:                toInternalTrustedDevices(snapshot.Devices),
+		Devices:                toInternalRegistrySnapshotDevices(snapshot.Devices),
 		CreatedAt:              snapshot.CreatedAt,
 		UpdatedAt:              snapshot.UpdatedAt,
 		OriginDeviceID:         snapshot.OriginDeviceID,

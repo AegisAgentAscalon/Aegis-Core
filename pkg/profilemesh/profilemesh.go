@@ -26,6 +26,8 @@ var (
 	ErrContextCanceled        = internal.ErrContextCanceled
 )
 
+const ProfileMeshSnapshotSchemaVersion = internal.ProfileMeshSnapshotSchemaVersion
+
 type AppConfig struct {
 	AppID       string
 	DisplayName string

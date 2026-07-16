@@ -284,10 +284,13 @@ func (s *Service) trustDeviceLocked(req TrustDeviceRequest) (TrustedDevice, erro
 	if err != nil {
 		return TrustedDevice{}, err
 	}
+	req.PublicKey = encodePublicKey(publicKey)
 	fp := fingerprintPublicKey(publicKey)
-	if strings.TrimSpace(req.PublicKeyFingerprint) != "" && req.PublicKeyFingerprint != fp {
+	providedFingerprint := strings.ToLower(strings.TrimSpace(req.PublicKeyFingerprint))
+	if providedFingerprint != "" && providedFingerprint != fp {
 		return TrustedDevice{}, ErrFingerprintMismatch
 	}
+	req.PublicKeyFingerprint = fp
 	reg, err := s.store.readRegistry()
 	if err != nil {
 		return TrustedDevice{}, err
@@ -300,22 +303,45 @@ func (s *Service) trustDeviceLocked(req TrustDeviceRequest) (TrustedDevice, erro
 		if dev.PublicKeyFingerprint != fp {
 			return TrustedDevice{}, ErrDeviceAlreadyExists
 		}
+		retrust := dev.TrustStatus == TrustRevoked
+		var previous registryFile
+		var links linkStatusFile
+		if retrust {
+			previous = cloneRegistryFile(reg)
+			links, err = s.store.readLinks()
+			if err != nil {
+				return TrustedDevice{}, err
+			}
+		}
 		dev.DisplayName = req.DisplayName
 		if dev.DisplayName == "" {
 			dev.DisplayName = req.DeviceID
 		}
 		dev.PublicKey = req.PublicKey
+		dev.PublicKeyFingerprint = fp
 		dev.TrustStatus = TrustTrusted
 		dev.RevokedAt = nil
 		dev.Capabilities = compactStrings(req.Capabilities)
 		dev.ProfileMetadataVersion = MetadataVersion
-		if dev.TrustedAt.IsZero() {
+		if retrust {
+			dev.TrustedAt = nextTrustTransitionTime(now, dev.TrustedAt, latestProofTime(links, dev.DeviceID))
+			now = dev.TrustedAt
+		} else if dev.TrustedAt.IsZero() {
 			dev.TrustedAt = now
 		}
 		reg.Devices[i] = dev
 		reg.UpdatedAt = now
 		if err := s.store.writeRegistry(reg); err != nil {
 			return TrustedDevice{}, err
+		}
+		if retrust {
+			links, changed := withoutDeviceLinkStatus(links, dev.DeviceID, now)
+			if changed {
+				if err := s.store.writeLinks(links); err != nil {
+					_ = s.store.writeRegistry(previous)
+					return TrustedDevice{}, err
+				}
+			}
 		}
 		return dev, nil
 	}
@@ -353,11 +379,20 @@ func (s *Service) RevokeDevice(ctx context.Context, deviceID string) error {
 	for i, dev := range reg.Devices {
 		if dev.DeviceID == deviceID {
 			now := s.clock.Now().UTC()
+			if now.Before(dev.TrustedAt) {
+				now = dev.TrustedAt
+			}
 			dev.TrustStatus = TrustRevoked
 			dev.RevokedAt = &now
 			reg.Devices[i] = dev
 			reg.UpdatedAt = now
-			return s.store.writeRegistry(reg)
+			if err := s.store.writeRegistry(reg); err != nil {
+				return err
+			}
+			// Revocation is already effective after the registry commit. A damaged
+			// link cache cannot be allowed to roll trust back to trusted.
+			_ = s.clearDeviceLinkStatusLocked(deviceID, now)
+			return nil
 		}
 	}
 	return ErrDeviceNotFound
@@ -399,7 +434,7 @@ func (s *Service) ExportRegistrySnapshot(ctx context.Context) (RegistrySnapshot,
 	}
 	now := s.clock.Now().UTC()
 	snap := RegistrySnapshot{
-		SchemaVersion:          SchemaVersion,
+		SchemaVersion:          RegistrySnapshotSchemaVersion,
 		Purpose:                RegistrySnapshotLocalBackup,
 		AppID:                  s.cfg.AppID,
 		Namespace:              s.cfg.Namespace,
@@ -408,6 +443,10 @@ func (s *Service) ExportRegistrySnapshot(ctx context.Context) (RegistrySnapshot,
 		UpdatedAt:              now,
 		OriginDeviceID:         origin,
 		ProfileMetadataVersion: MetadataVersion,
+	}
+	snap, err = normalizeRegistrySnapshotTrustMaterial(snap)
+	if err != nil {
+		return RegistrySnapshot{}, ErrStorageUnavailable
 	}
 	snap.SnapshotFingerprint = snapshotFingerprint(snap)
 	return snap, nil
@@ -419,14 +458,31 @@ func (s *Service) ImportRegistrySnapshot(ctx context.Context, snapshot RegistryS
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := validateRegistryBackupSnapshot(s.cfg, snapshot); err != nil {
+	normalized, err := validateRegistryBackupSnapshot(s.cfg, snapshot)
+	if err != nil {
 		return err
 	}
-	// Registry backup restore never restores link reachability or signed proof.
-	if err := s.store.writeLinks(linkStatusFile{SchemaVersion: SchemaVersion, Links: []ConnectionStatus{}, UpdatedAt: s.clock.Now().UTC()}); err != nil {
+	previous, err := s.store.readRegistry()
+	if err != nil {
 		return err
 	}
-	return s.store.writeRegistry(registryFile{SchemaVersion: SchemaVersion, Devices: append([]TrustedDevice{}, snapshot.Devices...), UpdatedAt: snapshot.UpdatedAt})
+	replacement := registryFile{SchemaVersion: SchemaVersion, Devices: cloneTrustedDevices(normalized.Devices), UpdatedAt: normalized.UpdatedAt}
+	if err := s.store.writeRegistry(replacement); err != nil {
+		return err
+	}
+	// Registry commit comes first. A failed proof clear rolls the registry back;
+	// if rollback itself faults, a second clear leaves the imported state safe.
+	cleared := linkStatusFile{SchemaVersion: SchemaVersion, Links: []ConnectionStatus{}, UpdatedAt: s.clock.Now().UTC()}
+	if err := s.store.writeLinks(cleared); err != nil {
+		if rollbackErr := s.store.writeRegistry(previous); rollbackErr == nil {
+			return err
+		}
+		if recoveryErr := s.store.writeLinks(cleared); recoveryErr != nil {
+			return ErrStorageUnavailable
+		}
+		return ErrStorageUnavailable
+	}
+	return nil
 }
 
 func (s *Service) AdvertiseResources(ctx context.Context, req ResourceAdvertisementRequest) error {
@@ -726,7 +782,7 @@ func (s *Service) CompleteHandshake(ctx context.Context, req HandshakeCompleteRe
 	if h.Consumed {
 		return LinkSession{}, ErrChallengeReplay
 	}
-	if s.clock.Now().UTC().After(h.ExpiresAt) {
+	if !s.clock.Now().UTC().Before(h.ExpiresAt) {
 		return LinkSession{}, ErrChallengeExpired
 	}
 	if h.PeerDeviceID != req.PeerDeviceID {
@@ -753,6 +809,9 @@ func (s *Service) CompleteHandshake(ctx context.Context, req HandshakeCompleteRe
 		return LinkSession{}, err
 	}
 	now := s.clock.Now().UTC()
+	if now.Before(trusted.TrustedAt) {
+		now = trusted.TrustedAt
+	}
 	receipt := ProofReceipt{
 		SchemaVersion:            SchemaVersion,
 		SessionID:                req.SessionID,
@@ -1008,8 +1067,6 @@ func (s *Service) upsertProofStatusLocked(deviceID string, receipt ProofReceipt)
 			continue
 		}
 		link.TrustStatus = TrustTrusted
-		link.Reachable = true
-		link.LastSeen = now
 		link.ProofState = ProofStateVerified
 		link.ProofReceipt = &receipt
 		link.Message = "signed proof verified"
@@ -1020,14 +1077,79 @@ func (s *Service) upsertProofStatusLocked(deviceID string, receipt ProofReceipt)
 	links.Links = append(links.Links, ConnectionStatus{
 		DeviceID:     deviceID,
 		TrustStatus:  TrustTrusted,
-		Reachable:    true,
-		LastSeen:     now,
 		ProofState:   ProofStateVerified,
 		ProofReceipt: &receipt,
 		Message:      "signed proof verified",
 	})
 	links.UpdatedAt = now
 	return s.store.writeLinks(links)
+}
+
+func (s *Service) clearDeviceLinkStatusLocked(deviceID string, updatedAt time.Time) error {
+	links, err := s.store.readLinks()
+	if err != nil {
+		return err
+	}
+	links, changed := withoutDeviceLinkStatus(links, deviceID, updatedAt)
+	if !changed {
+		return nil
+	}
+	return s.store.writeLinks(links)
+}
+
+func withoutDeviceLinkStatus(links linkStatusFile, deviceID string, updatedAt time.Time) (linkStatusFile, bool) {
+	filtered := make([]ConnectionStatus, 0, len(links.Links))
+	changed := false
+	for _, link := range links.Links {
+		if link.DeviceID == deviceID {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, link)
+	}
+	if changed {
+		links.Links = filtered
+		links.UpdatedAt = updatedAt.UTC()
+	}
+	return links, changed
+}
+
+func latestProofTime(links linkStatusFile, deviceID string) time.Time {
+	var latest time.Time
+	for _, link := range links.Links {
+		if link.DeviceID == deviceID && link.ProofReceipt != nil && link.ProofReceipt.VerifiedAt.After(latest) {
+			latest = link.ProofReceipt.VerifiedAt
+		}
+	}
+	return latest
+}
+
+func nextTrustTransitionTime(now time.Time, boundaries ...time.Time) time.Time {
+	latest := now.UTC()
+	for _, boundary := range boundaries {
+		if boundary.After(latest) {
+			latest = boundary.UTC()
+		}
+	}
+	return latest.Add(time.Nanosecond)
+}
+
+func cloneTrustedDevices(in []TrustedDevice) []TrustedDevice {
+	out := make([]TrustedDevice, len(in))
+	for i, dev := range in {
+		out[i] = dev
+		out[i].Capabilities = append([]string{}, dev.Capabilities...)
+		if dev.RevokedAt != nil {
+			revokedAt := *dev.RevokedAt
+			out[i].RevokedAt = &revokedAt
+		}
+	}
+	return out
+}
+
+func cloneRegistryFile(reg registryFile) registryFile {
+	reg.Devices = cloneTrustedDevices(reg.Devices)
+	return reg
 }
 
 func trustError(status TrustStatus) error {
@@ -1079,12 +1201,14 @@ func summarizeResources(resources []ResourceDescriptor) []ResourceSummary {
 }
 
 func snapshotFingerprint(snapshot RegistrySnapshot) string {
-	canonical := snapshot
+	canonical, err := normalizeRegistrySnapshotTrustMaterial(snapshot)
+	if err != nil {
+		canonical = snapshot
+	}
 	canonical.SnapshotFingerprint = ""
-	canonical.Devices = append([]TrustedDevice{}, snapshot.Devices...)
+	canonical.Devices = cloneTrustedDevices(canonical.Devices)
 	for i := range canonical.Devices {
-		canonical.Devices[i].Capabilities = append([]string{}, canonical.Devices[i].Capabilities...)
-		sort.Strings(canonical.Devices[i].Capabilities)
+		canonical.Devices[i].Capabilities = compactStrings(canonical.Devices[i].Capabilities)
 	}
 	sort.Slice(canonical.Devices, func(i, j int) bool {
 		if canonical.Devices[i].DeviceID == canonical.Devices[j].DeviceID {
@@ -1097,54 +1221,101 @@ func snapshotFingerprint(snapshot RegistrySnapshot) string {
 	return sum[:16]
 }
 
-func validateRegistryBackupSnapshot(cfg AppConfig, snapshot RegistrySnapshot) error {
-	if snapshot.SchemaVersion != SchemaVersion || snapshot.Purpose != RegistrySnapshotLocalBackup || snapshot.AppID != cfg.AppID || snapshot.Namespace != cfg.Namespace {
-		return ErrInvalidRegistrySnapshot
+func legacyRegistrySnapshotFingerprint(snapshot RegistrySnapshot) string {
+	parts := make([]string, 0, len(snapshot.Devices))
+	for _, dev := range snapshot.Devices {
+		parts = append(parts, dev.DeviceID+"="+dev.PublicKeyFingerprint)
+	}
+	sort.Strings(parts)
+	return sha256String(snapshot.AppID + "|" + snapshot.Namespace + "|" + strings.Join(parts, "|"))[:16]
+}
+
+func normalizeRegistrySnapshotTrustMaterial(snapshot RegistrySnapshot) (RegistrySnapshot, error) {
+	normalized := snapshot
+	normalized.Devices = cloneTrustedDevices(snapshot.Devices)
+	for i := range normalized.Devices {
+		dev := &normalized.Devices[i]
+		publicKey, err := decodePublicKey(dev.PublicKey)
+		if err != nil {
+			return RegistrySnapshot{}, err
+		}
+		dev.PublicKey = encodePublicKey(publicKey)
+		dev.PublicKeyFingerprint = strings.ToLower(strings.TrimSpace(dev.PublicKeyFingerprint))
+		dev.Capabilities = compactStrings(dev.Capabilities)
+	}
+	return normalized, nil
+}
+
+func validateRegistryBackupSnapshot(cfg AppConfig, snapshot RegistrySnapshot) (RegistrySnapshot, error) {
+	if snapshot.AppID != cfg.AppID || snapshot.Namespace != cfg.Namespace {
+		return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
+	}
+	switch snapshot.SchemaVersion {
+	case legacyRegistrySnapshotSchemaVersion:
+		if snapshot.Purpose != "" && snapshot.Purpose != RegistrySnapshotLocalBackup {
+			return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
+		}
+		if snapshot.SnapshotFingerprint != "" && snapshot.SnapshotFingerprint != legacyRegistrySnapshotFingerprint(snapshot) {
+			return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
+		}
+	case RegistrySnapshotSchemaVersion:
+		if snapshot.Purpose != RegistrySnapshotLocalBackup || snapshot.SnapshotFingerprint == "" {
+			return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
+		}
+	default:
+		return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
 	}
 	if snapshot.ProfileMetadataVersion != MetadataVersion || snapshot.CreatedAt.IsZero() || snapshot.UpdatedAt.IsZero() || snapshot.UpdatedAt.Before(snapshot.CreatedAt) {
-		return ErrInvalidRegistrySnapshot
+		return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
 	}
 	if snapshot.OriginDeviceID != "" && !validSafeName(snapshot.OriginDeviceID) {
-		return ErrInvalidRegistrySnapshot
+		return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
 	}
-	if snapshot.SnapshotFingerprint == "" || snapshot.SnapshotFingerprint != snapshotFingerprint(snapshot) {
-		return ErrInvalidRegistrySnapshot
+	normalized, err := normalizeRegistrySnapshotTrustMaterial(snapshot)
+	if err != nil {
+		return RegistrySnapshot{}, err
+	}
+	if snapshot.SchemaVersion == RegistrySnapshotSchemaVersion && snapshot.SnapshotFingerprint != snapshotFingerprint(normalized) {
+		return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
 	}
 	seen := map[string]string{}
-	for _, dev := range snapshot.Devices {
+	for _, dev := range normalized.Devices {
 		if !validSafeName(dev.DeviceID) || strings.TrimSpace(dev.DisplayName) == "" || dev.DisplayName != strings.TrimSpace(dev.DisplayName) || dev.PublicKey == "" {
-			return ErrInvalidRegistrySnapshot
+			return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
 		}
-		if !validTrustStatus(dev.TrustStatus) || dev.ProfileMetadataVersion != MetadataVersion || !slices.Equal(dev.Capabilities, compactStrings(dev.Capabilities)) {
-			return ErrInvalidRegistrySnapshot
+		if !validTrustStatus(dev.TrustStatus) || dev.ProfileMetadataVersion != MetadataVersion {
+			return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
 		}
 		if (dev.TrustStatus == TrustTrusted || dev.TrustStatus == TrustRevoked) && dev.TrustedAt.IsZero() {
-			return ErrInvalidRegistrySnapshot
+			return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
 		}
 		if dev.TrustStatus == TrustRevoked {
 			if dev.RevokedAt == nil || dev.RevokedAt.Before(dev.TrustedAt) {
-				return ErrInvalidRegistrySnapshot
+				return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
 			}
 		} else if dev.RevokedAt != nil {
-			return ErrInvalidRegistrySnapshot
+			return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
 		}
 		publicKey, err := decodePublicKey(dev.PublicKey)
 		if err != nil {
-			return err
+			return RegistrySnapshot{}, err
 		}
 		fingerprint := fingerprintPublicKey(publicKey)
 		if dev.PublicKeyFingerprint != fingerprint {
-			return ErrFingerprintMismatch
+			return RegistrySnapshot{}, ErrFingerprintMismatch
 		}
 		if old, ok := seen[dev.DeviceID]; ok {
 			if old != fingerprint {
-				return ErrFingerprintMismatch
+				return RegistrySnapshot{}, ErrFingerprintMismatch
 			}
-			return ErrInvalidRegistrySnapshot
+			return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
 		}
 		seen[dev.DeviceID] = fingerprint
 	}
-	return nil
+	normalized.SchemaVersion = RegistrySnapshotSchemaVersion
+	normalized.Purpose = RegistrySnapshotLocalBackup
+	normalized.SnapshotFingerprint = snapshotFingerprint(normalized)
+	return normalized, nil
 }
 
 func validTrustStatus(status TrustStatus) bool {
@@ -1222,12 +1393,12 @@ func evaluateProof(now time.Time, localDeviceID string, dev TrustedDevice, link 
 	}
 	receipt := *link.ProofReceipt
 	evaluation.Receipt = &receipt
-	if receipt.SchemaVersion != SchemaVersion || !validSessionID(receipt.SessionID) || receipt.LocalDeviceID != localDeviceID || receipt.PeerDeviceID != dev.DeviceID || receipt.PeerPublicKeyFingerprint != dev.PublicKeyFingerprint || receipt.VerifiedAt.IsZero() || receipt.ExpiresAt.IsZero() || !receipt.ExpiresAt.After(receipt.VerifiedAt) || receipt.ChallengeFingerprint == "" || receipt.SignatureFingerprint == "" || receipt.ReceiptFingerprint == "" || receipt.ReceiptFingerprint != proofReceiptFingerprint(receipt) {
+	if receipt.SchemaVersion != SchemaVersion || !validSessionID(receipt.SessionID) || receipt.LocalDeviceID != localDeviceID || receipt.PeerDeviceID != dev.DeviceID || receipt.PeerPublicKeyFingerprint != dev.PublicKeyFingerprint || receipt.VerifiedAt.IsZero() || receipt.VerifiedAt.Before(dev.TrustedAt) || receipt.ExpiresAt.IsZero() || !receipt.ExpiresAt.After(receipt.VerifiedAt) || receipt.ChallengeFingerprint == "" || receipt.SignatureFingerprint == "" || receipt.ReceiptFingerprint == "" || receipt.ReceiptFingerprint != proofReceiptFingerprint(receipt) {
 		evaluation.State = ProofStateRejected
 		evaluation.Reason = "stored signed proof is invalid"
 		return evaluation
 	}
-	if now.After(receipt.ExpiresAt) {
+	if !now.Before(receipt.ExpiresAt) {
 		evaluation.State = ProofStateExpired
 		evaluation.Reason = "signed proof has expired"
 		return evaluation

@@ -16,13 +16,15 @@ import (
 )
 
 const (
-	SchemaVersion           = 1
-	MetadataVersion         = 1
-	IdentityBundleVersion   = 1
-	defaultLinkTTL          = 15 * time.Minute
-	defaultStaleAfter       = 5 * time.Minute
-	defaultFutureSkew       = 2 * time.Minute
-	defaultTransportTimeout = 5 * time.Second
+	SchemaVersion                       = 1
+	RegistrySnapshotSchemaVersion       = 2
+	legacyRegistrySnapshotSchemaVersion = 1
+	MetadataVersion                     = 1
+	IdentityBundleVersion               = 1
+	defaultLinkTTL                      = 15 * time.Minute
+	defaultStaleAfter                   = 5 * time.Minute
+	defaultFutureSkew                   = 2 * time.Minute
+	defaultTransportTimeout             = 5 * time.Second
 )
 
 var safeNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)

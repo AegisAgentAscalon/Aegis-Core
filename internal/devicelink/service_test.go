@@ -274,7 +274,7 @@ func TestRegistryFingerprintCoversTrustCapabilityAndTimestampFields(t *testing.T
 	now := time.Now().UTC().Truncate(time.Second)
 	revokedAt := now.Add(2 * time.Minute)
 	base := RegistrySnapshot{
-		SchemaVersion:          SchemaVersion,
+		SchemaVersion:          RegistrySnapshotSchemaVersion,
 		Purpose:                RegistrySnapshotLocalBackup,
 		AppID:                  "sample-app",
 		Namespace:              "profile-a",
@@ -322,6 +322,40 @@ func TestRegistryFingerprintCoversTrustCapabilityAndTimestampFields(t *testing.T
 				t.Fatalf("fingerprint did not cover %s", name)
 			}
 		})
+	}
+}
+
+func TestTrustMaterialIsNormalizedBeforeStorageAndFingerprinting(t *testing.T) {
+	svc := newTestService(t, "normalize-trust")
+	req := makeTrustRequest(t, "peer-normalized")
+	canonicalKey := req.PublicKey
+	canonicalFingerprint := req.PublicKeyFingerprint
+	req.PublicKey = "  " + req.PublicKey + "\r\n"
+	req.PublicKeyFingerprint = "  " + strings.ToUpper(req.PublicKeyFingerprint) + "  "
+	trusted, err := svc.TrustDevice(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trusted.PublicKey != canonicalKey || trusted.PublicKeyFingerprint != canonicalFingerprint {
+		t.Fatalf("trust material was not normalized: %+v", trusted)
+	}
+
+	snapshot, err := svc.ExportRegistrySnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Devices[0].PublicKey = "\t" + snapshot.Devices[0].PublicKey + " "
+	snapshot.Devices[0].PublicKeyFingerprint = strings.ToUpper(snapshot.Devices[0].PublicKeyFingerprint)
+	if snapshotFingerprint(snapshot) != snapshot.SnapshotFingerprint {
+		t.Fatal("semantically identical trust material changed the canonical fingerprint")
+	}
+	other := newTestService(t, "normalize-trust")
+	if err := other.ImportRegistrySnapshot(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := other.ListTrustedDevices(context.Background())
+	if err != nil || len(devices) != 1 || devices[0].PublicKey != canonicalKey || devices[0].PublicKeyFingerprint != canonicalFingerprint {
+		t.Fatalf("registry import did not store canonical trust material: %+v %v", devices, err)
 	}
 }
 
@@ -668,6 +702,153 @@ func TestReachabilityDoesNotSatisfyProofAndHandshakePersistsReceipt(t *testing.T
 	}
 }
 
+func TestHandshakeProofDoesNotImplyTransportReachability(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)}
+	a := newTestService(t, "proof-no-reachability", WithClock(clock))
+	b := newTestService(t, "proof-no-reachability")
+	aID, _ := a.BootstrapCurrentDevice(context.Background(), BootstrapDeviceRequest{})
+	bID, _ := b.BootstrapCurrentDevice(context.Background(), BootstrapDeviceRequest{})
+	trustBoth(t, a, aID, b, bID)
+	completeSignedHandshake(t, a, aID, b, bID)
+
+	status, err := a.GetConnectionStatus(context.Background(), bID.DeviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Reachable || status.ProofState != ProofStateVerified {
+		t.Fatalf("handshake proof invented transport reachability: %+v", status)
+	}
+	evaluation, err := a.EvaluateProof(context.Background(), bID.DeviceID)
+	if err != nil || !evaluation.Satisfied || evaluation.Reachable {
+		t.Fatalf("proof and reachability were not independent: %+v %v", evaluation, err)
+	}
+}
+
+func TestRevocationAndRetrustInvalidatePreRevocationProof(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)}
+	a := newTestService(t, "proof-retrust", WithClock(clock))
+	b := newTestService(t, "proof-retrust")
+	aID, _ := a.BootstrapCurrentDevice(context.Background(), BootstrapDeviceRequest{})
+	bID, _ := b.BootstrapCurrentDevice(context.Background(), BootstrapDeviceRequest{})
+	trustBoth(t, a, aID, b, bID)
+	completeSignedHandshake(t, a, aID, b, bID)
+	preRevocationLinks, err := a.store.readLinks()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.RevokeDevice(context.Background(), bID.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	evaluation, err := a.EvaluateProof(context.Background(), bID.DeviceID)
+	if err != nil || evaluation.Satisfied || evaluation.State != ProofStateRejected {
+		t.Fatalf("revocation did not reject proof: %+v %v", evaluation, err)
+	}
+	if _, err := a.TrustDevice(context.Background(), TrustDeviceRequest{DeviceID: bID.DeviceID, DisplayName: bID.DisplayName, PublicKey: bID.PublicKey, PublicKeyFingerprint: bID.PublicKeyFingerprint}); err != nil {
+		t.Fatal(err)
+	}
+	evaluation, err = a.EvaluateProof(context.Background(), bID.DeviceID)
+	if err != nil || evaluation.Satisfied || evaluation.State != ProofStateUnverified {
+		t.Fatalf("retrust retained pre-revocation proof: %+v %v", evaluation, err)
+	}
+
+	// Even if stale link data reappears after recovery, the fresh trust epoch
+	// makes the old receipt unusable.
+	if err := a.store.writeLinks(preRevocationLinks); err != nil {
+		t.Fatal(err)
+	}
+	evaluation, err = a.EvaluateProof(context.Background(), bID.DeviceID)
+	if err != nil || evaluation.Satisfied || evaluation.State != ProofStateRejected {
+		t.Fatalf("stale pre-revocation proof became valid after retrust: %+v %v", evaluation, err)
+	}
+	completeSignedHandshake(t, a, aID, b, bID)
+	evaluation, err = a.EvaluateProof(context.Background(), bID.DeviceID)
+	if err != nil || !evaluation.Satisfied || evaluation.State != ProofStateVerified {
+		t.Fatalf("fresh post-retrust proof was not accepted: %+v %v", evaluation, err)
+	}
+}
+
+func TestHandshakeAndProofExpireAtBoundary(t *testing.T) {
+	startTime := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	clock := &testClock{now: startTime}
+	a := newTestService(t, "expiry-boundary", WithClock(clock))
+	b := newTestService(t, "expiry-boundary")
+	aID, _ := a.BootstrapCurrentDevice(context.Background(), BootstrapDeviceRequest{})
+	bID, _ := b.BootstrapCurrentDevice(context.Background(), BootstrapDeviceRequest{})
+	trustBoth(t, a, aID, b, bID)
+
+	start, err := a.StartHandshake(context.Background(), DiscoveredPeer{Presence: PresenceRecord{DeviceID: bID.DeviceID, PublicKeyFingerprint: bID.PublicKeyFingerprint}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := b.SignHandshakeChallenge(context.Background(), HandshakeChallengeRequest{ChallengerDeviceID: aID.DeviceID, Challenge: start.Challenge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Add(defaultLinkTTL)
+	if _, err := a.CompleteHandshake(context.Background(), HandshakeCompleteRequest{SessionID: start.SessionID, PeerDeviceID: bID.DeviceID, Signature: response.Signature}); !errors.Is(err, ErrChallengeExpired) {
+		t.Fatalf("challenge at expiry boundary error = %v, want ErrChallengeExpired", err)
+	}
+
+	clock.now = startTime
+	completeSignedHandshake(t, a, aID, b, bID)
+	clock.Add(defaultLinkTTL)
+	evaluation, err := a.EvaluateProof(context.Background(), bID.DeviceID)
+	if err != nil || evaluation.Satisfied || evaluation.State != ProofStateExpired {
+		t.Fatalf("proof at expiry boundary was not expired: %+v %v", evaluation, err)
+	}
+}
+
+func TestRegistryImportWriteFaultsPreserveProofOrRecoverSafely(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)}
+	a := newTestService(t, "import-fault", WithClock(clock))
+	b := newTestService(t, "import-fault")
+	aID, _ := a.BootstrapCurrentDevice(context.Background(), BootstrapDeviceRequest{})
+	bID, _ := b.BootstrapCurrentDevice(context.Background(), BootstrapDeviceRequest{})
+	trustBoth(t, a, aID, b, bID)
+	completeSignedHandshake(t, a, aID, b, bID)
+	snapshot, err := a.ExportRegistrySnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Devices[0].DisplayName = "Imported Peer"
+	snapshot.SnapshotFingerprint = snapshotFingerprint(snapshot)
+
+	var writes []string
+	a.store.failWrite = func(path string) bool {
+		writes = append(writes, path)
+		return path == a.store.registryPath()
+	}
+	if err := a.ImportRegistrySnapshot(context.Background(), snapshot); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("registry commit fault error = %v", err)
+	}
+	a.store.failWrite = nil
+	for _, path := range writes {
+		if path == a.store.linkStatusPath() {
+			t.Fatal("proof was cleared before the registry commit succeeded")
+		}
+	}
+	assertVerifiedProof(t, a, bID.DeviceID)
+
+	linkFailures := 0
+	a.store.failWrite = func(path string) bool {
+		if path == a.store.linkStatusPath() && linkFailures == 0 {
+			linkFailures++
+			return true
+		}
+		return false
+	}
+	if err := a.ImportRegistrySnapshot(context.Background(), snapshot); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("proof clear fault error = %v", err)
+	}
+	a.store.failWrite = nil
+	devices, err := a.ListTrustedDevices(context.Background())
+	if err != nil || len(devices) != 1 || devices[0].DisplayName == "Imported Peer" {
+		t.Fatalf("failed proof clear did not roll registry back: %+v %v", devices, err)
+	}
+	assertVerifiedProof(t, a, bID.DeviceID)
+}
+
 func TestCompleteHandshakeFailsWhenProofPersistenceFails(t *testing.T) {
 	a := newTestService(t, "proof-persist")
 	b := newTestService(t, "proof-persist")
@@ -875,6 +1056,32 @@ func trustBoth(t *testing.T, a *Service, aID DeviceIdentity, b *Service, bID Dev
 	}
 	if _, err := b.TrustDevice(context.Background(), TrustDeviceRequest{DeviceID: aID.DeviceID, DisplayName: aID.DisplayName, PublicKey: aID.PublicKey, PublicKeyFingerprint: aID.PublicKeyFingerprint}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func completeSignedHandshake(t *testing.T, a *Service, aID DeviceIdentity, b *Service, bID DeviceIdentity) LinkSession {
+	t.Helper()
+	peer := DiscoveredPeer{Presence: PresenceRecord{DeviceID: bID.DeviceID, PublicKeyFingerprint: bID.PublicKeyFingerprint}}
+	start, err := a.StartHandshake(context.Background(), peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := b.SignHandshakeChallenge(context.Background(), HandshakeChallengeRequest{ChallengerDeviceID: aID.DeviceID, Challenge: start.Challenge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := a.CompleteHandshake(context.Background(), HandshakeCompleteRequest{SessionID: start.SessionID, PeerDeviceID: bID.DeviceID, Signature: response.Signature})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
+func assertVerifiedProof(t *testing.T, svc *Service, deviceID string) {
+	t.Helper()
+	evaluation, err := svc.EvaluateProof(context.Background(), deviceID)
+	if err != nil || !evaluation.Satisfied || evaluation.State != ProofStateVerified {
+		t.Fatalf("expected verified proof, got %+v %v", evaluation, err)
 	}
 }
 

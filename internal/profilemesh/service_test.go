@@ -164,6 +164,24 @@ func TestStrictDeviceRegistrationRequiresExplicitTrustState(t *testing.T) {
 	if _, err := svc.RegisterProfileDeviceStrict(context.Background(), RegisterProfileDeviceRequest{DeviceID: "strict-invalid", PublicKeyFingerprint: "fp-strict-invalid", TrustStatus: "accepted", Status: DeviceStatusActive}); !errors.Is(err, ErrDeviceNotAllowed) {
 		t.Fatalf("invalid explicit trust state error = %v, want ErrDeviceNotAllowed", err)
 	}
+	if _, err := svc.RegisterProfileDeviceStrict(context.Background(), RegisterProfileDeviceRequest{DeviceID: "strict-mismatch", PublicKeyFingerprint: "fp-strict-mismatch", TrustStatus: DeviceTrustTrusted, Status: DeviceStatusRemoved}); !errors.Is(err, ErrDeviceNotAllowed) {
+		t.Fatalf("incoherent strict lifecycle error = %v, want ErrDeviceNotAllowed", err)
+	}
+	removed, err := svc.RegisterProfileDeviceStrict(context.Background(), RegisterProfileDeviceRequest{DeviceID: "strict-removed", PublicKeyFingerprint: "  FP-STRICT-REMOVED  ", TrustStatus: DeviceTrustRevoked, Status: DeviceStatusRemoved})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.PublicKeyFingerprint != "fp-strict-removed" || removed.RemovedAt == nil || !removed.RemovedAt.Equal(removed.RegisteredAt) || !removed.RemovedAt.Equal(removed.UpdatedAt) || !removed.LastSeen.IsZero() {
+		t.Fatalf("strict removed lifecycle timestamps were incoherent: %+v", removed)
+	}
+	snapshot, err := svc.ExportProfileMeshSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := newTestService(t, "strict-profile")
+	if err := other.ImportProfileMeshSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatalf("strict lifecycle record failed its own snapshot validation: %v", err)
+	}
 }
 
 func TestResourceRegistryProfileOwnedDeviceHosted(t *testing.T) {
@@ -240,12 +258,14 @@ func TestSnapshotExportImportValidation(t *testing.T) {
 		t.Fatalf("expected wrong namespace rejection, got %v", err)
 	}
 	unsafe := snap
+	unsafe.SchemaVersion = legacyProfileMeshSnapshotSchemaVersion
 	unsafe.SnapshotFingerprint = ""
 	unsafe.Resources[0].CurrentHostDeviceID = "missing"
 	if err := other.ImportProfileMeshSnapshot(context.Background(), unsafe); !errors.Is(err, ErrDeviceNotAllowed) {
 		t.Fatalf("expected unsafe host rejection, got %v", err)
 	}
 	duplicate := snap
+	duplicate.SchemaVersion = legacyProfileMeshSnapshotSchemaVersion
 	duplicate.SnapshotFingerprint = ""
 	duplicate.Devices = append(duplicate.Devices, ProfileDeviceRecord{DeviceID: device.DeviceID, PublicKeyFingerprint: "different", Status: DeviceStatusActive, TrustStatus: DeviceTrustTrusted})
 	if err := other.ImportProfileMeshSnapshot(context.Background(), duplicate); !errors.Is(err, ErrInvalidProfileSnapshot) {
@@ -315,6 +335,32 @@ func TestProfileMeshFingerprintCoversTrustCapabilityAndTimestampFields(t *testin
 				t.Fatalf("fingerprint did not cover %s", name)
 			}
 		})
+	}
+}
+
+func TestProfileMeshFingerprintFullyCanonicalizesHintOrdering(t *testing.T) {
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	base := ProfileMeshSnapshot{
+		SchemaVersion: ProfileMeshSnapshotSchemaVersion,
+		AppID:         "sample-app",
+		Namespace:     "canonical-hints",
+		Profile:       ProfileIdentity{ProfileID: "profile-1"},
+		RelayHints: []ProfileRelayHint{
+			{ProfileID: "profile-1", DeviceID: "device-1", RelayProviderID: "relay-1", EndpointType: EndpointRelay, ExpiresAt: now.Add(time.Hour), Capabilities: []string{"tools", "services"}, Metadata: map[string]string{"lane": "b"}},
+			{ProfileID: "profile-1", DeviceID: "device-1", RelayProviderID: "relay-1", EndpointType: EndpointRelay, ExpiresAt: now.Add(2 * time.Hour), Capabilities: []string{"services"}, Metadata: map[string]string{"lane": "a"}},
+		},
+		EndpointHints: []ProfileEndpointHint{
+			{ProfileID: "profile-1", DeviceID: "device-1", EndpointType: EndpointLocal, Address: "127.0.0.1", ExpiresAt: now.Add(time.Hour), Capabilities: []string{"lan", "direct"}},
+			{ProfileID: "profile-1", DeviceID: "device-1", EndpointType: EndpointLocal, Address: "127.0.0.1", ExpiresAt: now.Add(2 * time.Hour), Capabilities: []string{"lan"}},
+		},
+	}
+	reordered := cloneProfileMeshSnapshot(t, base)
+	reordered.RelayHints[0], reordered.RelayHints[1] = reordered.RelayHints[1], reordered.RelayHints[0]
+	reordered.EndpointHints[0], reordered.EndpointHints[1] = reordered.EndpointHints[1], reordered.EndpointHints[0]
+	reordered.RelayHints[1].Capabilities = []string{"services", "tools", "services"}
+	reordered.EndpointHints[1].Capabilities = []string{"direct", "lan"}
+	if got, want := snapshotFingerprint(reordered), snapshotFingerprint(base); got != want {
+		t.Fatalf("equivalent hint ordering changed fingerprint: got %q want %q", got, want)
 	}
 }
 

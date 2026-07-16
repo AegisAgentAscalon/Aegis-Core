@@ -165,7 +165,7 @@ func BuildProfileFreshnessSummary(metadata ProfileSnapshotMetadata, now time.Tim
 	futureDated := metadata.CreatedAt.After(now.Add(DefaultSnapshotClockSkew)) ||
 		metadata.UpdatedAt.After(now.Add(DefaultSnapshotClockSkew))
 	stale := false
-	if !metadata.ExpiresAt.IsZero() && metadata.ExpiresAt.Before(now.Add(-DefaultSnapshotClockSkew)) {
+	if !metadata.ExpiresAt.IsZero() && !metadata.ExpiresAt.After(now.Add(-DefaultSnapshotClockSkew)) {
 		stale = true
 	}
 	if !updatedAt.IsZero() && now.Sub(updatedAt) > DefaultSnapshotFreshnessWindow {

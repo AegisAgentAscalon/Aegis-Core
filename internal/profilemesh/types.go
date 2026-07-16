@@ -16,10 +16,12 @@ import (
 )
 
 const (
-	SchemaVersion     = 1
-	MetadataVersion   = 1
-	defaultStaleAge   = 10 * time.Minute
-	defaultFutureSkew = 2 * time.Minute
+	SchemaVersion                          = 1
+	ProfileMeshSnapshotSchemaVersion       = 2
+	legacyProfileMeshSnapshotSchemaVersion = 1
+	MetadataVersion                        = 1
+	defaultStaleAge                        = 10 * time.Minute
+	defaultFutureSkew                      = 2 * time.Minute
 )
 
 var (
@@ -417,61 +419,71 @@ func cloneMetadata(in map[string]string) map[string]string {
 }
 
 func snapshotFingerprint(snapshot ProfileMeshSnapshot) string {
-	canonical := snapshot
+	canonical := normalizeProfileMeshSnapshot(snapshot)
 	canonical.SnapshotFingerprint = ""
-	canonical.Devices = append([]ProfileDeviceRecord{}, snapshot.Devices...)
-	for i := range canonical.Devices {
-		canonical.Devices[i].Capabilities = append([]string{}, canonical.Devices[i].Capabilities...)
-		sort.Strings(canonical.Devices[i].Capabilities)
-	}
 	sort.Slice(canonical.Devices, func(i, j int) bool {
 		return canonical.Devices[i].DeviceID < canonical.Devices[j].DeviceID
 	})
-	canonical.Resources = append([]ProfileResourceRecord{}, snapshot.Resources...)
-	for i := range canonical.Resources {
-		canonical.Resources[i].AllowedHostDeviceIDs = append([]string{}, canonical.Resources[i].AllowedHostDeviceIDs...)
-		canonical.Resources[i].Tags = append([]string{}, canonical.Resources[i].Tags...)
-		canonical.Resources[i].Metadata = cloneMetadataExact(canonical.Resources[i].Metadata)
-		sort.Strings(canonical.Resources[i].AllowedHostDeviceIDs)
-		sort.Strings(canonical.Resources[i].Tags)
-	}
 	sort.Slice(canonical.Resources, func(i, j int) bool {
 		return canonical.Resources[i].ResourceID < canonical.Resources[j].ResourceID
 	})
-	canonical.RelayHints = append([]ProfileRelayHint{}, snapshot.RelayHints...)
-	for i := range canonical.RelayHints {
-		canonical.RelayHints[i].Capabilities = append([]string{}, canonical.RelayHints[i].Capabilities...)
-		canonical.RelayHints[i].Metadata = cloneMetadataExact(canonical.RelayHints[i].Metadata)
-		sort.Strings(canonical.RelayHints[i].Capabilities)
-	}
 	sort.Slice(canonical.RelayHints, func(i, j int) bool {
-		a := canonical.RelayHints[i]
-		b := canonical.RelayHints[j]
-		return a.ProfileID+"\x00"+a.DeviceID+"\x00"+a.RelayProviderID+"\x00"+string(a.EndpointType) < b.ProfileID+"\x00"+b.DeviceID+"\x00"+b.RelayProviderID+"\x00"+string(b.EndpointType)
+		return canonicalJSON(canonical.RelayHints[i]) < canonicalJSON(canonical.RelayHints[j])
 	})
-	canonical.EndpointHints = append([]ProfileEndpointHint{}, snapshot.EndpointHints...)
-	for i := range canonical.EndpointHints {
-		canonical.EndpointHints[i].Capabilities = append([]string{}, canonical.EndpointHints[i].Capabilities...)
-		canonical.EndpointHints[i].Metadata = cloneMetadataExact(canonical.EndpointHints[i].Metadata)
-		sort.Strings(canonical.EndpointHints[i].Capabilities)
-	}
 	sort.Slice(canonical.EndpointHints, func(i, j int) bool {
-		a := canonical.EndpointHints[i]
-		b := canonical.EndpointHints[j]
-		return a.ProfileID+"\x00"+a.DeviceID+"\x00"+string(a.EndpointType)+"\x00"+a.Address < b.ProfileID+"\x00"+b.DeviceID+"\x00"+string(b.EndpointType)+"\x00"+b.Address
+		return canonicalJSON(canonical.EndpointHints[i]) < canonicalJSON(canonical.EndpointHints[j])
 	})
 	raw, _ := json.Marshal(canonical)
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-func cloneMetadataExact(in map[string]string) map[string]string {
-	if in == nil {
-		return nil
+func legacyProfileMeshSnapshotFingerprint(snapshot ProfileMeshSnapshot) string {
+	parts := []string{snapshot.AppID, snapshot.Namespace, snapshot.Profile.ProfileID}
+	for _, dev := range snapshot.Devices {
+		parts = append(parts, "d:"+dev.DeviceID+"="+dev.PublicKeyFingerprint+"="+string(dev.Status))
 	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
+	for _, resource := range snapshot.Resources {
+		parts = append(parts, "r:"+resource.ResourceID+"="+resource.ProfileOwnerID+"="+resource.CurrentHostDeviceID)
 	}
-	return out
+	sort.Strings(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+func normalizeProfileMeshSnapshot(snapshot ProfileMeshSnapshot) ProfileMeshSnapshot {
+	normalized := snapshot
+	normalized.Profile.ProfilePublicFingerprint = normalizeFingerprint(normalized.Profile.ProfilePublicFingerprint)
+	normalized.Devices = append([]ProfileDeviceRecord{}, snapshot.Devices...)
+	for i := range normalized.Devices {
+		normalized.Devices[i].PublicKeyFingerprint = normalizeFingerprint(normalized.Devices[i].PublicKeyFingerprint)
+		normalized.Devices[i].Capabilities = compactStrings(normalized.Devices[i].Capabilities)
+		normalized.Devices[i].MetadataSource = strings.TrimSpace(normalized.Devices[i].MetadataSource)
+	}
+	normalized.Resources = append([]ProfileResourceRecord{}, snapshot.Resources...)
+	for i := range normalized.Resources {
+		normalized.Resources[i].AllowedHostDeviceIDs = compactStrings(normalized.Resources[i].AllowedHostDeviceIDs)
+		normalized.Resources[i].Tags = compactStrings(normalized.Resources[i].Tags)
+		normalized.Resources[i].Metadata = cloneMetadata(normalized.Resources[i].Metadata)
+	}
+	normalized.RelayHints = append([]ProfileRelayHint{}, snapshot.RelayHints...)
+	for i := range normalized.RelayHints {
+		normalized.RelayHints[i].Capabilities = compactStrings(normalized.RelayHints[i].Capabilities)
+		normalized.RelayHints[i].Metadata = cloneMetadata(normalized.RelayHints[i].Metadata)
+	}
+	normalized.EndpointHints = append([]ProfileEndpointHint{}, snapshot.EndpointHints...)
+	for i := range normalized.EndpointHints {
+		normalized.EndpointHints[i].Capabilities = compactStrings(normalized.EndpointHints[i].Capabilities)
+		normalized.EndpointHints[i].Metadata = cloneMetadata(normalized.EndpointHints[i].Metadata)
+	}
+	return normalized
+}
+
+func normalizeFingerprint(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func canonicalJSON(value any) string {
+	raw, _ := json.Marshal(value)
+	return string(raw)
 }
