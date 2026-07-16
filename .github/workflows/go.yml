@@ -12,7 +12,14 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -22,9 +29,18 @@ jobs:
         run: go mod verify
       - name: Test
         run: go test ./...
+      - name: Vet
+        run: go vet ./...
+
+  race:
+    name: Race test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - name: Race test internal packages
         run: go test -race ./internal/...
       - name: Race test public packages
         run: go test -race ./pkg/...
-      - name: Vet
-        run: go vet ./...
