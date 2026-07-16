@@ -17,7 +17,9 @@ func TestPublicAuditEventConstantsAndRedaction(t *testing.T) {
 
 func TestPublicAuditSinkReceivesServiceEvents(t *testing.T) {
 	sink := &MemoryAuditSink{}
-	svc, err := NewService(Config{AuditSink: sink})
+	cfg := testConfig()
+	cfg.AuditSink = sink
+	svc, err := NewService(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

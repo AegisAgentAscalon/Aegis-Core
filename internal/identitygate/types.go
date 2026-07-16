@@ -133,6 +133,9 @@ type RecognitionResult struct {
 	Explanation          string
 }
 
+// VerificationResult is the legacy provider result.
+//
+// Deprecated: providers should return VerificationReceipt instead.
 type VerificationResult struct {
 	UserID     string
 	Verified   bool
@@ -140,6 +143,33 @@ type VerificationResult struct {
 	VerifiedAt time.Time
 	ExpiresAt  time.Time
 	Provider   string
+}
+
+// VerificationRequest is the safe, session-bound challenge sent to a receipt
+// provider. It intentionally carries no captured material or provider payload.
+type VerificationRequest struct {
+	AttemptID     string    `json:"attempt_id"`
+	AssertionID   string    `json:"assertion_id"`
+	SessionID     string    `json:"session_id"`
+	SubjectUserID string    `json:"subject_user_id"`
+	Reason        string    `json:"reason,omitempty"`
+	FreshRequired bool      `json:"fresh_required"`
+	RequestedAt   time.Time `json:"requested_at"`
+}
+
+// VerificationReceipt is the safe result accepted from a configured provider.
+// Identifiers are opaque references only; raw evidence must remain provider-side.
+type VerificationReceipt struct {
+	ReceiptID     string    `json:"receipt_id"`
+	AttemptID     string    `json:"attempt_id"`
+	AssertionID   string    `json:"assertion_id"`
+	SessionID     string    `json:"session_id"`
+	SubjectUserID string    `json:"subject_user_id"`
+	Provider      string    `json:"provider"`
+	Verified      bool      `json:"verified"`
+	Fresh         bool      `json:"fresh"`
+	VerifiedAt    time.Time `json:"verified_at"`
+	ExpiresAt     time.Time `json:"expires_at"`
 }
 
 type SessionSignals struct {
@@ -193,6 +223,9 @@ type realClock struct{}
 
 func (realClock) Now() time.Time { return time.Now() }
 
+// IdentityVerificationProvider is the legacy verification contract.
+//
+// Deprecated: implement VerificationReceiptProvider for new integrations.
 type IdentityVerificationProvider interface {
 	CanVerify(context.Context, string) bool
 	RequestVerification(context.Context, string, string) (VerificationResult, error)
@@ -200,11 +233,24 @@ type IdentityVerificationProvider interface {
 	ProviderName() string
 }
 
-type AuditSink interface{ Record(context.Context, AuditEvent) error }
+// VerificationReceiptProvider performs provider-owned verification and returns
+// only an opaque, session-bound receipt. Implementations must keep all captured
+// evidence and credentials outside these request and receipt values.
+type VerificationReceiptProvider interface {
+	Verify(context.Context, VerificationRequest) (VerificationReceipt, error)
+	ProviderName() string
+}
+
+type AuditSink interface {
+	Record(context.Context, AuditEvent) error
+}
 
 type Config struct {
-	SessionID            string
-	CadencePolicy        VerificationCadencePolicy
+	SessionID       string
+	CadencePolicy   VerificationCadencePolicy
+	ReceiptProvider VerificationReceiptProvider
+	// VerificationProvider preserves the original provider integration surface.
+	// Deprecated: use ReceiptProvider.
 	VerificationProvider IdentityVerificationProvider
 	Clock                Clock
 	AuditSink            AuditSink

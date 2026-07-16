@@ -12,7 +12,11 @@ import (
 func TestCadencePolicyClampsRelaxedWindows(t *testing.T) {
 	ctx := context.Background()
 	clock := &fakeClock{now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
-	s, err := NewService(Config{Clock: clock, CadencePolicy: VerificationCadencePolicy{VerifiedWindow: 24 * time.Hour, FreshWindow: time.Hour, MaxVerifiedWindow: 30 * time.Minute, MaxFreshWindow: time.Minute}})
+	s, err := NewService(Config{
+		Clock:           clock,
+		ReceiptProvider: MockVerificationProvider{Allow: true, Clock: clock},
+		CadencePolicy:   VerificationCadencePolicy{VerifiedWindow: 24 * time.Hour, FreshWindow: time.Hour, MaxVerifiedWindow: 30 * time.Minute, MaxFreshWindow: time.Minute},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -38,7 +38,7 @@ func TestServiceRecordsSafeAuditEvents(t *testing.T) {
 	ctx := context.Background()
 	sink := &MemoryAuditSink{}
 	clock := &fakeClock{now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
-	s, err := NewService(Config{Clock: clock, AuditSink: sink})
+	s, err := NewService(Config{Clock: clock, AuditSink: sink, ReceiptProvider: MockVerificationProvider{Allow: true, Clock: clock}})
 	if err != nil {
 		t.Fatal(err)
 	}

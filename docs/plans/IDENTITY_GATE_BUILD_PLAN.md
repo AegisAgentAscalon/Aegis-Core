@@ -1,12 +1,14 @@
 # Aegis Core Identity Gate Build Plan
 
-Status: Build 001 started / foundation implementation in progress
+Status: Build 001 foundation / provider-receipt hardening implemented
 Build slice: Identity Gate foundation only
-Revision: v2.5 build-started marker
+Revision: v2.6 provider-receipt hardening
 
 ## Build 001 Scope
 
-Build 001 starts the Aegis Core Identity Gate foundation with public contracts, internal state handling, mock verification, configurable verification cadence, scope checks, prompt/context provenance, safe model identity packets, audit-safe event surfaces, a public smoke example, and invariant tests.
+Build 001 establishes the Aegis Core Identity Gate foundation with public contracts, internal state handling, production-provider-ready verification receipts, explicitly injected mock verification, configurable verification cadence, scope checks, prompt/context provenance, safe model identity packets, audit-safe event surfaces, a public smoke example, and invariant tests.
+
+The provider-ready surface does not capture biometrics or other verification evidence. Provider implementations own their ceremony, credentials, and evidence and return only session-bound safe receipt metadata.
 
 Aegis Core is the only project identity intentionally retained. This plan intentionally avoids downstream product names, personal names, companion names, and ecosystem names outside Aegis Core.
 
@@ -21,6 +23,8 @@ Text is not authority.
 Context is not policy.
 Only Aegis Core verification may unlock protected scopes.
 Only trusted control-plane sources may change policy, authority, or identity state.
+Fresh assurance requires provider-proven freshness.
+Receipt, assertion, and attempt identifiers are opaque, session-bound, and one-use.
 ```
 
 ## Roadmap Count
@@ -32,7 +36,7 @@ The implementation roadmap should be tracked as 12 build slices:
 3. Cadence policy and guardrails.
 4. Local in-memory profile store.
 5. Recognition contracts and mock recognizer behavior.
-6. Mock verification provider behavior.
+6. Verification receipt provider behavior and explicit mock injection.
 7. Scope policy and high-risk freshness checks.
 8. Prompt/context provenance and authority checks.
 9. Safe model identity packet generation.
@@ -40,4 +44,6 @@ The implementation roadmap should be tracked as 12 build slices:
 11. Security invariant test matrix.
 12. Public smoke example and docs update.
 
-Build 001 intentionally starts the foundation across these surfaces with minimal local/mock behavior. Later builds should harden, split, and deepen the implementation without adding real biometrics, real passkeys, hardware security keys, vault encryption, downstream app integration, or embodied runtime code yet.
+Build 001 now fails closed without an explicitly configured provider, preserves deprecated request and provider adapters, calls provider code outside the service mutex, validates receipt subject/provider/session/attempt/assertion/time/expiry bindings, rejects receipt replay, and caps local verified and fresh windows. The public receipt contracts contain no raw biometric, template, credential, assertion, or provider payload fields.
+
+Later builds may add separately reviewed provider integrations, but this foundation does not add biometric capture, passkey capture, hardware security key capture, vault encryption, downstream app integration, or embodied runtime code.

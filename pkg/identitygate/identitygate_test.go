@@ -2,12 +2,23 @@ package identitygate
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
+func testConfig() Config {
+	return Config{ReceiptProvider: MockVerificationProvider{Allow: true}}
+}
+
+func TestPublicFacadeRequiresExplicitProvider(t *testing.T) {
+	if _, err := NewService(Config{}); !errors.Is(err, ErrVerificationProviderRequired) {
+		t.Fatalf("expected provider-required error, got %v", err)
+	}
+}
+
 func TestPublicFacadeRecognitionDoesNotVerify(t *testing.T) {
 	ctx := context.Background()
-	svc, err := NewService(Config{})
+	svc, err := NewService(testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +44,7 @@ func TestPublicFacadeRecognitionDoesNotVerify(t *testing.T) {
 
 func TestPublicFacadeVerificationAllowsProtectedScope(t *testing.T) {
 	ctx := context.Background()
-	svc, err := NewService(Config{})
+	svc, err := NewService(testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

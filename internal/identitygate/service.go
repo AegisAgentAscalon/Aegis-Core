@@ -2,18 +2,21 @@ package identitygate
 
 import (
 	"context"
-	"fmt"
 	"sync"
 )
 
 type Service struct {
-	mu       sync.Mutex
-	session  IdentitySession
-	profiles map[string]UserProfile
-	policy   VerificationCadencePolicy
-	verifier IdentityVerificationProvider
-	clock    Clock
-	audit    AuditSink
+	mu               sync.Mutex
+	session          IdentitySession
+	profiles         map[string]UserProfile
+	policy           VerificationCadencePolicy
+	verifier         VerificationReceiptProvider
+	providerName     string
+	clock            Clock
+	audit            AuditSink
+	usedAttemptIDs   map[string]struct{}
+	usedAssertionIDs map[string]struct{}
+	usedReceiptIDs   map[string]struct{}
 }
 
 func NewService(cfg Config) (*Service, error) {
@@ -22,14 +25,19 @@ func NewService(cfg Config) (*Service, error) {
 		clock = realClock{}
 	}
 	policy := resolve(cfg.CadencePolicy)
-	verifier := cfg.VerificationProvider
-	if verifier == nil {
-		verifier = MockVerificationProvider{Allow: true, Clock: clock}
+	verifier, providerName, err := configuredReceiptProvider(cfg)
+	if err != nil {
+		return nil, err
 	}
 	now := clock.Now().UTC()
 	sessionID := cfg.SessionID
 	if sessionID == "" {
-		sessionID = fmt.Sprintf("sess_%d", now.UnixNano())
+		sessionID, err = newOpaqueID("session")
+		if err != nil {
+			return nil, err
+		}
+	} else if !validOpaqueReference(sessionID) {
+		return nil, ErrInvalidVerificationConfig
 	}
 	svc := &Service{
 		session: IdentitySession{
@@ -39,11 +47,15 @@ func NewService(cfg Config) (*Service, error) {
 			LastActiveAt:      now,
 			AllowedScopes:     []Scope{ScopePublic, ScopePublicChat},
 		},
-		profiles: map[string]UserProfile{},
-		policy:   policy,
-		verifier: verifier,
-		clock:    clock,
-		audit:    cfg.AuditSink,
+		profiles:         map[string]UserProfile{},
+		policy:           policy,
+		verifier:         verifier,
+		providerName:     providerName,
+		clock:            clock,
+		audit:            cfg.AuditSink,
+		usedAttemptIDs:   map[string]struct{}{},
+		usedAssertionIDs: map[string]struct{}{},
+		usedReceiptIDs:   map[string]struct{}{},
 	}
 	svc.record(context.Background(), EventSessionCreated, "session created")
 	return svc, nil
