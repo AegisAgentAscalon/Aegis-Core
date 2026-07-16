@@ -119,6 +119,8 @@ type IdentitySession struct {
 	FreshVerifiedAt        time.Time
 	FreshUntil             time.Time
 	LastActiveAt           time.Time
+	IdleTimeoutAt          time.Time
+	VerificationEpoch      uint64
 	ReauthReason           string
 	AllowedScopes          []Scope
 	LockReason             string
@@ -148,13 +150,15 @@ type VerificationResult struct {
 // VerificationRequest is the safe, session-bound challenge sent to a receipt
 // provider. It intentionally carries no captured material or provider payload.
 type VerificationRequest struct {
-	AttemptID     string    `json:"attempt_id"`
-	AssertionID   string    `json:"assertion_id"`
-	SessionID     string    `json:"session_id"`
-	SubjectUserID string    `json:"subject_user_id"`
-	Reason        string    `json:"reason,omitempty"`
-	FreshRequired bool      `json:"fresh_required"`
-	RequestedAt   time.Time `json:"requested_at"`
+	AttemptID         string    `json:"attempt_id"`
+	AssertionID       string    `json:"assertion_id"`
+	SessionID         string    `json:"session_id"`
+	VerificationEpoch uint64    `json:"verification_epoch"`
+	SubjectUserID     string    `json:"subject_user_id"`
+	Reason            string    `json:"reason,omitempty"`
+	FreshRequired     bool      `json:"fresh_required"`
+	RequestedAt       time.Time `json:"requested_at"`
+	ExpiresAt         time.Time `json:"expires_at"`
 }
 
 // VerificationReceipt is the safe result accepted from a configured provider.

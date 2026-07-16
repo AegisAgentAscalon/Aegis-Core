@@ -6,7 +6,12 @@ import (
 	"time"
 )
 
-const maxProviderClockSkew = time.Minute
+const (
+	maxProviderClockSkew   = time.Minute
+	verificationRequestTTL = 10 * time.Minute
+	maxReplayTrackingTTL   = hardMaxVerifiedWindow + maxProviderClockSkew
+	maxReplayCacheEntries  = 256
+)
 
 // RequestVerification is the source-compatible session-only wrapper.
 //
@@ -61,48 +66,56 @@ func (s *Service) requestReceipt(ctx context.Context, userID, reason string, fre
 }
 
 func (s *Service) issueVerificationRequest(ctx context.Context, userID, reason string, fresh bool) (VerificationRequest, IdentitySession, error) {
-	attemptID, err := s.reserveRandomID("attempt", s.usedAttemptIDs)
-	if err != nil {
-		return VerificationRequest{}, s.sessionSnapshot(), err
-	}
-	assertionID, err := s.reserveRandomID("assertion", s.usedAssertionIDs)
-	if err != nil {
-		return VerificationRequest{}, s.sessionSnapshot(), err
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refresh()
+	if err := ctx.Err(); err != nil {
+		return VerificationRequest{}, cloneSession(s.session), err
+	}
 	if s.session.AssuranceLevel == AssuranceLocked {
 		s.record(ctx, EventVerificationFailed, "verification denied because session is locked")
 		return VerificationRequest{}, cloneSession(s.session), ErrLocked
 	}
+	if len(s.usedAttemptIDs) >= maxReplayCacheEntries || len(s.usedAssertionIDs) >= maxReplayCacheEntries || len(s.usedReceiptIDs) >= maxReplayCacheEntries {
+		return VerificationRequest{}, cloneSession(s.session), ErrVerificationTrackingCapacity
+	}
+	now := s.clock.Now().UTC()
+	expiresAt := now.Add(verificationRequestTTL)
+	attemptID, err := s.reserveRandomIDLocked("attempt", s.usedAttemptIDs, expiresAt, now)
+	if err != nil {
+		return VerificationRequest{}, cloneSession(s.session), err
+	}
+	assertionID, err := s.reserveRandomIDLocked("assertion", s.usedAssertionIDs, expiresAt, now)
+	if err != nil {
+		return VerificationRequest{}, cloneSession(s.session), err
+	}
+	s.touchActivityLocked(now)
 	request := VerificationRequest{
-		AttemptID:     attemptID,
-		AssertionID:   assertionID,
-		SessionID:     s.session.SessionID,
-		SubjectUserID: userID,
-		Reason:        safe(reason),
-		FreshRequired: fresh,
-		RequestedAt:   s.clock.Now().UTC(),
+		AttemptID:         attemptID,
+		AssertionID:       assertionID,
+		SessionID:         s.session.SessionID,
+		VerificationEpoch: s.session.VerificationEpoch,
+		SubjectUserID:     userID,
+		Reason:            safe(reason),
+		FreshRequired:     fresh,
+		RequestedAt:       now,
+		ExpiresAt:         expiresAt,
 	}
 	s.record(ctx, EventVerificationRequested, "verification requested")
 	return request, cloneSession(s.session), nil
 }
 
-func (s *Service) reserveRandomID(prefix string, used map[string]struct{}) (string, error) {
+func (s *Service) reserveRandomIDLocked(prefix string, used map[string]time.Time, expiresAt, now time.Time) (string, error) {
 	for i := 0; i < 4; i++ {
 		id, err := newOpaqueID(prefix)
 		if err != nil {
 			return "", err
 		}
-		s.mu.Lock()
-		_, exists := used[id]
-		if !exists {
-			used[id] = struct{}{}
+		tracked, err := s.trackReplayIDLocked(used, id, expiresAt, now)
+		if err != nil {
+			return "", err
 		}
-		s.mu.Unlock()
-		if !exists {
+		if tracked {
 			return id, nil
 		}
 	}
@@ -118,14 +131,28 @@ func (s *Service) evaluateVerificationReceipt(ctx context.Context, request Verif
 		s.record(ctx, EventVerificationFailed, "verification receipt rejected")
 		return receipt, cloneSession(s.session), err
 	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 	if s.session.AssuranceLevel == AssuranceLocked {
 		return fail(ErrLocked)
 	}
+	if request.SessionID != s.session.SessionID || request.VerificationEpoch != s.session.VerificationEpoch {
+		return fail(ErrReauthRequired)
+	}
 	if validOpaqueReference(receipt.ReceiptID) {
-		if _, used := s.usedReceiptIDs[receipt.ReceiptID]; used {
+		now := s.clock.Now().UTC()
+		expiresAt := now.Add(maxReplayTrackingTTL)
+		if receipt.ExpiresAt.After(now) && receipt.ExpiresAt.Before(expiresAt) {
+			expiresAt = receipt.ExpiresAt.UTC()
+		}
+		tracked, err := s.trackReplayIDLocked(s.usedReceiptIDs, receipt.ReceiptID, expiresAt, now)
+		if err != nil {
+			return fail(err)
+		}
+		if !tracked {
 			return fail(ErrVerificationReceiptUsed)
 		}
-		s.usedReceiptIDs[receipt.ReceiptID] = struct{}{}
 	}
 	if err := s.validateReceiptLocked(request, receipt); err != nil {
 		return fail(err)
@@ -135,8 +162,13 @@ func (s *Service) evaluateVerificationReceipt(ctx context.Context, request Verif
 	}
 
 	now := s.clock.Now().UTC()
-	verifiedUntil := earliestTime(
+	verifiedHardUntil := earliestTime(
 		receipt.ExpiresAt.UTC(),
+		receipt.VerifiedAt.UTC().Add(s.policy.MaxVerifiedWindow),
+		now.Add(s.policy.MaxVerifiedWindow),
+	)
+	verifiedUntil := earliestTime(
+		verifiedHardUntil,
 		receipt.VerifiedAt.UTC().Add(s.policy.VerifiedWindow),
 		now.Add(s.policy.VerifiedWindow),
 	)
@@ -145,9 +177,15 @@ func (s *Service) evaluateVerificationReceipt(ctx context.Context, request Verif
 	}
 
 	var freshUntil time.Time
+	var freshHardUntil time.Time
 	if request.FreshRequired {
-		freshUntil = earliestTime(
+		freshHardUntil = earliestTime(
 			receipt.ExpiresAt.UTC(),
+			receipt.VerifiedAt.UTC().Add(s.policy.MaxFreshWindow),
+			now.Add(s.policy.MaxFreshWindow),
+		)
+		freshUntil = earliestTime(
+			freshHardUntil,
 			receipt.VerifiedAt.UTC().Add(s.policy.FreshWindow),
 			now.Add(s.policy.FreshWindow),
 		)
@@ -155,7 +193,14 @@ func (s *Service) evaluateVerificationReceipt(ctx context.Context, request Verif
 			return fail(ErrInvalidVerificationReceipt)
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
+	if request.SessionID != s.session.SessionID || request.VerificationEpoch != s.session.VerificationEpoch {
+		return fail(ErrReauthRequired)
+	}
 
+	s.bumpVerificationEpochLocked()
 	s.session.VerifiedUserID = receipt.SubjectUserID
 	s.session.VerifiedOperatorUserID = receipt.SubjectUserID
 	s.session.VerifiedAt = now
@@ -166,11 +211,15 @@ func (s *Service) evaluateVerificationReceipt(ctx context.Context, request Verif
 	s.session.OperatorAssurance = OperatorVerified
 	s.session.ReauthRequired = false
 	s.session.ReauthReason = ""
+	s.session.LastActiveAt = now
+	s.verifiedHardUntil = verifiedHardUntil
+	s.freshHardUntil = time.Time{}
 	if request.FreshRequired {
 		s.session.FreshVerifiedAt = now
 		s.session.FreshUntil = freshUntil
 		s.session.AssuranceLevel = AssuranceFreshVerified
 		s.session.OperatorAssurance = OperatorFreshVerified
+		s.freshHardUntil = freshHardUntil
 	}
 	s.recompute()
 	s.record(ctx, EventVerificationSucceeded, "verification succeeded")
@@ -179,24 +228,63 @@ func (s *Service) evaluateVerificationReceipt(ctx context.Context, request Verif
 
 func (s *Service) validateReceiptLocked(request VerificationRequest, receipt VerificationReceipt) error {
 	now := s.clock.Now().UTC()
+	attemptExpiresAt, attemptTracked := s.usedAttemptIDs[request.AttemptID]
+	assertionExpiresAt, assertionTracked := s.usedAssertionIDs[request.AssertionID]
 	if !validOpaqueReference(receipt.ReceiptID) ||
+		!attemptTracked ||
+		!assertionTracked ||
+		!now.Before(attemptExpiresAt) ||
+		!now.Before(assertionExpiresAt) ||
 		receipt.AttemptID != request.AttemptID ||
 		receipt.AssertionID != request.AssertionID ||
 		receipt.SessionID != request.SessionID ||
 		receipt.SessionID != s.session.SessionID ||
 		receipt.SubjectUserID != request.SubjectUserID ||
 		receipt.Provider != s.providerName ||
+		request.VerificationEpoch == 0 ||
+		request.RequestedAt.IsZero() ||
+		request.ExpiresAt.IsZero() ||
 		receipt.VerifiedAt.IsZero() ||
 		receipt.ExpiresAt.IsZero() {
 		return ErrInvalidVerificationReceipt
 	}
-	if receipt.VerifiedAt.After(now.Add(maxProviderClockSkew)) ||
+	if !request.ExpiresAt.After(request.RequestedAt) ||
+		request.ExpiresAt.After(request.RequestedAt.Add(verificationRequestTTL)) ||
+		!now.Before(request.ExpiresAt) ||
+		receipt.VerifiedAt.After(request.ExpiresAt) ||
+		receipt.VerifiedAt.After(now.Add(maxProviderClockSkew)) ||
 		receipt.VerifiedAt.Before(request.RequestedAt.Add(-maxProviderClockSkew)) ||
 		!receipt.ExpiresAt.After(receipt.VerifiedAt) ||
 		!receipt.ExpiresAt.After(now) {
 		return ErrInvalidVerificationReceipt
 	}
 	return nil
+}
+
+func (s *Service) trackReplayIDLocked(cache map[string]time.Time, id string, expiresAt, now time.Time) (bool, error) {
+	pruneReplayCache(cache, now)
+	if _, exists := cache[id]; exists {
+		return false, nil
+	}
+	if len(cache) >= maxReplayCacheEntries {
+		return false, ErrVerificationTrackingCapacity
+	}
+	cache[id] = expiresAt
+	return true, nil
+}
+
+func (s *Service) pruneReplayCachesLocked(now time.Time) {
+	pruneReplayCache(s.usedAttemptIDs, now)
+	pruneReplayCache(s.usedAssertionIDs, now)
+	pruneReplayCache(s.usedReceiptIDs, now)
+}
+
+func pruneReplayCache(cache map[string]time.Time, now time.Time) {
+	for id, expiresAt := range cache {
+		if !now.Before(expiresAt) {
+			delete(cache, id)
+		}
+	}
 }
 
 func (s *Service) failVerification(ctx context.Context) IdentitySession {

@@ -14,9 +14,12 @@ func (s *Service) ClaimIdentity(ctx context.Context, userID string) (IdentitySes
 	if s.session.AssuranceLevel == AssuranceLocked {
 		return cloneSession(s.session), ErrLocked
 	}
+	s.bumpVerificationEpochLocked()
+	s.clearVerificationStateLocked("identity claim changed")
 	s.session.ClaimedUserID = userID
 	s.session.AssuranceLevel = AssuranceClaimed
 	s.session.OperatorAssurance = OperatorClaimed
+	s.touchActivityLocked(s.clock.Now().UTC())
 	s.recompute()
 	s.record(ctx, EventIdentityClaimed, "identity claimed")
 	return cloneSession(s.session), nil
@@ -48,23 +51,29 @@ func (s *Service) RecognizeProfile(ctx context.Context, signals SessionSignals) 
 			best = RecognitionResult{CandidateUserID: profile.UserID, Confidence: score, RequiresVerification: true, Explanation: "safe profile match"}
 		}
 	}
+	verified := s.session.AssuranceLevel == AssuranceVerified || s.session.AssuranceLevel == AssuranceFreshVerified
+	recognitionTransition := best.CandidateUserID != "" && (s.session.RecognizedUserID != best.CandidateUserID || !verified && s.session.OperatorAssurance != OperatorRecognized)
+	deviceTransition := signals.DeviceKnown && !s.session.TrustedDevice
+	accountTransition := signals.AccountUserID != "" && (!s.session.AccountAuthenticated || s.session.AccountUserID != signals.AccountUserID)
+	if recognitionTransition || deviceTransition || accountTransition {
+		s.bumpVerificationEpochLocked()
+		s.clearVerificationStateLocked("identity recognition changed")
+		if best.CandidateUserID != "" {
+			s.session.RecognizedUserID = best.CandidateUserID
+		}
+		if signals.DeviceKnown {
+			s.session.TrustedDevice = true
+		}
+		if signals.AccountUserID != "" {
+			s.session.AccountUserID = signals.AccountUserID
+			s.session.AccountAuthenticated = true
+		}
+		s.setBaseAssuranceLocked()
+	}
 	if best.CandidateUserID != "" {
-		s.session.RecognizedUserID = best.CandidateUserID
-		s.session.AssuranceLevel = AssuranceRecognizedProfile
-		s.session.OperatorAssurance = OperatorRecognized
 		s.record(ctx, EventProfileRecognized, "profile recognized; verification still required")
 	}
-	if signals.DeviceKnown {
-		s.session.TrustedDevice = true
-		if s.session.AssuranceLevel != AssuranceVerified && s.session.AssuranceLevel != AssuranceFreshVerified {
-			s.session.AssuranceLevel = AssuranceKnownDevice
-			s.session.OperatorAssurance = OperatorKnownDevice
-		}
-	}
-	if signals.AccountUserID != "" {
-		s.session.AccountUserID = signals.AccountUserID
-		s.session.AccountAuthenticated = true
-	}
+	s.touchActivityLocked(s.clock.Now().UTC())
 	s.recompute()
 	return best, cloneSession(s.session), nil
 }

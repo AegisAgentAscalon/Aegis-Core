@@ -34,7 +34,9 @@ The public package wraps the private implementation under `internal/identitygate
 
 `Config{}` fails with `ErrVerificationProviderRequired`. Tests and examples may explicitly inject `MockVerificationProvider{Allow: true}`. Production integrations should implement `VerificationReceiptProvider` and set `Config.ReceiptProvider`.
 
-The provider receives a `VerificationRequest` containing cryptographically random one-use attempt and assertion identifiers, the current session identifier, the requested subject, a sanitized reason, the freshness requirement, and the request time. Provider code is called without the Identity Gate service mutex held.
+This is an intentional experimental breaking change from the earlier implicit allow-all mock fallback. Identity Gate is fail-closed by default, and the implicit fallback must not be restored. Every consumer, including development code, must choose and inject its provider explicitly.
+
+The provider receives a `VerificationRequest` containing cryptographically random one-use attempt and assertion identifiers, the current session identifier and verification epoch, the requested subject, a sanitized reason, the freshness requirement, and bounded request timestamps. Provider code is called without the Identity Gate service mutex held.
 
 The provider must return a `VerificationReceipt` that:
 
@@ -46,9 +48,15 @@ The provider must return a `VerificationReceipt` that:
 - timestamps the proof within the current attempt's clock-skew allowance;
 - expires after verification and remains unexpired when evaluated.
 
-Aegis Core consumes each identifier once, rejects replay or mismatched bindings, and caps local assurance by the provider expiry and local policy. Local configuration cannot extend verified assurance beyond one hour or fresh assurance beyond ten minutes.
+Aegis Core rechecks cancellation and the session verification epoch after provider completion, consumes each identifier once, rejects replay or mismatched bindings, and caps local assurance by the provider expiry and local policy. Downgrade, lock, identity transitions, expiry, idle reset, fresh-assurance burn, and successful assurance mutation advance the epoch so stale concurrent completions cannot restore or overwrite assurance.
+
+Replay tracking is bounded by both expiry and a fixed entry count. Identity Gate prunes expired entries and fails closed with `ErrVerificationTrackingCapacity` instead of evicting an unexpired one. Local configuration cannot extend verified assurance beyond one hour or fresh assurance beyond ten minutes.
 
 The legacy `IdentityVerificationProvider`, `Config.VerificationProvider`, `RequestVerification`, and `RequestFreshVerification` surfaces remain as deprecated adapters. They still fail closed, and legacy fresh results must explicitly set `Fresh`.
+
+## Cadence enforcement
+
+`PublicChatRequiresAuth` and `ProfileLightRequiresAuth` remove those scopes until account authentication is present. `IdleTimeout` downgrades verified assurance after the last gated activity. Sliding verified and fresh windows extend only on gated activity and never beyond provider expiry or their configured hard maxima. `BurnFreshAfterSensitiveUse` consumes fresh assurance immediately after one successful high-risk `RequireScope` authorization while preserving any still-valid ordinary verification; observational `EvaluateScope` and `CanAccessScope` calls do not consume it.
 
 ## Minimal flow
 

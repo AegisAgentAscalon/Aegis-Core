@@ -8,8 +8,10 @@
 //
 // Build 001 keeps local in-memory state, requires an explicitly configured
 // verification provider, and includes a mock only for explicit test/example
-// injection. Receipt contracts never transport captured evidence, credentials,
-// or provider payloads. Production provider integrations, biometric capture,
-// passkey capture, hardware-key capture, downstream-app integration, and
-// embodied-runtime integration remain out of scope for this build.
+// injection. The fail-closed provider requirement intentionally breaks the
+// earlier experimental implicit allow-all mock behavior; no implicit fallback
+// is provided. Receipt contracts never transport captured evidence,
+// credentials, or provider payloads. Production provider integrations,
+// biometric capture, passkey capture, hardware-key capture, downstream-app
+// integration, and embodied-runtime integration remain out of scope.
 package identitygate

@@ -6,6 +6,7 @@ All notable changes to Aegis Core are recorded here. The repository remains expe
 
 ### Security and correctness
 
+- Bound Identity Gate verification completions to a monotonic session epoch, bounded replay tracking by expiry and count, enforced cadence policy flags, and preserved the intentional fail-closed explicit-provider break from the earlier implicit allow-all mock behavior.
 - Reconciled the 2026-07-11 internal audit with the public `github.com/AegisAgentAscalon/aegis-core` module without replacing newer Identity Gate work.
 - Bound cached update selections and downloads to their configured source, cleared withdrawn candidates, and rejected persisted path redirection outside package-owned storage.
 - Added separate public and app-owned authenticated update transports, exact destination restrictions, source-specific signing-key pins, safe source provenance, atomic lane switching, and source/channel/policy-scoped state so stable and development lanes can share an application repository strategy without sharing trust or cached state.

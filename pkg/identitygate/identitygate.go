@@ -19,6 +19,7 @@ var (
 	ErrInvalidVerificationConfig    = internal.ErrInvalidVerificationConfig
 	ErrInvalidVerificationReceipt   = internal.ErrInvalidVerificationReceipt
 	ErrVerificationReceiptUsed      = internal.ErrVerificationReceiptUsed
+	ErrVerificationTrackingCapacity = internal.ErrVerificationTrackingCapacity
 )
 
 type AssuranceLevel = internal.AssuranceLevel

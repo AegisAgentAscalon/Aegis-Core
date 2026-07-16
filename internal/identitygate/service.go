@@ -3,20 +3,23 @@ package identitygate
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 type Service struct {
-	mu               sync.Mutex
-	session          IdentitySession
-	profiles         map[string]UserProfile
-	policy           VerificationCadencePolicy
-	verifier         VerificationReceiptProvider
-	providerName     string
-	clock            Clock
-	audit            AuditSink
-	usedAttemptIDs   map[string]struct{}
-	usedAssertionIDs map[string]struct{}
-	usedReceiptIDs   map[string]struct{}
+	mu                sync.Mutex
+	session           IdentitySession
+	profiles          map[string]UserProfile
+	policy            VerificationCadencePolicy
+	verifier          VerificationReceiptProvider
+	providerName      string
+	clock             Clock
+	audit             AuditSink
+	verifiedHardUntil time.Time
+	freshHardUntil    time.Time
+	usedAttemptIDs    map[string]time.Time
+	usedAssertionIDs  map[string]time.Time
+	usedReceiptIDs    map[string]time.Time
 }
 
 func NewService(cfg Config) (*Service, error) {
@@ -45,7 +48,7 @@ func NewService(cfg Config) (*Service, error) {
 			AssuranceLevel:    AssuranceAnonymous,
 			OperatorAssurance: OperatorUnknown,
 			LastActiveAt:      now,
-			AllowedScopes:     []Scope{ScopePublic, ScopePublicChat},
+			VerificationEpoch: 1,
 		},
 		profiles:         map[string]UserProfile{},
 		policy:           policy,
@@ -53,10 +56,11 @@ func NewService(cfg Config) (*Service, error) {
 		providerName:     providerName,
 		clock:            clock,
 		audit:            cfg.AuditSink,
-		usedAttemptIDs:   map[string]struct{}{},
-		usedAssertionIDs: map[string]struct{}{},
-		usedReceiptIDs:   map[string]struct{}{},
+		usedAttemptIDs:   map[string]time.Time{},
+		usedAssertionIDs: map[string]time.Time{},
+		usedReceiptIDs:   map[string]time.Time{},
 	}
+	svc.recompute()
 	svc.record(context.Background(), EventSessionCreated, "session created")
 	return svc, nil
 }

@@ -13,4 +13,5 @@ var (
 	ErrInvalidVerificationConfig    = errors.New("identitygate: invalid verification configuration")
 	ErrInvalidVerificationReceipt   = errors.New("identitygate: invalid verification receipt")
 	ErrVerificationReceiptUsed      = errors.New("identitygate: verification receipt already used")
+	ErrVerificationTrackingCapacity = errors.New("identitygate: verification replay tracking capacity reached")
 )
