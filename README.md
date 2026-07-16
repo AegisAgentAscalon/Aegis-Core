@@ -1,12 +1,12 @@
 # Aegis Core
 
-Aegis Core is an experimental Go library for app setup infrastructure. It provides reusable contracts and local-first helpers for Google OAuth setup, app-owned update flows, Device Link metadata, Profile Mesh metadata, Profile Sync metadata exchange, optional LAN/relay coordination, setup-state summaries, and read-only security posture vocabulary.
+Aegis Core is an experimental Go library for app setup infrastructure. It provides reusable contracts and local-first helpers for Google OAuth setup, app-owned update flows, Device Link metadata and signed proof, Profile Mesh metadata, Profile Sync metadata exchange, optional LAN/relay coordination, setup-state summaries, security posture vocabulary, and current-operator verification receipts.
 
 This repository is intended to be readable, inspectable infrastructure code. It is not a managed service, not a production security product, and not a guarantee of safe deployment.
 
 ## Status
 
-Aegis Core is public and experimental. It completed an internal engineering audit and hardening pass on 2026-07-11, documented in [`docs/audits/2026-07-11-internal-hardening.md`](docs/audits/2026-07-11-internal-hardening.md).
+Aegis Core is public and experimental. It completed an internal engineering audit and hardening pass on 2026-07-11, followed by a consumer-driven contract and security pass on 2026-07-16. See [`docs/audits/2026-07-11-internal-hardening.md`](docs/audits/2026-07-11-internal-hardening.md) and [`docs/audits/2026-07-16-consumer-driven-hardening.md`](docs/audits/2026-07-16-consumer-driven-hardening.md).
 
 That work is not an independent professional security audit, penetration test, or certification. Treat the repository as reference-quality infrastructure that still requires consumer-specific review before production use.
 
@@ -47,12 +47,14 @@ go get github.com/AegisAgentAscalon/aegis-core
 
 | Package | Purpose |
 | --- | --- |
-| `pkg/auth` | Public Google OAuth setup facade and safe auth status DTOs. |
-| `pkg/updates` | App-owned update check, download, verify, stage, describe, and apply-handoff contracts. |
-| `pkg/devicelink` | Device identity, trust registry, resource advertisement, and signed link-test metadata. |
+| `pkg/auth` | Public Google OAuth setup facade, safe status DTOs, and optional strict host-protected token/session storage. |
+| `pkg/secretstore` | Opaque host-owned protected-storage contract; Core provides no production platform adapter. |
+| `pkg/updates` | App-owned update check/download/verify/stage plus record-only handoff and external-result lifecycle contracts. |
+| `pkg/devicelink` | Device identity, trust registry, resources, side-effect-free bootstrap inspection, and durable signed-proof evidence. |
 | `pkg/profilemesh` | Profile-owned resource and device metadata contracts. |
-| `pkg/profilesync` | Profile Sync metadata/proposal orchestration over caller-owned stores and optional relay transport. |
+| `pkg/profilesync` | Metadata/proposal orchestration over caller-owned stores with directional LAN/relay transport seams. |
 | `pkg/relay` | Optional relay/rendezvous contracts plus local/dev and self-hostable HTTP helpers. |
+| `pkg/identitygate` | Fail-closed current-operator verification receipts, cadence, scope, provenance, and safe model identity packets. |
 | `pkg/setupstate` | Read-only setup capability aggregation. |
 | `pkg/appbridge` | Generic app-facing setup overview facade built over the public packages. |
 | `pkg/securityposture` | Read-only DTO vocabulary, redaction helpers, and trust-boundary classification helpers. |
@@ -72,7 +74,8 @@ Consumer apps remain responsible for:
 - choosing OAuth client identity and scopes;
 - running the loopback OAuth callback listener and retrying if a discovered
   callback port is no longer available when binding;
-- storing secrets safely;
+- supplying a production protected-store adapter when strict Auth storage is used;
+- protecting Device Link private keys until that package adopts the protected-store seam;
 - choosing update providers and signing policy;
 - keeping update manifest signing/verifying code aligned with Aegis Core's
   current Go JSON signature payload, which is not a cross-language canonical
@@ -86,6 +89,8 @@ Update artifact SHA-256 verification is always enforced by the service.
 Host applications may provide separate public and credential-scoped HTTP clients. Authenticated sources require a non-secret source identity, exact destination restrictions, a signed manifest, and a source-pinned verification key. Aegis isolates persisted update state by explicit source, channel, and effective policy; credentials remain entirely app-owned.
 
 Profile Sync relay status distinguishes provider, push, and pull availability. `SyncManager.Exchange` uses only the available directions, so a receive-only transport performs a pull exchange without attempting a push. New local exchange records use schema 2, while existing schema 1 records remain readable. `SyncEnvelope` schema 1 retains its original wire shape; caller-owned signature evidence is deferred to a future explicitly versioned envelope API.
+
+Identity Gate requires an explicitly configured verification provider. It has no implicit allow-all verifier. Providers keep biometric capture, passkeys, hardware-key interaction, templates, credentials, and raw assertion evidence outside Core; Core accepts only bounded, session-bound verification receipts. The included mock provider is for explicit tests and examples only.
 
 The HTTP relay handler now requires either an explicit `Authorizer` or an explicit local/dev opt-in through `AllowUnauthenticated`; do not set that opt-in on a public endpoint. Handler access control is route-wide, including `/status`, so public unauthenticated health checks should be hosted separately by the caller.
 

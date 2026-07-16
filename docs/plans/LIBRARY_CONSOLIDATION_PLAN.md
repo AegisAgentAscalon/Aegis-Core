@@ -33,6 +33,18 @@ The hardening campaign may increase this baseline before consolidation begins.
 The post-hardening baseline must therefore be measured again and committed with
 the first consolidation change.
 
+The completed 2026-07-16 hardening campaign establishes the consolidation
+baseline at:
+
+- 114 Go files and approximately 33,164 total Go lines;
+- 63 non-test Go files and approximately 19,910 non-test Go lines;
+- 51 test files and approximately 13,254 test lines;
+- three production files above 1,000 lines: Updates orchestration, Device Link
+  service, and Profile Sync orchestration.
+
+The 15 percent non-test reduction target is therefore approximately 16,923
+non-test lines or fewer, without counting deletion of security tests as progress.
+
 ## Non-negotiable boundaries
 
 - Existing public import paths remain stable during compatibility-preserving

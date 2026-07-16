@@ -19,7 +19,10 @@ Start with these files:
 - `README.md`: public project posture and non-goals.
 - `pkg/appbridge/appbridge.go`: the broadest app-facing overview surface.
 - `pkg/setupstate/setupstate.go`: read-only setup capability summary vocabulary.
-- `pkg/updates/updates.go`: update lifecycle DTOs and service wrapper.
+- `pkg/updates/updates.go`: update discovery, verification, and staging wrapper.
+- `pkg/updates/lifecycle.go`: record-only handoff and external-result lifecycle.
+- `pkg/identitygate/identitygate.go`: current-operator verification receipts and scope policy.
+- `pkg/secretstore/secretstore.go`: host-owned protected-storage contract.
 - `pkg/profilesync/profilesync.go`: metadata-only profile sync orchestration.
 - `pkg/relay/relay.go`: relay/rendezvous contracts and validation rules.
 - `examples/generic-consumer-smoke/main.go`: a compact consumer example.
@@ -36,11 +39,33 @@ When callback `PortHint` is zero, the implementation discovers a free loopback p
 
 Stateful implementation lives in `internal/auth`.
 
+`NewStrictService` and `WithStrictProtectedStorage` keep OAuth tokens and pending
+PKCE sessions in a host-supplied protected store. Strict pending-session storage
+requires revisioned compare-and-swap behavior so separate service instances
+cannot reopen consumed sessions. Core provides only a development/test memory
+implementation; it does not provide production platform encryption.
+
+### `pkg/secretstore`
+
+Defines opaque logical keys plus host-owned Get/Put/Delete and optional
+revisioned compare-and-swap operations. Platform protection, ACL scope, roaming,
+backup, and credential lifecycle remain host responsibilities.
+
+It must not expose filesystem paths, choose a platform mechanism, or provide an
+encrypted file whose key is stored beside its ciphertext.
+
 ### `pkg/updates`
 
-Owns app-owned update evaluation and staging contracts. It can check a manifest, select an artifact, download, verify, stage, describe staged state, build an apply plan, and call an app-provided apply strategy.
+Owns app-owned update evaluation and staging contracts. It can check a manifest,
+select an artifact, download, verify, stage, and describe staged state. New
+integrations should use `NewRecordOnlyService`, which can reveal freshly
+rehashed staged bytes and record consumer-reported handoff/action/completion
+states without invoking execution code.
 
-It must not install, restart, replace binaries, delete app-owned data, execute rollback, or decide that a provider is final trust authority.
+It must not install, extract, restart, replace binaries, delete app-owned data,
+execute rollback, or decide that a provider is final trust authority. The older
+`ApplyStrategy` callback surface remains deprecated compatibility behavior and
+is not part of the strict non-execution contract.
 
 Stateful implementation lives in `internal/updates`.
 
@@ -57,7 +82,10 @@ Important safety notes:
 
 ### `pkg/devicelink`
 
-Owns device identity, trusted-device metadata, resource advertisement, and signed handshake/link-test contracts.
+Owns device identity, trusted-device metadata, resource advertisement,
+side-effect-free bootstrap inspection, public identity exchange bundles, and
+signed handshake/proof contracts. Durable proof and transport reachability are
+separate states; neither one grants application membership or payload authority.
 
 It must not implement NAT traversal, automatic discovery, managed relay behavior, OAuth authority, profile truth, runtime routing, or cross-module control flow.
 
@@ -74,6 +102,10 @@ Stateful implementation lives in `internal/profilemesh`.
 ### `pkg/profilesync`
 
 Owns metadata/proposal exchange for Profile Sync. It can push and pull signed snapshot/proposal metadata through a caller-provided store and optional relay transport. It also includes a local JSON metadata store and a file-backed object provider for local/dev workflows.
+
+Relay transports report push and pull capability independently. Receive-only
+construction and pull-only exchange do not require a placeholder target.
+`SyncEnvelope` schema 1 retains its original wire shape.
 
 It must not sync private profile content, auto-merge conflicts, store provider credentials, run background workers, or treat relay/cloud storage as truth.
 
@@ -111,6 +143,18 @@ Owns read-only security posture vocabulary, redaction helpers, and trust-boundar
 
 It must not scan files, detect malware, quarantine, remediate, block, trust providers, trigger updates, trigger sync, or become a security product.
 
+### `pkg/identitygate`
+
+Owns fail-closed current-operator verification receipts, bounded verification
+cadence, scope decisions, prompt provenance, and safe model identity packets.
+Consumers must explicitly inject a provider; the mock provider is only for
+explicit tests and examples.
+
+It must not capture or store biometric samples/templates, passkey or
+hardware-key credentials, raw provider assertions, or arbitrary evidence
+payloads. Recognition, account login, and device trust remain context rather
+than current-operator verification.
+
 ## Examples
 
 `examples/generic-consumer-smoke` is the short example. It composes AppBridge, SetupState, Updates, Relay, Profile Sync, and local object verification through public APIs.
@@ -125,6 +169,9 @@ It must not scan files, detect malware, quarantine, remediate, block, trust prov
 - Do not treat relay delivery as trust.
 - Do not treat cloud/object metadata as profile truth.
 - Do not auto-apply staged updates without an app-owned policy and rollback plan.
+- Do not use deprecated update callbacks when the record-only lifecycle can express the integration.
+- Do not treat Device Link proof as transport reachability or payload authorization.
+- Do not construct Identity Gate without an explicit provider or move provider evidence into its receipts.
 - Do not put update credentials in source URLs or manifests; supply them through the app-owned authenticated HTTP client.
 - Do not reuse a signing key across development and stable lanes.
 - Do not expose the self-hosted HTTP relay publicly without TLS, authentication, abuse controls, monitoring, and deployment hardening.
