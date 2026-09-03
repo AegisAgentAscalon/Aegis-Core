@@ -93,6 +93,17 @@ func TestMailboxValidationAndExpiry(t *testing.T) {
 	}
 }
 
+func TestValidateMailboxIDIsStrict(t *testing.T) {
+	if err := ValidateMailboxID("mailbox-a"); err != nil {
+		t.Fatalf("valid mailbox ID error = %v", err)
+	}
+	for _, mailboxID := range []string{"", " mailbox-a", "mailbox-a ", "../mailbox", "client_secret"} {
+		if err := ValidateMailboxID(mailboxID); !errors.Is(err, ErrInvalidMailbox) {
+			t.Fatalf("ValidateMailboxID(%q) error = %v", mailboxID, err)
+		}
+	}
+}
+
 func TestEnvelopeValidationFailureModes(t *testing.T) {
 	now := time.Now().UTC()
 	envelope := validEnvelope(now, []byte("hello"))
@@ -223,6 +234,25 @@ func TestProviderUnavailableTimeoutAndStatusAreSafe(t *testing.T) {
 	status := DisabledStatus()
 	if status.Enabled || status.Available || strings.Contains(strings.ToLower(status.Summary), "secret") {
 		t.Fatalf("disabled status should be safe and non-fatal: %+v", status)
+	}
+}
+
+func TestRelaySummaryRedactsCrossPlatformAndRelativePaths(t *testing.T) {
+	for name, value := range map[string]string{
+		"windows drive":    `C:\work\relay\status.json`,
+		"windows slash":    `C:/work/relay/status.json`,
+		"unc":              `\\server\share\status.json`,
+		"posix":            `/var/lib/relay/status.json`,
+		"relative posix":   `relay/status.json`,
+		"relative windows": `relay\status.json`,
+		"dot relative":     `./relay/status.json`,
+		"parent relative":  `../relay/status.json`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := safeSummary(value, "relay status redacted"); got != "relay status redacted" {
+				t.Fatalf("safeSummary(%q) = %q", value, got)
+			}
+		})
 	}
 }
 

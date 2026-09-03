@@ -78,7 +78,7 @@ func TestLocalMetadataStorePersistsMetadataAcrossInstances(t *testing.T) {
 		t.Fatalf("ListRemoteProposals = %+v, %v", remoteProposals, err)
 	}
 	exchange, err := reopened.LoadLastExchange(ctx)
-	if err != nil || exchange.Session.SessionID != "sync-20260507120000" || !exchange.ReviewRequired {
+	if err != nil || exchange.SchemaVersion != LocalExchangeRecordSchemaVersion || exchange.Session.SessionID != "sync-20260507120000" || !exchange.ReviewRequired {
 		t.Fatalf("LoadLastExchange = %+v, %v", exchange, err)
 	}
 	status := reopened.BuildStatus(ctx)
@@ -87,6 +87,32 @@ func TestLocalMetadataStorePersistsMetadataAcrossInstances(t *testing.T) {
 	}
 	assertSyncSafeJSON(t, status)
 	assertNoUnsafeStoreFiles(t, root)
+}
+
+func TestLocalMetadataStoreReadsLegacySchemaOneExchangeRecord(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 16, 16, 0, 0, 0, time.UTC)
+	store, err := NewLocalMetadataStore(LocalMetadataStoreConfig{RootDir: t.TempDir(), ProfileNamespace: "profile-a", Clock: &syncClock{now: now}})
+	if err != nil {
+		t.Fatalf("NewLocalMetadataStore returned error: %v", err)
+	}
+	legacy := LocalExchangeRecord{
+		SchemaVersion:    legacyExchangeRecordSchemaVersion,
+		ProfileNamespace: "profile-a",
+		Session:          SyncSession{SessionID: "sync-legacy-1"},
+		StatusSummary:    "legacy exchange completed",
+		RecordedAt:       now,
+	}
+	if err := writeJSONAtomic(store.lastExchangePath(), legacy); err != nil {
+		t.Fatalf("write legacy exchange: %v", err)
+	}
+	loaded, err := store.LoadLastExchange(ctx)
+	if err != nil {
+		t.Fatalf("LoadLastExchange rejected schema 1: %v", err)
+	}
+	if loaded.SchemaVersion != legacyExchangeRecordSchemaVersion || loaded.Session.SessionID != legacy.Session.SessionID || loaded.StatusSummary != legacy.StatusSummary {
+		t.Fatalf("legacy exchange changed on read: %+v", loaded)
+	}
 }
 
 func TestLocalMetadataStoreRejectsInvalidIDsAndRoots(t *testing.T) {

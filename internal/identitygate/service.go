@@ -2,18 +2,24 @@ package identitygate
 
 import (
 	"context"
-	"fmt"
 	"sync"
+	"time"
 )
 
 type Service struct {
-	mu       sync.Mutex
-	session  IdentitySession
-	profiles map[string]UserProfile
-	policy   VerificationCadencePolicy
-	verifier IdentityVerificationProvider
-	clock    Clock
-	audit    AuditSink
+	mu                sync.Mutex
+	session           IdentitySession
+	profiles          map[string]UserProfile
+	policy            VerificationCadencePolicy
+	verifier          VerificationReceiptProvider
+	providerName      string
+	clock             Clock
+	audit             AuditSink
+	verifiedHardUntil time.Time
+	freshHardUntil    time.Time
+	usedAttemptIDs    map[string]time.Time
+	usedAssertionIDs  map[string]time.Time
+	usedReceiptIDs    map[string]time.Time
 }
 
 func NewService(cfg Config) (*Service, error) {
@@ -22,14 +28,19 @@ func NewService(cfg Config) (*Service, error) {
 		clock = realClock{}
 	}
 	policy := resolve(cfg.CadencePolicy)
-	verifier := cfg.VerificationProvider
-	if verifier == nil {
-		verifier = MockVerificationProvider{Allow: true, Clock: clock}
+	verifier, providerName, err := configuredReceiptProvider(cfg)
+	if err != nil {
+		return nil, err
 	}
 	now := clock.Now().UTC()
 	sessionID := cfg.SessionID
 	if sessionID == "" {
-		sessionID = fmt.Sprintf("sess_%d", now.UnixNano())
+		sessionID, err = newOpaqueID("session")
+		if err != nil {
+			return nil, err
+		}
+	} else if !validOpaqueReference(sessionID) {
+		return nil, ErrInvalidVerificationConfig
 	}
 	svc := &Service{
 		session: IdentitySession{
@@ -37,14 +48,19 @@ func NewService(cfg Config) (*Service, error) {
 			AssuranceLevel:    AssuranceAnonymous,
 			OperatorAssurance: OperatorUnknown,
 			LastActiveAt:      now,
-			AllowedScopes:     []Scope{ScopePublic, ScopePublicChat},
+			VerificationEpoch: 1,
 		},
-		profiles: map[string]UserProfile{},
-		policy:   policy,
-		verifier: verifier,
-		clock:    clock,
-		audit:    cfg.AuditSink,
+		profiles:         map[string]UserProfile{},
+		policy:           policy,
+		verifier:         verifier,
+		providerName:     providerName,
+		clock:            clock,
+		audit:            cfg.AuditSink,
+		usedAttemptIDs:   map[string]time.Time{},
+		usedAssertionIDs: map[string]time.Time{},
+		usedReceiptIDs:   map[string]time.Time{},
 	}
+	svc.recompute()
 	svc.record(context.Background(), EventSessionCreated, "session created")
 	return svc, nil
 }

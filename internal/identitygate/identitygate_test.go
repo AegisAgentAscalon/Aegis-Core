@@ -15,7 +15,11 @@ func (f *fakeClock) Add(d time.Duration) { f.now = f.now.Add(d) }
 func svc(t *testing.T) (*Service, *fakeClock) {
 	t.Helper()
 	clock := &fakeClock{now: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
-	s, err := NewService(Config{Clock: clock, CadencePolicy: VerificationCadencePolicy{VerifiedWindow: time.Minute, FreshWindow: 10 * time.Second, MaxVerifiedWindow: time.Hour, MaxFreshWindow: time.Minute}})
+	s, err := NewService(Config{
+		Clock:           clock,
+		ReceiptProvider: MockVerificationProvider{Allow: true, Clock: clock},
+		CadencePolicy:   VerificationCadencePolicy{VerifiedWindow: time.Minute, FreshWindow: 10 * time.Second, MaxVerifiedWindow: time.Hour, MaxFreshWindow: time.Minute},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

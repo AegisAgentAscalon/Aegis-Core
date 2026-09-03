@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "app_id": "sample-app",
+  "namespace": "legacy",
+  "profile": {
+    "profile_id": "profile-legacy",
+    "app_id": "sample-app",
+    "namespace": "legacy",
+    "display_name": "Legacy Profile",
+    "created_at": "2026-07-01T12:00:00Z",
+    "updated_at": "2026-07-01T12:10:00Z",
+    "schema_version": 1,
+    "metadata_version": 1
+  },
+  "hosting_config": {
+    "hosting_mode": "single_hosted_profile_device",
+    "primary_profile_device_id": "device-legacy",
+    "profile_data_host_device_id": "device-legacy",
+    "local_cache_enabled": true,
+    "offline_branch_mode_planned": true,
+    "updated_at": "2026-07-01T12:10:00Z"
+  },
+  "devices": [
+    {
+      "device_id": "device-legacy",
+      "display_name": "Legacy Device",
+      "public_key_fingerprint": "FP-LEGACY-1234",
+      "trust_status": "trusted",
+      "status": "active",
+      "capabilities": ["tools", "services"],
+      "last_seen": "2026-07-01T12:05:00Z",
+      "registered_at": "2026-07-01T12:00:00Z",
+      "updated_at": "2026-07-01T12:10:00Z",
+      "profile_metadata_version": 1
+    }
+  ],
+  "resources": [],
+  "created_at": "2026-07-01T12:00:00Z",
+  "updated_at": "2026-07-01T12:10:00Z",
+  "snapshot_fingerprint": "73605cebafc7bb86",
+  "metadata_version": 1
+}

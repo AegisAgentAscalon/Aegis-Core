@@ -9,7 +9,12 @@ import (
 
 func main() {
 	ctx := context.Background()
-	svc, _ := identitygate.NewService(identitygate.Config{})
+	svc, err := identitygate.NewService(identitygate.Config{
+		ReceiptProvider: identitygate.MockVerificationProvider{Allow: true},
+	})
+	if err != nil {
+		panic(err)
+	}
 	_, _ = svc.CreateUserProfile(ctx, identitygate.UserProfile{
 		UserID:      "demo",
 		DisplayName: "Demo",
@@ -24,7 +29,11 @@ func main() {
 	fmt.Println(session.AssuranceLevel)
 	allowed, _ := svc.CanAccessScope(ctx, identitygate.ScopeUserPrivateMemory)
 	fmt.Println("private before verification:", allowed)
-	_, _ = svc.RequestVerification(ctx, "demo", "")
+	receipt, _, err := svc.RequestVerificationReceipt(ctx, "demo", "smoke example")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("verification provider:", receipt.Provider)
 	allowed, _ = svc.CanAccessScope(ctx, identitygate.ScopeUserPrivateMemory)
 	fmt.Println("private after verification:", allowed)
 }

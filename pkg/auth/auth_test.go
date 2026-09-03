@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	devsecretstore "github.com/AegisAgentAscalon/aegis-core/internal/secretstore"
 	"github.com/AegisAgentAscalon/aegis-core/pkg/auth"
+	"github.com/AegisAgentAscalon/aegis-core/pkg/secretstore"
 )
 
 func TestPublicServiceStatusUsesSafeAppConfig(t *testing.T) {
@@ -62,5 +64,42 @@ func TestPublicProfileMissingErrorIsSafe(t *testing.T) {
 		if strings.Contains(err.Error(), forbidden) {
 			t.Fatalf("public missing profile error leaked %q in %q", forbidden, err.Error())
 		}
+	}
+}
+
+func TestPublicStrictProtectedStorageConstructors(t *testing.T) {
+	base := t.TempDir()
+	cfg := auth.AppConfig{
+		AppID:       "sample-app",
+		DisplayName: "Sample App",
+		ConfigPath:  filepath.Join(base, "oauth.json"),
+		OAuth: auth.OAuthClientConfig{
+			ClientID: "sample-client.apps.googleusercontent.com",
+			Scopes:   auth.DefaultGoogleScopes(),
+		},
+		TokenStore: auth.TokenStoreConfig{BaseDir: base, Namespace: "sample-user"},
+		Callback:   auth.CallbackConfig{Host: "127.0.0.1", Path: "/callback", PortHint: 45678},
+	}
+	protected := devsecretstore.NewMemoryStore()
+	svc, err := auth.NewServiceWithOptions(cfg, auth.WithStrictProtectedStorage(protected))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.StartSignIn(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.NewStrictService(cfg, protected); err != nil {
+		t.Fatalf("explicit strict constructor failed: %v", err)
+	}
+	if _, err := auth.NewStrictService(cfg, nil); !errors.Is(err, auth.ErrStorageUnavailable) {
+		t.Fatalf("nil protected store error = %v, want ErrStorageUnavailable", err)
+	}
+	var typedNil *devsecretstore.MemoryStore
+	if _, err := auth.NewStrictService(cfg, typedNil); !errors.Is(err, auth.ErrStorageUnavailable) {
+		t.Fatalf("typed-nil protected store error = %v, want ErrStorageUnavailable", err)
+	}
+	baseOnly := struct{ secretstore.Store }{Store: protected}
+	if _, err := auth.NewStrictService(cfg, baseOnly); !errors.Is(err, auth.ErrStorageUnavailable) {
+		t.Fatalf("base-only protected store error = %v, want ErrStorageUnavailable", err)
 	}
 }

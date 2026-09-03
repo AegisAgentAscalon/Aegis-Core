@@ -7,7 +7,7 @@ import (
 
 func TestPublicEvaluateScopeDecision(t *testing.T) {
 	ctx := context.Background()
-	svc, err := NewService(Config{})
+	svc, err := NewService(testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

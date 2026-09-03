@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internal "github.com/AegisAgentAscalon/aegis-core/internal/auth"
+	"github.com/AegisAgentAscalon/aegis-core/pkg/secretstore"
 )
 
 var (
@@ -26,6 +27,7 @@ var (
 	ErrProviderUnavailable     = internal.ErrProviderUnavailable
 	ErrInvalidProviderResponse = internal.ErrInvalidProviderResponse
 	ErrStorageUnavailable      = internal.ErrStorageUnavailable
+	ErrProtectedStorageCorrupt = internal.ErrProtectedStorageCorrupt
 	ErrAuthCanceled            = internal.ErrAuthCanceled
 	ErrSignOutIncomplete       = internal.ErrSignOutIncomplete
 )
@@ -127,6 +129,25 @@ type Service struct {
 	svc *internal.Service
 }
 
+// Option configures explicit Auth service behavior.
+type Option func(*serviceOptions) error
+
+type serviceOptions struct {
+	protectedStore secretstore.Store
+}
+
+// WithStrictProtectedStorage requires OAuth tokens and pending PKCE sessions
+// to use the supplied host-owned protected store without plaintext fallback.
+func WithStrictProtectedStorage(store secretstore.Store) Option {
+	return func(options *serviceOptions) error {
+		if store == nil {
+			return ErrStorageUnavailable
+		}
+		options.protectedStore = store
+		return nil
+	}
+}
+
 // DefaultGoogleScopes returns conservative profile scopes.
 func DefaultGoogleScopes() []string {
 	return internal.DefaultGoogleScopes()
@@ -136,6 +157,36 @@ func DefaultGoogleScopes() []string {
 // local store. It does not start OAuth.
 func NewService(config AppConfig) (*Service, error) {
 	svc, err := internal.NewService(toInternalConfig(config))
+	if err != nil {
+		return nil, err
+	}
+	return &Service{svc: svc}, nil
+}
+
+// NewServiceWithOptions creates an app-scoped auth service using explicit
+// options. WithStrictProtectedStorage disables plaintext fallback for token and
+// pending-session records.
+func NewServiceWithOptions(config AppConfig, options ...Option) (*Service, error) {
+	resolved := serviceOptions{}
+	for _, option := range options {
+		if option == nil {
+			return nil, ErrStorageUnavailable
+		}
+		if err := option(&resolved); err != nil {
+			return nil, err
+		}
+	}
+	if resolved.protectedStore == nil {
+		return NewService(config)
+	}
+	return NewStrictService(config, resolved.protectedStore)
+}
+
+// NewStrictService creates an app-scoped auth service that requires the host's
+// protected store for OAuth tokens and pending PKCE sessions. Existing valid
+// legacy records are migrated before the service is returned.
+func NewStrictService(config AppConfig, store secretstore.Store) (*Service, error) {
+	svc, err := internal.NewStrictService(toInternalConfig(config), store)
 	if err != nil {
 		return nil, err
 	}

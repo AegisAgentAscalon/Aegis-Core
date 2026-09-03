@@ -18,9 +18,14 @@ import (
 	"github.com/AegisAgentAscalon/aegis-core/pkg/profilemesh"
 )
 
+// LocalExchangeRecordSchemaVersion is the strict exchange-record format.
+// LoadLastExchange continues to accept legacy schema 1 records.
+const LocalExchangeRecordSchemaVersion = 2
+
 const (
-	localMetadataStoreSchemaVersion = 1
-	maxLocalJSONFileBytes           = 8 * 1024 * 1024
+	localMetadataStoreSchemaVersion   = 1
+	legacyExchangeRecordSchemaVersion = 1
+	maxLocalJSONFileBytes             = 8 * 1024 * 1024
 )
 
 type LocalMetadataStoreConfig struct {
@@ -414,12 +419,24 @@ func (s *LocalMetadataStore) ListRemoteProposals(ctx context.Context) ([]RemoteP
 	return out, nil
 }
 
+// PersistExchangeResult records a completed Profile Sync exchange in the local
+// metadata store after confirming the result belongs to that store namespace.
+func PersistExchangeResult(ctx context.Context, store *LocalMetadataStore, result ExchangeResult) error {
+	if store == nil {
+		return ErrStoreUnavailable
+	}
+	return store.SaveLastExchange(ctx, result)
+}
+
 func (s *LocalMetadataStore) SaveLastExchange(ctx context.Context, result ExchangeResult) error {
 	if s == nil {
 		return ErrStoreUnavailable
 	}
+	if err := validateExchangeResultForStore(s.namespace, result); err != nil {
+		return err
+	}
 	record := LocalExchangeRecord{
-		SchemaVersion:     localMetadataStoreSchemaVersion,
+		SchemaVersion:     LocalExchangeRecordSchemaVersion,
 		ProfileNamespace:  s.namespace,
 		Session:           result.Session,
 		PushedSnapshots:   result.Push.PushedSnapshots,
@@ -433,9 +450,6 @@ func (s *LocalMetadataStore) SaveLastExchange(ctx context.Context, result Exchan
 	}
 	for _, issue := range append(result.Issues, append(result.Push.Issues, result.Pull.Issues...)...) {
 		record.Issues = append(record.Issues, syncIssue(issue.Code, issue.Message, issue.Blocking))
-	}
-	if !validSyncName(record.ProfileNamespace) || !validSyncID(record.Session.SessionID) {
-		return ErrInvalidConfig
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -458,7 +472,7 @@ func (s *LocalMetadataStore) LoadLastExchange(ctx context.Context) (LocalExchang
 	if err := readJSONFile(s.lastExchangePath(), &record); err != nil {
 		return LocalExchangeRecord{}, err
 	}
-	if record.SchemaVersion != localMetadataStoreSchemaVersion || record.ProfileNamespace != s.namespace || !validSyncID(record.Session.SessionID) {
+	if err := validateStoredExchangeRecord(s.namespace, record); err != nil {
 		return LocalExchangeRecord{}, ErrLocalStoreCorrupt
 	}
 	record.StatusSummary = safeSummary(record.StatusSummary, "profile sync exchange status")
@@ -466,6 +480,51 @@ func (s *LocalMetadataStore) LoadLastExchange(ctx context.Context) (LocalExchang
 		record.Issues[i] = syncIssue(issue.Code, issue.Message, issue.Blocking)
 	}
 	return record, nil
+}
+
+func validateStoredExchangeRecord(namespace string, record LocalExchangeRecord) error {
+	if record.ProfileNamespace != namespace {
+		return ErrLocalStoreCorrupt
+	}
+	switch record.SchemaVersion {
+	case legacyExchangeRecordSchemaVersion:
+		// Schema 1 records were written before strict session and counter
+		// validation. Preserve their original read contract.
+		if !validSyncID(record.Session.SessionID) {
+			return ErrLocalStoreCorrupt
+		}
+		return nil
+	case LocalExchangeRecordSchemaVersion:
+		if err := validateExchangeSession(namespace, record.Session); err != nil ||
+			record.PushedSnapshots < 0 || record.PushedProposals < 0 ||
+			record.ReceivedSnapshots < 0 || record.ReceivedProposals < 0 || record.Rejected < 0 ||
+			record.RecordedAt.IsZero() {
+			return ErrLocalStoreCorrupt
+		}
+		return nil
+	default:
+		return ErrLocalStoreCorrupt
+	}
+}
+
+func validateExchangeResultForStore(namespace string, result ExchangeResult) error {
+	if err := validateExchangeSession(namespace, result.Session); err != nil {
+		return err
+	}
+	if result.Push.PushedSnapshots < 0 || result.Push.PushedProposals < 0 || result.Pull.ReceivedSnapshots < 0 || result.Pull.ReceivedProposals < 0 || result.Pull.Rejected < 0 {
+		return ErrInvalidConfig
+	}
+	return nil
+}
+
+func validateExchangeSession(namespace string, session SyncSession) error {
+	if !validExactSyncName(namespace) || session.ProfileNamespace != namespace || !validExactSyncID(session.SessionID) || !validExactSyncID(session.LocalDeviceID) {
+		return ErrInvalidConfig
+	}
+	if session.StartedAt.IsZero() || session.CompletedAt.IsZero() || session.CompletedAt.Before(session.StartedAt) {
+		return ErrInvalidConfig
+	}
+	return nil
 }
 
 func (s *LocalMetadataStore) ensureInitialized(ctx context.Context) error {

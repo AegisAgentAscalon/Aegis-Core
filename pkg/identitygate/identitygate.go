@@ -9,12 +9,17 @@ import (
 )
 
 var (
-	ErrDenied                = internal.ErrDenied
-	ErrReauthRequired        = internal.ErrReauthRequired
-	ErrLocked                = internal.ErrLocked
-	ErrUnknownScope          = internal.ErrUnknownScope
-	ErrInvalidProfile        = internal.ErrInvalidProfile
-	ErrPromptAuthorityDenied = internal.ErrPromptAuthorityDenied
+	ErrDenied                       = internal.ErrDenied
+	ErrReauthRequired               = internal.ErrReauthRequired
+	ErrLocked                       = internal.ErrLocked
+	ErrUnknownScope                 = internal.ErrUnknownScope
+	ErrInvalidProfile               = internal.ErrInvalidProfile
+	ErrPromptAuthorityDenied        = internal.ErrPromptAuthorityDenied
+	ErrVerificationProviderRequired = internal.ErrVerificationProviderRequired
+	ErrInvalidVerificationConfig    = internal.ErrInvalidVerificationConfig
+	ErrInvalidVerificationReceipt   = internal.ErrInvalidVerificationReceipt
+	ErrVerificationReceiptUsed      = internal.ErrVerificationReceiptUsed
+	ErrVerificationTrackingCapacity = internal.ErrVerificationTrackingCapacity
 )
 
 type AssuranceLevel = internal.AssuranceLevel
@@ -131,6 +136,8 @@ type VerificationCadencePolicy = internal.VerificationCadencePolicy
 type IdentitySession = internal.IdentitySession
 type RecognitionResult = internal.RecognitionResult
 type VerificationResult = internal.VerificationResult
+type VerificationRequest = internal.VerificationRequest
+type VerificationReceipt = internal.VerificationReceipt
 type SessionSignals = internal.SessionSignals
 type PromptFragment = internal.PromptFragment
 type ModelIdentityPacket = internal.ModelIdentityPacket
@@ -138,6 +145,7 @@ type ScopeAccessDecision = internal.ScopeAccessDecision
 type AuditEvent = internal.AuditEvent
 type Clock = internal.Clock
 type IdentityVerificationProvider = internal.IdentityVerificationProvider
+type VerificationReceiptProvider = internal.VerificationReceiptProvider
 type AuditSink = internal.AuditSink
 type Config = internal.Config
 type MockVerificationProvider = internal.MockVerificationProvider
@@ -152,10 +160,18 @@ type SocialObservationDecision = internal.SocialObservationDecision
 type Service struct{ inner *internal.Service }
 
 func DefaultCadencePolicy() VerificationCadencePolicy { return internal.DefaultCadencePolicy() }
-func EvaluateChannelPolicy(req ChannelPolicyRequest) ChannelPolicyDecision { return internal.EvaluateChannelPolicy(req) }
-func EvaluateEmergencyPolicy(req EmergencyPolicyRequest) EmergencyPolicyDecision { return internal.EvaluateEmergencyPolicy(req) }
-func EvaluateSocialObservation(req SocialObservationRequest) SocialObservationDecision { return internal.EvaluateSocialObservation(req) }
-func NewAuditEvent(kind string, summary string, clock Clock) AuditEvent { return internal.NewAuditEvent(kind, summary, clock) }
+func EvaluateChannelPolicy(req ChannelPolicyRequest) ChannelPolicyDecision {
+	return internal.EvaluateChannelPolicy(req)
+}
+func EvaluateEmergencyPolicy(req EmergencyPolicyRequest) EmergencyPolicyDecision {
+	return internal.EvaluateEmergencyPolicy(req)
+}
+func EvaluateSocialObservation(req SocialObservationRequest) SocialObservationDecision {
+	return internal.EvaluateSocialObservation(req)
+}
+func NewAuditEvent(kind string, summary string, clock Clock) AuditEvent {
+	return internal.NewAuditEvent(kind, summary, clock)
+}
 
 func NewService(cfg Config) (*Service, error) {
 	inner, err := internal.NewService(cfg)
@@ -181,12 +197,30 @@ func (s *Service) RecognizeProfile(ctx context.Context, signals SessionSignals) 
 	return s.inner.RecognizeProfile(ctx, signals)
 }
 
+// RequestVerification preserves the original session-only verification API.
+//
+// Deprecated: use RequestVerificationReceipt to retain the safe receipt.
 func (s *Service) RequestVerification(ctx context.Context, userID string, reason string) (IdentitySession, error) {
 	return s.inner.RequestVerification(ctx, userID, reason)
 }
 
+// RequestFreshVerification preserves the original session-only verification API.
+//
+// Deprecated: use RequestFreshVerificationReceipt to retain the safe receipt.
 func (s *Service) RequestFreshVerification(ctx context.Context, userID string, reason string) (IdentitySession, error) {
 	return s.inner.RequestFreshVerification(ctx, userID, reason)
+}
+
+// RequestVerificationReceipt returns the provider's safe receipt and the
+// resulting locally capped session.
+func (s *Service) RequestVerificationReceipt(ctx context.Context, userID string, reason string) (VerificationReceipt, IdentitySession, error) {
+	return s.inner.RequestVerificationReceipt(ctx, userID, reason)
+}
+
+// RequestFreshVerificationReceipt requires provider-proven freshness and
+// returns the safe receipt with the resulting locally capped session.
+func (s *Service) RequestFreshVerificationReceipt(ctx context.Context, userID string, reason string) (VerificationReceipt, IdentitySession, error) {
+	return s.inner.RequestFreshVerificationReceipt(ctx, userID, reason)
 }
 
 func (s *Service) EvaluateScope(ctx context.Context, scope Scope) (ScopeAccessDecision, error) {

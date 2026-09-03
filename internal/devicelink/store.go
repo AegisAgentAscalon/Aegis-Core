@@ -9,15 +9,20 @@ import (
 )
 
 type store struct {
-	dir string
+	dir       string
+	failWrite func(path string) bool
 }
 
 func newStore(cfg AppConfig) (*store, error) {
-	dir := filepath.Join(cfg.DataDir, cfg.AppID, cfg.Namespace, "devicelink")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	s := storeForConfig(cfg)
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return nil, ErrStorageUnavailable
 	}
-	return &store{dir: dir}, nil
+	return s, nil
+}
+
+func storeForConfig(cfg AppConfig) *store {
+	return &store{dir: filepath.Join(cfg.DataDir, cfg.AppID, cfg.Namespace, "devicelink")}
 }
 
 func (s *store) identityPath() string           { return filepath.Join(s.dir, "device_identity.json") }
@@ -30,6 +35,9 @@ func (s *store) handshakesDir() string          { return filepath.Join(s.dir, "h
 func (s *store) handshakePath(id string) string { return filepath.Join(s.handshakesDir(), id+".json") }
 
 func (s *store) writeJSON(path string, v any) error {
+	if s.failWrite != nil && s.failWrite(path) {
+		return ErrStorageUnavailable
+	}
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return ErrStorageUnavailable

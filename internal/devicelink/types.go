@@ -16,12 +16,15 @@ import (
 )
 
 const (
-	SchemaVersion           = 1
-	MetadataVersion         = 1
-	defaultLinkTTL          = 15 * time.Minute
-	defaultStaleAfter       = 5 * time.Minute
-	defaultFutureSkew       = 2 * time.Minute
-	defaultTransportTimeout = 5 * time.Second
+	SchemaVersion                       = 1
+	RegistrySnapshotSchemaVersion       = 2
+	legacyRegistrySnapshotSchemaVersion = 1
+	MetadataVersion                     = 1
+	IdentityBundleVersion               = 1
+	defaultLinkTTL                      = 15 * time.Minute
+	defaultStaleAfter                   = 5 * time.Minute
+	defaultFutureSkew                   = 2 * time.Minute
+	defaultTransportTimeout             = 5 * time.Second
 )
 
 var safeNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
@@ -38,6 +41,7 @@ var (
 	ErrInvalidRegistrySnapshot = errors.New("invalid registry snapshot")
 	ErrFingerprintMismatch     = errors.New("device fingerprint mismatch")
 	ErrInvalidPublicKey        = errors.New("invalid device public key")
+	ErrInvalidIdentityBundle   = errors.New("invalid public identity bundle")
 	ErrHandshakeFailed         = errors.New("handshake failed")
 	ErrInvalidSessionID        = errors.New("invalid handshake session id")
 	ErrChallengeExpired        = errors.New("handshake challenge expired")
@@ -57,6 +61,28 @@ const (
 	TrustTrusted TrustStatus = "trusted"
 	TrustRevoked TrustStatus = "revoked"
 	TrustStale   TrustStatus = "stale"
+)
+
+type BootstrapState string
+
+const (
+	BootstrapAbsent  BootstrapState = "absent"
+	BootstrapPartial BootstrapState = "partial"
+	BootstrapReady   BootstrapState = "ready"
+	BootstrapInvalid BootstrapState = "invalid"
+)
+
+type RegistrySnapshotPurpose string
+
+const RegistrySnapshotLocalBackup RegistrySnapshotPurpose = "local_backup"
+
+type ProofState string
+
+const (
+	ProofStateUnverified ProofState = "unverified"
+	ProofStateVerified   ProofState = "verified"
+	ProofStateExpired    ProofState = "expired"
+	ProofStateRejected   ProofState = "rejected"
 )
 
 type ResourceType string
@@ -106,6 +132,16 @@ type BootstrapDeviceRequest struct {
 	Capabilities []string
 }
 
+type BootstrapStatus struct {
+	State             BootstrapState `json:"state"`
+	Bootstrapped      bool           `json:"bootstrapped"`
+	Ready             bool           `json:"ready"`
+	IdentityPresent   bool           `json:"identity_present"`
+	PrivateKeyPresent bool           `json:"private_key_present"`
+	DeviceID          string         `json:"device_id,omitempty"`
+	Message           string         `json:"message,omitempty"`
+}
+
 type DeviceIdentity struct {
 	DeviceID             string    `json:"device_id"`
 	DisplayName          string    `json:"display_name"`
@@ -117,6 +153,22 @@ type DeviceIdentity struct {
 	UpdatedAt            time.Time `json:"updated_at"`
 	Capabilities         []string  `json:"capabilities"`
 	MetadataVersion      int       `json:"metadata_version"`
+}
+
+type PublicIdentityBundle struct {
+	SchemaVersion        int       `json:"schema_version"`
+	BundleVersion        int       `json:"bundle_version"`
+	DeviceID             string    `json:"device_id"`
+	DisplayName          string    `json:"display_name"`
+	AppID                string    `json:"app_id"`
+	Namespace            string    `json:"namespace"`
+	PublicKey            string    `json:"public_key"`
+	PublicKeyFingerprint string    `json:"public_key_fingerprint"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+	Capabilities         []string  `json:"capabilities"`
+	MetadataVersion      int       `json:"metadata_version"`
+	BundleFingerprint    string    `json:"bundle_fingerprint"`
 }
 
 type TrustedDevice struct {
@@ -148,15 +200,16 @@ type DeviceTrustStatus struct {
 }
 
 type RegistrySnapshot struct {
-	SchemaVersion          int             `json:"schema_version"`
-	AppID                  string          `json:"app_id"`
-	Namespace              string          `json:"namespace"`
-	Devices                []TrustedDevice `json:"devices"`
-	CreatedAt              time.Time       `json:"created_at"`
-	UpdatedAt              time.Time       `json:"updated_at"`
-	OriginDeviceID         string          `json:"origin_device_id,omitempty"`
-	SnapshotFingerprint    string          `json:"snapshot_fingerprint,omitempty"`
-	ProfileMetadataVersion int             `json:"profile_metadata_version"`
+	SchemaVersion          int                     `json:"schema_version"`
+	Purpose                RegistrySnapshotPurpose `json:"purpose"`
+	AppID                  string                  `json:"app_id"`
+	Namespace              string                  `json:"namespace"`
+	Devices                []TrustedDevice         `json:"devices"`
+	CreatedAt              time.Time               `json:"created_at"`
+	UpdatedAt              time.Time               `json:"updated_at"`
+	OriginDeviceID         string                  `json:"origin_device_id,omitempty"`
+	SnapshotFingerprint    string                  `json:"snapshot_fingerprint,omitempty"`
+	ProfileMetadataVersion int                     `json:"profile_metadata_version"`
 }
 
 type EndpointHint struct {
@@ -235,12 +288,37 @@ type HandshakeCompleteRequest struct {
 }
 
 type LinkSession struct {
-	SessionID     string    `json:"session_id"`
-	LocalDeviceID string    `json:"local_device_id"`
-	PeerDeviceID  string    `json:"peer_device_id"`
-	EstablishedAt time.Time `json:"established_at"`
-	ExpiresAt     time.Time `json:"expires_at"`
-	Status        string    `json:"status"`
+	SessionID     string        `json:"session_id"`
+	LocalDeviceID string        `json:"local_device_id"`
+	PeerDeviceID  string        `json:"peer_device_id"`
+	EstablishedAt time.Time     `json:"established_at"`
+	ExpiresAt     time.Time     `json:"expires_at"`
+	Status        string        `json:"status"`
+	ProofReceipt  *ProofReceipt `json:"proof_receipt,omitempty"`
+}
+
+type ProofReceipt struct {
+	SchemaVersion            int       `json:"schema_version"`
+	SessionID                string    `json:"session_id"`
+	LocalDeviceID            string    `json:"local_device_id"`
+	PeerDeviceID             string    `json:"peer_device_id"`
+	PeerPublicKeyFingerprint string    `json:"peer_public_key_fingerprint"`
+	ChallengeFingerprint     string    `json:"challenge_fingerprint"`
+	SignatureFingerprint     string    `json:"signature_fingerprint"`
+	VerifiedAt               time.Time `json:"verified_at"`
+	ExpiresAt                time.Time `json:"expires_at"`
+	ReceiptFingerprint       string    `json:"receipt_fingerprint"`
+}
+
+type ProofEvaluation struct {
+	DeviceID    string        `json:"device_id"`
+	TrustStatus TrustStatus   `json:"trust_status"`
+	State       ProofState    `json:"state"`
+	Satisfied   bool          `json:"satisfied"`
+	Reachable   bool          `json:"reachable"`
+	EvaluatedAt time.Time     `json:"evaluated_at"`
+	Receipt     *ProofReceipt `json:"receipt,omitempty"`
+	Reason      string        `json:"reason,omitempty"`
 }
 
 type LinkTestResult struct {
@@ -252,12 +330,14 @@ type LinkTestResult struct {
 }
 
 type ConnectionStatus struct {
-	DeviceID    string      `json:"device_id"`
-	TrustStatus TrustStatus `json:"trust_status"`
-	Reachable   bool        `json:"reachable"`
-	LastSeen    time.Time   `json:"last_seen,omitempty"`
-	Stale       bool        `json:"stale"`
-	Message     string      `json:"message,omitempty"`
+	DeviceID     string        `json:"device_id"`
+	TrustStatus  TrustStatus   `json:"trust_status"`
+	Reachable    bool          `json:"reachable"`
+	LastSeen     time.Time     `json:"last_seen,omitempty"`
+	Stale        bool          `json:"stale"`
+	ProofState   ProofState    `json:"proof_state"`
+	ProofReceipt *ProofReceipt `json:"proof_receipt,omitempty"`
+	Message      string        `json:"message,omitempty"`
 }
 
 type Message struct {

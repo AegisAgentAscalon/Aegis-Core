@@ -26,6 +26,8 @@ var (
 	ErrContextCanceled        = internal.ErrContextCanceled
 )
 
+const ProfileMeshSnapshotSchemaVersion = internal.ProfileMeshSnapshotSchemaVersion
+
 type AppConfig struct {
 	AppID       string
 	DisplayName string
@@ -324,6 +326,13 @@ func (s *Service) GetProfileHostingConfig(ctx context.Context) (ProfileHostingCo
 }
 func (s *Service) RegisterProfileDevice(ctx context.Context, req RegisterProfileDeviceRequest) (ProfileDeviceRecord, error) {
 	res, err := s.svc.RegisterProfileDevice(ctx, internal.RegisterProfileDeviceRequest{DeviceID: req.DeviceID, DisplayName: req.DisplayName, PublicKeyFingerprint: req.PublicKeyFingerprint, TrustStatus: internal.ProfileDeviceTrustStatus(req.TrustStatus), Status: internal.ProfileDeviceStatus(req.Status), Capabilities: append([]string{}, req.Capabilities...), MetadataSource: req.MetadataSource})
+	return fromInternalDevice(res), err
+}
+
+// RegisterProfileDeviceStrict requires explicit trust and lifecycle values.
+// Callers retain ownership of membership, passphrase, and payload policy.
+func (s *Service) RegisterProfileDeviceStrict(ctx context.Context, req RegisterProfileDeviceRequest) (ProfileDeviceRecord, error) {
+	res, err := s.svc.RegisterProfileDeviceStrict(ctx, internal.RegisterProfileDeviceRequest{DeviceID: req.DeviceID, DisplayName: req.DisplayName, PublicKeyFingerprint: req.PublicKeyFingerprint, TrustStatus: internal.ProfileDeviceTrustStatus(req.TrustStatus), Status: internal.ProfileDeviceStatus(req.Status), Capabilities: append([]string{}, req.Capabilities...), MetadataSource: req.MetadataSource})
 	return fromInternalDevice(res), err
 }
 func (s *Service) ListProfileDevices(ctx context.Context) ([]ProfileDeviceRecord, error) {

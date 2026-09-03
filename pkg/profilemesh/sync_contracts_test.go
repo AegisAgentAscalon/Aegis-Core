@@ -40,6 +40,21 @@ func TestProfileSyncSnapshotValidationFreshnessAndFailureModes(t *testing.T) {
 	}
 }
 
+func TestProfileSyncExpiryBoundaryIsStale(t *testing.T) {
+	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	metadata := validSignedProfileSnapshot(now).Metadata
+	metadata.ExpiresAt = now.Add(-DefaultSnapshotClockSkew)
+	boundary := BuildProfileFreshnessSummary(metadata, now)
+	if !boundary.Stale || boundary.Fresh {
+		t.Fatalf("snapshot at expiry boundary should be stale: %+v", boundary)
+	}
+	metadata.ExpiresAt = metadata.ExpiresAt.Add(time.Nanosecond)
+	inside := BuildProfileFreshnessSummary(metadata, now)
+	if inside.Stale || !inside.Fresh {
+		t.Fatalf("snapshot just inside expiry boundary should remain fresh: %+v", inside)
+	}
+}
+
 func TestProfileSyncSnapshotRejectsMalformedMetadata(t *testing.T) {
 	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
 	cases := []struct {

@@ -7,6 +7,7 @@ package devicelink
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ var (
 	ErrInvalidRegistrySnapshot = internal.ErrInvalidRegistrySnapshot
 	ErrFingerprintMismatch     = internal.ErrFingerprintMismatch
 	ErrInvalidPublicKey        = internal.ErrInvalidPublicKey
+	ErrInvalidIdentityBundle   = internal.ErrInvalidIdentityBundle
 	ErrHandshakeFailed         = internal.ErrHandshakeFailed
 	ErrInvalidSessionID        = internal.ErrInvalidSessionID
 	ErrChallengeExpired        = internal.ErrChallengeExpired
@@ -44,6 +46,31 @@ const (
 	TrustTrusted TrustStatus = "trusted"
 	TrustRevoked TrustStatus = "revoked"
 	TrustStale   TrustStatus = "stale"
+)
+
+type BootstrapState string
+
+const (
+	BootstrapAbsent  BootstrapState = "absent"
+	BootstrapPartial BootstrapState = "partial"
+	BootstrapReady   BootstrapState = "ready"
+	BootstrapInvalid BootstrapState = "invalid"
+)
+
+type RegistrySnapshotPurpose string
+
+const (
+	RegistrySnapshotSchemaVersion                         = internal.RegistrySnapshotSchemaVersion
+	RegistrySnapshotLocalBackup   RegistrySnapshotPurpose = "local_backup"
+)
+
+type ProofState string
+
+const (
+	ProofStateUnverified ProofState = "unverified"
+	ProofStateVerified   ProofState = "verified"
+	ProofStateExpired    ProofState = "expired"
+	ProofStateRejected   ProofState = "rejected"
 )
 
 type ResourceType string
@@ -91,6 +118,16 @@ type BootstrapDeviceRequest struct {
 	Capabilities []string
 }
 
+type BootstrapStatus struct {
+	State             BootstrapState `json:"state"`
+	Bootstrapped      bool           `json:"bootstrapped"`
+	Ready             bool           `json:"ready"`
+	IdentityPresent   bool           `json:"identity_present"`
+	PrivateKeyPresent bool           `json:"private_key_present"`
+	DeviceID          string         `json:"device_id,omitempty"`
+	Message           string         `json:"message,omitempty"`
+}
+
 type DeviceIdentity struct {
 	DeviceID             string    `json:"device_id"`
 	DisplayName          string    `json:"display_name"`
@@ -102,6 +139,24 @@ type DeviceIdentity struct {
 	UpdatedAt            time.Time `json:"updated_at"`
 	Capabilities         []string  `json:"capabilities"`
 	MetadataVersion      int       `json:"metadata_version"`
+}
+
+// PublicIdentityBundle is deliberately public-key-bearing exchange metadata.
+// Validation does not grant membership, trust, proof, or payload authority.
+type PublicIdentityBundle struct {
+	SchemaVersion        int       `json:"schema_version"`
+	BundleVersion        int       `json:"bundle_version"`
+	DeviceID             string    `json:"device_id"`
+	DisplayName          string    `json:"display_name"`
+	AppID                string    `json:"app_id"`
+	Namespace            string    `json:"namespace"`
+	PublicKey            string    `json:"public_key"`
+	PublicKeyFingerprint string    `json:"public_key_fingerprint"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+	Capabilities         []string  `json:"capabilities"`
+	MetadataVersion      int       `json:"metadata_version"`
+	BundleFingerprint    string    `json:"bundle_fingerprint"`
 }
 
 type TrustedDevice struct {
@@ -132,16 +187,95 @@ type DeviceTrustStatus struct {
 	Reason      string      `json:"reason,omitempty"`
 }
 
+// registrySnapshotDevice is the public-key-bearing wire record used only by an
+// explicit local registry backup. Ordinary TrustedDevice JSON stays redacted.
+type registrySnapshotDevice struct {
+	DeviceID               string      `json:"device_id"`
+	DisplayName            string      `json:"display_name"`
+	PublicKey              string      `json:"public_key"`
+	PublicKeyFingerprint   string      `json:"public_key_fingerprint"`
+	TrustStatus            TrustStatus `json:"trust_status"`
+	TrustedAt              time.Time   `json:"trusted_at,omitempty"`
+	RevokedAt              *time.Time  `json:"revoked_at,omitempty"`
+	LastSeen               time.Time   `json:"last_seen,omitempty"`
+	Capabilities           []string    `json:"capabilities"`
+	ProfileMetadataVersion int         `json:"profile_metadata_version"`
+}
+
 type RegistrySnapshot struct {
-	SchemaVersion          int             `json:"schema_version"`
-	AppID                  string          `json:"app_id"`
-	Namespace              string          `json:"namespace"`
-	Devices                []TrustedDevice `json:"devices"`
-	CreatedAt              time.Time       `json:"created_at"`
-	UpdatedAt              time.Time       `json:"updated_at"`
-	OriginDeviceID         string          `json:"origin_device_id,omitempty"`
-	SnapshotFingerprint    string          `json:"snapshot_fingerprint,omitempty"`
-	ProfileMetadataVersion int             `json:"profile_metadata_version"`
+	SchemaVersion          int                     `json:"schema_version"`
+	Purpose                RegistrySnapshotPurpose `json:"purpose"`
+	AppID                  string                  `json:"app_id"`
+	Namespace              string                  `json:"namespace"`
+	Devices                []TrustedDevice         `json:"devices"`
+	CreatedAt              time.Time               `json:"created_at"`
+	UpdatedAt              time.Time               `json:"updated_at"`
+	OriginDeviceID         string                  `json:"origin_device_id,omitempty"`
+	SnapshotFingerprint    string                  `json:"snapshot_fingerprint,omitempty"`
+	ProfileMetadataVersion int                     `json:"profile_metadata_version"`
+}
+
+// MarshalJSON includes public keys only in the explicit registry-backup wire
+// format while preserving TrustedDevice's redacted JSON behavior elsewhere.
+func (snapshot RegistrySnapshot) MarshalJSON() ([]byte, error) {
+	type registrySnapshotJSON struct {
+		SchemaVersion          int                      `json:"schema_version"`
+		Purpose                RegistrySnapshotPurpose  `json:"purpose"`
+		AppID                  string                   `json:"app_id"`
+		Namespace              string                   `json:"namespace"`
+		Devices                []registrySnapshotDevice `json:"devices"`
+		CreatedAt              time.Time                `json:"created_at"`
+		UpdatedAt              time.Time                `json:"updated_at"`
+		OriginDeviceID         string                   `json:"origin_device_id,omitempty"`
+		SnapshotFingerprint    string                   `json:"snapshot_fingerprint,omitempty"`
+		ProfileMetadataVersion int                      `json:"profile_metadata_version"`
+	}
+	return json.Marshal(registrySnapshotJSON{
+		SchemaVersion:          snapshot.SchemaVersion,
+		Purpose:                snapshot.Purpose,
+		AppID:                  snapshot.AppID,
+		Namespace:              snapshot.Namespace,
+		Devices:                toRegistrySnapshotDevices(snapshot.Devices),
+		CreatedAt:              snapshot.CreatedAt,
+		UpdatedAt:              snapshot.UpdatedAt,
+		OriginDeviceID:         snapshot.OriginDeviceID,
+		SnapshotFingerprint:    snapshot.SnapshotFingerprint,
+		ProfileMetadataVersion: snapshot.ProfileMetadataVersion,
+	})
+}
+
+// UnmarshalJSON restores public-key-bearing backup records without changing the
+// long-standing RegistrySnapshot.Devices public Go type.
+func (snapshot *RegistrySnapshot) UnmarshalJSON(data []byte) error {
+	type registrySnapshotJSON struct {
+		SchemaVersion          int                      `json:"schema_version"`
+		Purpose                RegistrySnapshotPurpose  `json:"purpose"`
+		AppID                  string                   `json:"app_id"`
+		Namespace              string                   `json:"namespace"`
+		Devices                []registrySnapshotDevice `json:"devices"`
+		CreatedAt              time.Time                `json:"created_at"`
+		UpdatedAt              time.Time                `json:"updated_at"`
+		OriginDeviceID         string                   `json:"origin_device_id,omitempty"`
+		SnapshotFingerprint    string                   `json:"snapshot_fingerprint,omitempty"`
+		ProfileMetadataVersion int                      `json:"profile_metadata_version"`
+	}
+	var decoded registrySnapshotJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*snapshot = RegistrySnapshot{
+		SchemaVersion:          decoded.SchemaVersion,
+		Purpose:                decoded.Purpose,
+		AppID:                  decoded.AppID,
+		Namespace:              decoded.Namespace,
+		Devices:                fromRegistrySnapshotDevices(decoded.Devices),
+		CreatedAt:              decoded.CreatedAt,
+		UpdatedAt:              decoded.UpdatedAt,
+		OriginDeviceID:         decoded.OriginDeviceID,
+		SnapshotFingerprint:    decoded.SnapshotFingerprint,
+		ProfileMetadataVersion: decoded.ProfileMetadataVersion,
+	}
+	return nil
 }
 
 type EndpointHint struct {
@@ -220,12 +354,37 @@ type HandshakeCompleteRequest struct {
 }
 
 type LinkSession struct {
-	SessionID     string    `json:"session_id"`
-	LocalDeviceID string    `json:"local_device_id"`
-	PeerDeviceID  string    `json:"peer_device_id"`
-	EstablishedAt time.Time `json:"established_at"`
-	ExpiresAt     time.Time `json:"expires_at"`
-	Status        string    `json:"status"`
+	SessionID     string        `json:"session_id"`
+	LocalDeviceID string        `json:"local_device_id"`
+	PeerDeviceID  string        `json:"peer_device_id"`
+	EstablishedAt time.Time     `json:"established_at"`
+	ExpiresAt     time.Time     `json:"expires_at"`
+	Status        string        `json:"status"`
+	ProofReceipt  *ProofReceipt `json:"proof_receipt,omitempty"`
+}
+
+type ProofReceipt struct {
+	SchemaVersion            int       `json:"schema_version"`
+	SessionID                string    `json:"session_id"`
+	LocalDeviceID            string    `json:"local_device_id"`
+	PeerDeviceID             string    `json:"peer_device_id"`
+	PeerPublicKeyFingerprint string    `json:"peer_public_key_fingerprint"`
+	ChallengeFingerprint     string    `json:"challenge_fingerprint"`
+	SignatureFingerprint     string    `json:"signature_fingerprint"`
+	VerifiedAt               time.Time `json:"verified_at"`
+	ExpiresAt                time.Time `json:"expires_at"`
+	ReceiptFingerprint       string    `json:"receipt_fingerprint"`
+}
+
+type ProofEvaluation struct {
+	DeviceID    string        `json:"device_id"`
+	TrustStatus TrustStatus   `json:"trust_status"`
+	State       ProofState    `json:"state"`
+	Satisfied   bool          `json:"satisfied"`
+	Reachable   bool          `json:"reachable"`
+	EvaluatedAt time.Time     `json:"evaluated_at"`
+	Receipt     *ProofReceipt `json:"receipt,omitempty"`
+	Reason      string        `json:"reason,omitempty"`
 }
 
 type LinkTestResult struct {
@@ -237,12 +396,14 @@ type LinkTestResult struct {
 }
 
 type ConnectionStatus struct {
-	DeviceID    string      `json:"device_id"`
-	TrustStatus TrustStatus `json:"trust_status"`
-	Reachable   bool        `json:"reachable"`
-	LastSeen    time.Time   `json:"last_seen,omitempty"`
-	Stale       bool        `json:"stale"`
-	Message     string      `json:"message,omitempty"`
+	DeviceID     string        `json:"device_id"`
+	TrustStatus  TrustStatus   `json:"trust_status"`
+	Reachable    bool          `json:"reachable"`
+	LastSeen     time.Time     `json:"last_seen,omitempty"`
+	Stale        bool          `json:"stale"`
+	ProofState   ProofState    `json:"proof_state"`
+	ProofReceipt *ProofReceipt `json:"proof_receipt,omitempty"`
+	Message      string        `json:"message,omitempty"`
 }
 
 type Message struct {
@@ -297,6 +458,27 @@ func WithClock(clock Clock) Option {
 	}
 }
 
+// InspectBootstrap reports bootstrap readiness without creating directories or
+// writing Device Link state.
+func InspectBootstrap(config AppConfig) (BootstrapStatus, error) {
+	status, err := internal.InspectBootstrap(toInternalConfig(config))
+	return BootstrapStatus{
+		State:             BootstrapState(status.State),
+		Bootstrapped:      status.Bootstrapped,
+		Ready:             status.Ready,
+		IdentityPresent:   status.IdentityPresent,
+		PrivateKeyPresent: status.PrivateKeyPresent,
+		DeviceID:          status.DeviceID,
+		Message:           status.Message,
+	}, err
+}
+
+// ValidatePublicIdentityBundle validates exchange metadata consistency only.
+// Callers still own membership, passphrase, trust, and payload authorization.
+func ValidatePublicIdentityBundle(bundle PublicIdentityBundle) error {
+	return internal.ValidatePublicIdentityBundle(toInternalPublicIdentityBundle(bundle))
+}
+
 func NewService(config AppConfig, opts ...Option) (*Service, error) {
 	publicOptions := options{}
 	for _, opt := range opts {
@@ -346,6 +528,13 @@ func (s *Service) GetCurrentDevice(ctx context.Context) (DeviceIdentity, error) 
 	return fromInternalIdentity(id), err
 }
 
+// ExportPublicIdentityBundle exports the public-key-bearing metadata needed for
+// explicit identity exchange without granting trust or network authorization.
+func (s *Service) ExportPublicIdentityBundle(ctx context.Context) (PublicIdentityBundle, error) {
+	bundle, err := s.svc.ExportPublicIdentityBundle(ctx)
+	return fromInternalPublicIdentityBundle(bundle), err
+}
+
 func (s *Service) ListTrustedDevices(ctx context.Context) ([]TrustedDevice, error) {
 	devices, err := s.svc.ListTrustedDevices(ctx)
 	return fromInternalTrustedDevices(devices), err
@@ -376,6 +565,8 @@ func (s *Service) ExportRegistrySnapshot(ctx context.Context) (RegistrySnapshot,
 	return fromInternalRegistrySnapshot(snapshot), err
 }
 
+// ImportRegistrySnapshot restores a local backup only. It clears durable link
+// and proof state and must not be used to authorize a network peer.
 func (s *Service) ImportRegistrySnapshot(ctx context.Context, snapshot RegistrySnapshot) error {
 	return s.svc.ImportRegistrySnapshot(ctx, toInternalRegistrySnapshot(snapshot))
 }
@@ -416,7 +607,7 @@ func (s *Service) SignHandshakeChallenge(ctx context.Context, req HandshakeChall
 
 func (s *Service) CompleteHandshake(ctx context.Context, req HandshakeCompleteRequest) (LinkSession, error) {
 	session, err := s.svc.CompleteHandshake(ctx, internal.HandshakeCompleteRequest(req))
-	return LinkSession(session), err
+	return fromInternalLinkSession(session), err
 }
 
 func (s *Service) TestLink(ctx context.Context, deviceID string) (LinkTestResult, error) {
@@ -427,6 +618,13 @@ func (s *Service) TestLink(ctx context.Context, deviceID string) (LinkTestResult
 func (s *Service) GetConnectionStatus(ctx context.Context, deviceID string) (ConnectionStatus, error) {
 	status, err := s.svc.GetConnectionStatus(ctx, deviceID)
 	return fromInternalConnectionStatus(status), err
+}
+
+// EvaluateProof evaluates durable signed-handshake evidence independently of
+// reachability and caller-owned membership or payload policy.
+func (s *Service) EvaluateProof(ctx context.Context, deviceID string) (ProofEvaluation, error) {
+	evaluation, err := s.svc.EvaluateProof(ctx, deviceID)
+	return fromInternalProofEvaluation(evaluation), err
 }
 
 type MemoryDiscoveryProvider struct {
@@ -600,6 +798,42 @@ func fromInternalIdentity(id internal.DeviceIdentity) DeviceIdentity {
 	}
 }
 
+func fromInternalPublicIdentityBundle(bundle internal.PublicIdentityBundle) PublicIdentityBundle {
+	return PublicIdentityBundle{
+		SchemaVersion:        bundle.SchemaVersion,
+		BundleVersion:        bundle.BundleVersion,
+		DeviceID:             bundle.DeviceID,
+		DisplayName:          bundle.DisplayName,
+		AppID:                bundle.AppID,
+		Namespace:            bundle.Namespace,
+		PublicKey:            bundle.PublicKey,
+		PublicKeyFingerprint: bundle.PublicKeyFingerprint,
+		CreatedAt:            bundle.CreatedAt,
+		UpdatedAt:            bundle.UpdatedAt,
+		Capabilities:         append([]string{}, bundle.Capabilities...),
+		MetadataVersion:      bundle.MetadataVersion,
+		BundleFingerprint:    bundle.BundleFingerprint,
+	}
+}
+
+func toInternalPublicIdentityBundle(bundle PublicIdentityBundle) internal.PublicIdentityBundle {
+	return internal.PublicIdentityBundle{
+		SchemaVersion:        bundle.SchemaVersion,
+		BundleVersion:        bundle.BundleVersion,
+		DeviceID:             bundle.DeviceID,
+		DisplayName:          bundle.DisplayName,
+		AppID:                bundle.AppID,
+		Namespace:            bundle.Namespace,
+		PublicKey:            bundle.PublicKey,
+		PublicKeyFingerprint: bundle.PublicKeyFingerprint,
+		CreatedAt:            bundle.CreatedAt,
+		UpdatedAt:            bundle.UpdatedAt,
+		Capabilities:         append([]string{}, bundle.Capabilities...),
+		MetadataVersion:      bundle.MetadataVersion,
+		BundleFingerprint:    bundle.BundleFingerprint,
+	}
+}
+
 func fromInternalTrustedDevice(dev internal.TrustedDevice) TrustedDevice {
 	return TrustedDevice{
 		DeviceID:               dev.DeviceID,
@@ -615,21 +849,6 @@ func fromInternalTrustedDevice(dev internal.TrustedDevice) TrustedDevice {
 	}
 }
 
-func toInternalTrustedDevice(dev TrustedDevice) internal.TrustedDevice {
-	return internal.TrustedDevice{
-		DeviceID:               dev.DeviceID,
-		DisplayName:            dev.DisplayName,
-		PublicKey:              dev.PublicKey,
-		PublicKeyFingerprint:   dev.PublicKeyFingerprint,
-		TrustStatus:            internal.TrustStatus(dev.TrustStatus),
-		TrustedAt:              dev.TrustedAt,
-		RevokedAt:              dev.RevokedAt,
-		LastSeen:               dev.LastSeen,
-		Capabilities:           append([]string{}, dev.Capabilities...),
-		ProfileMetadataVersion: dev.ProfileMetadataVersion,
-	}
-}
-
 func fromInternalTrustedDevices(in []internal.TrustedDevice) []TrustedDevice {
 	out := make([]TrustedDevice, 0, len(in))
 	for _, dev := range in {
@@ -637,11 +856,59 @@ func fromInternalTrustedDevices(in []internal.TrustedDevice) []TrustedDevice {
 	}
 	return out
 }
+func toRegistrySnapshotDevices(in []TrustedDevice) []registrySnapshotDevice {
+	out := make([]registrySnapshotDevice, 0, len(in))
+	for _, dev := range in {
+		out = append(out, registrySnapshotDevice{
+			DeviceID:               dev.DeviceID,
+			DisplayName:            dev.DisplayName,
+			PublicKey:              dev.PublicKey,
+			PublicKeyFingerprint:   dev.PublicKeyFingerprint,
+			TrustStatus:            TrustStatus(dev.TrustStatus),
+			TrustedAt:              dev.TrustedAt,
+			RevokedAt:              dev.RevokedAt,
+			LastSeen:               dev.LastSeen,
+			Capabilities:           append([]string{}, dev.Capabilities...),
+			ProfileMetadataVersion: dev.ProfileMetadataVersion,
+		})
+	}
+	return out
+}
+
+func fromRegistrySnapshotDevices(in []registrySnapshotDevice) []TrustedDevice {
+	out := make([]TrustedDevice, 0, len(in))
+	for _, dev := range in {
+		out = append(out, TrustedDevice{
+			DeviceID:               dev.DeviceID,
+			DisplayName:            dev.DisplayName,
+			PublicKey:              dev.PublicKey,
+			PublicKeyFingerprint:   dev.PublicKeyFingerprint,
+			TrustStatus:            dev.TrustStatus,
+			TrustedAt:              dev.TrustedAt,
+			RevokedAt:              dev.RevokedAt,
+			LastSeen:               dev.LastSeen,
+			Capabilities:           append([]string{}, dev.Capabilities...),
+			ProfileMetadataVersion: dev.ProfileMetadataVersion,
+		})
+	}
+	return out
+}
 
 func toInternalTrustedDevices(in []TrustedDevice) []internal.TrustedDevice {
 	out := make([]internal.TrustedDevice, 0, len(in))
 	for _, dev := range in {
-		out = append(out, toInternalTrustedDevice(dev))
+		out = append(out, internal.TrustedDevice{
+			DeviceID:               dev.DeviceID,
+			DisplayName:            dev.DisplayName,
+			PublicKey:              dev.PublicKey,
+			PublicKeyFingerprint:   dev.PublicKeyFingerprint,
+			TrustStatus:            internal.TrustStatus(dev.TrustStatus),
+			TrustedAt:              dev.TrustedAt,
+			RevokedAt:              dev.RevokedAt,
+			LastSeen:               dev.LastSeen,
+			Capabilities:           append([]string{}, dev.Capabilities...),
+			ProfileMetadataVersion: dev.ProfileMetadataVersion,
+		})
 	}
 	return out
 }
@@ -653,6 +920,7 @@ func fromInternalTrustStatus(status internal.DeviceTrustStatus) DeviceTrustStatu
 func fromInternalRegistrySnapshot(snapshot internal.RegistrySnapshot) RegistrySnapshot {
 	return RegistrySnapshot{
 		SchemaVersion:          snapshot.SchemaVersion,
+		Purpose:                RegistrySnapshotPurpose(snapshot.Purpose),
 		AppID:                  snapshot.AppID,
 		Namespace:              snapshot.Namespace,
 		Devices:                fromInternalTrustedDevices(snapshot.Devices),
@@ -667,6 +935,7 @@ func fromInternalRegistrySnapshot(snapshot internal.RegistrySnapshot) RegistrySn
 func toInternalRegistrySnapshot(snapshot RegistrySnapshot) internal.RegistrySnapshot {
 	return internal.RegistrySnapshot{
 		SchemaVersion:          snapshot.SchemaVersion,
+		Purpose:                internal.RegistrySnapshotPurpose(snapshot.Purpose),
 		AppID:                  snapshot.AppID,
 		Namespace:              snapshot.Namespace,
 		Devices:                toInternalTrustedDevices(snapshot.Devices),
@@ -846,14 +1115,59 @@ func fromInternalHandshakeStart(result internal.HandshakeStartResult) HandshakeS
 	}
 }
 
+func fromInternalProofReceipt(receipt *internal.ProofReceipt) *ProofReceipt {
+	if receipt == nil {
+		return nil
+	}
+	return &ProofReceipt{
+		SchemaVersion:            receipt.SchemaVersion,
+		SessionID:                receipt.SessionID,
+		LocalDeviceID:            receipt.LocalDeviceID,
+		PeerDeviceID:             receipt.PeerDeviceID,
+		PeerPublicKeyFingerprint: receipt.PeerPublicKeyFingerprint,
+		ChallengeFingerprint:     receipt.ChallengeFingerprint,
+		SignatureFingerprint:     receipt.SignatureFingerprint,
+		VerifiedAt:               receipt.VerifiedAt,
+		ExpiresAt:                receipt.ExpiresAt,
+		ReceiptFingerprint:       receipt.ReceiptFingerprint,
+	}
+}
+
+func fromInternalLinkSession(session internal.LinkSession) LinkSession {
+	return LinkSession{
+		SessionID:     session.SessionID,
+		LocalDeviceID: session.LocalDeviceID,
+		PeerDeviceID:  session.PeerDeviceID,
+		EstablishedAt: session.EstablishedAt,
+		ExpiresAt:     session.ExpiresAt,
+		Status:        session.Status,
+		ProofReceipt:  fromInternalProofReceipt(session.ProofReceipt),
+	}
+}
+
+func fromInternalProofEvaluation(evaluation internal.ProofEvaluation) ProofEvaluation {
+	return ProofEvaluation{
+		DeviceID:    evaluation.DeviceID,
+		TrustStatus: TrustStatus(evaluation.TrustStatus),
+		State:       ProofState(evaluation.State),
+		Satisfied:   evaluation.Satisfied,
+		Reachable:   evaluation.Reachable,
+		EvaluatedAt: evaluation.EvaluatedAt,
+		Receipt:     fromInternalProofReceipt(evaluation.Receipt),
+		Reason:      evaluation.Reason,
+	}
+}
+
 func fromInternalConnectionStatus(status internal.ConnectionStatus) ConnectionStatus {
 	return ConnectionStatus{
-		DeviceID:    status.DeviceID,
-		TrustStatus: TrustStatus(status.TrustStatus),
-		Reachable:   status.Reachable,
-		LastSeen:    status.LastSeen,
-		Stale:       status.Stale,
-		Message:     status.Message,
+		DeviceID:     status.DeviceID,
+		TrustStatus:  TrustStatus(status.TrustStatus),
+		Reachable:    status.Reachable,
+		LastSeen:     status.LastSeen,
+		Stale:        status.Stale,
+		ProofState:   ProofState(status.ProofState),
+		ProofReceipt: fromInternalProofReceipt(status.ProofReceipt),
+		Message:      status.Message,
 	}
 }
 

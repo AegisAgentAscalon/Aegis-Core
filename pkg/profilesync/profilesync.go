@@ -5,6 +5,8 @@ package profilesync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"regexp"
@@ -17,9 +19,10 @@ import (
 )
 
 const (
-	EnvelopeSchemaVersion = 1
-	DefaultEnvelopeTTL    = 5 * time.Minute
-	defaultClockSkew      = 2 * time.Minute
+	EnvelopeSchemaVersion      = 1
+	DefaultEnvelopeTTL         = 5 * time.Minute
+	defaultClockSkew           = 2 * time.Minute
+	deterministicMailboxDomain = "aegis.profilesync.mailbox.v1"
 )
 
 var (
@@ -38,6 +41,7 @@ var (
 	ErrMultiHostUnsupported = errors.New("profile sync multi-host merge is unsupported")
 	ErrLocalStoreCorrupt    = errors.New("profile sync local metadata store is corrupt")
 	ErrLocalStoreNotFound   = errors.New("profile sync local metadata record is not available")
+	ErrReceiveOnlyTransport = errors.New("profile sync relay transport is receive-only")
 )
 
 var syncNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
@@ -193,10 +197,32 @@ type SyncTransport interface {
 }
 
 type SyncTransportStatus struct {
-	Available  bool        `json:"available"`
-	ProviderID string      `json:"provider_id,omitempty"`
-	Summary    string      `json:"summary,omitempty"`
-	Issues     []SyncIssue `json:"issues,omitempty"`
+	Available         bool        `json:"available"`
+	ProviderAvailable bool        `json:"provider_available"`
+	PushAvailable     bool        `json:"push_available"`
+	PullAvailable     bool        `json:"pull_available"`
+	ProviderID        string      `json:"provider_id,omitempty"`
+	Summary           string      `json:"summary,omitempty"`
+	Issues            []SyncIssue `json:"issues,omitempty"`
+}
+
+// RelaySyncDiagnostics is a redacted capability view of a relay-backed Profile
+// Sync transport. It intentionally omits namespace, device, mailbox, target,
+// credential, payload, and signature values.
+type RelaySyncDiagnostics struct {
+	Available               bool        `json:"available"`
+	ProviderAvailable       bool        `json:"provider_available"`
+	SendConfigured          bool        `json:"send_configured"`
+	ReceiveConfigured       bool        `json:"receive_configured"`
+	SendAvailable           bool        `json:"send_available"`
+	ReceiveAvailable        bool        `json:"receive_available"`
+	ReceiveOnly             bool        `json:"receive_only"`
+	ProviderID              string      `json:"provider_id,omitempty"`
+	MailboxExpiresAtRFC3339 string      `json:"mailbox_expires_at_rfc3339,omitempty"`
+	MessageTTLSeconds       int64       `json:"message_ttl_seconds,omitempty"`
+	MaximumPayloadBytes     int         `json:"maximum_payload_bytes"`
+	Summary                 string      `json:"summary,omitempty"`
+	Issues                  []SyncIssue `json:"issues,omitempty"`
 }
 
 type SyncEnvelope struct {
@@ -287,24 +313,61 @@ func NewRelaySyncTransport(config RelaySyncTransportConfig) (*RelaySyncTransport
 	if config.Provider == nil {
 		return nil, ErrNoRelayProvider
 	}
-	if !validSyncName(config.Namespace) || !validSyncID(config.SourceDeviceID) {
+	if !validExactSyncName(config.Namespace) || !validExactSyncID(config.SourceDeviceID) {
 		return nil, ErrInvalidConfig
 	}
-	if config.TargetDeviceID == "" && config.TargetMailboxID == "" {
+	hasSendTarget := config.TargetDeviceID != "" || config.TargetMailboxID != ""
+	hasReceiveMailbox := config.Mailbox.MailboxID != ""
+	if !hasSendTarget && !hasReceiveMailbox {
 		return nil, ErrInvalidConfig
 	}
-	if config.TargetDeviceID != "" && !validSyncID(config.TargetDeviceID) {
+	if config.TargetDeviceID != "" && !validExactSyncID(config.TargetDeviceID) {
 		return nil, ErrInvalidConfig
 	}
-	if config.TargetMailboxID != "" && !validSyncID(config.TargetMailboxID) {
+	if config.TargetMailboxID != "" && relay.ValidateMailboxID(config.TargetMailboxID) != nil {
 		return nil, ErrInvalidConfig
 	}
-	if config.Mailbox.MailboxID != "" {
+	if hasReceiveMailbox {
 		if err := relay.ValidateMailboxRef(config.Mailbox); err != nil {
+			return nil, ErrInvalidConfig
+		}
+		if config.Mailbox.Namespace != config.Namespace || config.Mailbox.OwnerDeviceID != config.SourceDeviceID {
 			return nil, ErrInvalidConfig
 		}
 	}
 	return &RelaySyncTransport{cfg: config}, nil
+}
+
+// NewReceiveOnlyRelaySyncTransport constructs a mailbox-backed transport that
+// can pull Profile Sync envelopes without requiring a placeholder send target.
+func NewReceiveOnlyRelaySyncTransport(config RelaySyncTransportConfig) (*RelaySyncTransport, error) {
+	if config.TargetDeviceID != "" || config.TargetMailboxID != "" || config.Mailbox.MailboxID == "" {
+		return nil, ErrInvalidConfig
+	}
+	return NewRelaySyncTransport(config)
+}
+
+// DeterministicRelayMailboxID returns a stable, domain-separated mailbox ID.
+// The digest isolates namespaces and owner devices without exposing either one.
+func DeterministicRelayMailboxID(namespace, ownerDeviceID string) (string, error) {
+	if !validExactSyncName(namespace) || !validExactSyncID(ownerDeviceID) {
+		return "", ErrInvalidConfig
+	}
+	sum := sha256.Sum256([]byte(deterministicMailboxDomain + "\x00" + namespace + "\x00" + ownerDeviceID))
+	mailboxID := "profilesync-" + hex.EncodeToString(sum[:])
+	if err := relay.ValidateMailboxID(mailboxID); err != nil {
+		return "", ErrInvalidConfig
+	}
+	return mailboxID, nil
+}
+
+// FormatStatusTimeRFC3339 converts a status timestamp to a browser-safe UTC
+// RFC 3339 string. Zero timestamps remain absent.
+func FormatStatusTimeRFC3339(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func (m *SyncManager) BuildStatus(ctx context.Context) SyncStatus {
@@ -453,8 +516,8 @@ func (m *SyncManager) BuildSyncPlan(ctx context.Context) (SyncPlan, error) {
 
 func (m *SyncManager) PushLocalSnapshot(ctx context.Context) (PushResult, error) {
 	result := PushResult{}
-	if err := m.ensureReadyForExchange(); err != nil {
-		result.Issues = append(result.Issues, syncIssue("sync_not_ready", err.Error(), true))
+	if err := m.ensureReadyForPush(ctx); err != nil {
+		result.Issues = append(result.Issues, syncOperationReadinessIssue(err))
 		return result, err
 	}
 	snapshot, err := m.snapshots.LoadLocalSnapshot(ctx)
@@ -484,8 +547,8 @@ func (m *SyncManager) PushLocalSnapshot(ctx context.Context) (PushResult, error)
 
 func (m *SyncManager) PushLocalProposals(ctx context.Context) (PushResult, error) {
 	result := PushResult{}
-	if err := m.ensureReadyForExchange(); err != nil {
-		result.Issues = append(result.Issues, syncIssue("sync_not_ready", err.Error(), true))
+	if err := m.ensureReadyForPush(ctx); err != nil {
+		result.Issues = append(result.Issues, syncOperationReadinessIssue(err))
 		return result, err
 	}
 	if m.proposals == nil {
@@ -525,8 +588,8 @@ func (m *SyncManager) PushLocalProposals(ctx context.Context) (PushResult, error
 
 func (m *SyncManager) PullRemote(ctx context.Context) (PullResult, error) {
 	result := PullResult{}
-	if err := m.ensureReadyForExchange(); err != nil {
-		result.Issues = append(result.Issues, syncIssue("sync_not_ready", err.Error(), true))
+	if err := m.ensureReadyForPull(ctx); err != nil {
+		result.Issues = append(result.Issues, syncOperationReadinessIssue(err))
 		return result, err
 	}
 	envelopes, err := m.transport.PullEnvelopes(ctx)
@@ -571,30 +634,47 @@ func (m *SyncManager) PullRemote(ctx context.Context) (PullResult, error) {
 func (m *SyncManager) Exchange(ctx context.Context) (ExchangeResult, error) {
 	started := m.now()
 	result := ExchangeResult{Session: SyncSession{SessionID: "sync-" + started.Format("20060102150405"), ProfileNamespace: m.cfg.ProfileNamespace, LocalDeviceID: m.cfg.LocalDeviceID, StartedAt: started}}
-	pushSnapshot, pushErr := m.PushLocalSnapshot(ctx)
-	result.Push = mergePushResults(result.Push, pushSnapshot)
-	if pushErr != nil {
-		result.Issues = append(result.Issues, pushSnapshot.Issues...)
+	if err := m.ensureReadyForExchange(); err != nil {
+		result.Issues = append(result.Issues, syncIssue("sync_not_ready", err.Error(), true))
 		result.Status = m.BuildStatus(ctx)
 		result.Session.CompletedAt = m.now()
-		return result, pushErr
+		return result, err
 	}
-	pushProposals, proposalErr := m.PushLocalProposals(ctx)
-	result.Push = mergePushResults(result.Push, pushProposals)
-	if proposalErr != nil {
-		result.Issues = append(result.Issues, pushProposals.Issues...)
+	pushAvailable, pullAvailable := transportOperationAvailability(m.transport.GetStatus(ctx))
+	if !pushAvailable && !pullAvailable {
+		result.Issues = append(result.Issues, syncIssue("transport_unavailable", ErrTransportUnavailable.Error(), true))
 		result.Status = m.BuildStatus(ctx)
 		result.Session.CompletedAt = m.now()
-		return result, proposalErr
+		return result, ErrTransportUnavailable
 	}
-	pull, pullErr := m.PullRemote(ctx)
-	result.Pull = pull
-	result.ReviewRequired = pull.ReviewRequired
-	result.Session.ReviewRequired = pull.ReviewRequired
+	if pushAvailable {
+		pushSnapshot, pushErr := m.PushLocalSnapshot(ctx)
+		result.Push = mergePushResults(result.Push, pushSnapshot)
+		if pushErr != nil {
+			result.Issues = append(result.Issues, pushSnapshot.Issues...)
+			result.Status = m.BuildStatus(ctx)
+			result.Session.CompletedAt = m.now()
+			return result, pushErr
+		}
+		pushProposals, proposalErr := m.PushLocalProposals(ctx)
+		result.Push = mergePushResults(result.Push, pushProposals)
+		if proposalErr != nil {
+			result.Issues = append(result.Issues, pushProposals.Issues...)
+			result.Status = m.BuildStatus(ctx)
+			result.Session.CompletedAt = m.now()
+			return result, proposalErr
+		}
+	}
+	var pullErr error
+	if pullAvailable {
+		result.Pull, pullErr = m.PullRemote(ctx)
+		result.ReviewRequired = result.Pull.ReviewRequired
+		result.Session.ReviewRequired = result.Pull.ReviewRequired
+	}
 	result.Session.CompletedAt = m.now()
 	result.Status = m.BuildStatus(ctx)
 	result.Issues = append(result.Issues, result.Push.Issues...)
-	result.Issues = append(result.Issues, pull.Issues...)
+	result.Issues = append(result.Issues, result.Pull.Issues...)
 	if pullErr != nil {
 		return result, pullErr
 	}
@@ -730,6 +810,54 @@ func (m *SyncManager) ensureReadyForExchange() error {
 	return nil
 }
 
+func (m *SyncManager) ensureReadyForPush(ctx context.Context) error {
+	if err := m.ensureReadyForExchange(); err != nil {
+		return err
+	}
+	pushAvailable, pullAvailable := transportOperationAvailability(m.transport.GetStatus(ctx))
+	if pushAvailable {
+		return nil
+	}
+	if pullAvailable {
+		return ErrReceiveOnlyTransport
+	}
+	return ErrTransportUnavailable
+}
+
+func (m *SyncManager) ensureReadyForPull(ctx context.Context) error {
+	if err := m.ensureReadyForExchange(); err != nil {
+		return err
+	}
+	_, pullAvailable := transportOperationAvailability(m.transport.GetStatus(ctx))
+	if !pullAvailable {
+		return ErrTransportUnavailable
+	}
+	return nil
+}
+
+func transportOperationAvailability(status SyncTransportStatus) (bool, bool) {
+	if !status.Available {
+		return false, false
+	}
+	if !status.PushAvailable && !status.PullAvailable {
+		// Status values from transports predating directional capabilities are
+		// interpreted as bidirectional for compatibility.
+		return true, true
+	}
+	return status.PushAvailable, status.PullAvailable
+}
+
+func syncOperationReadinessIssue(err error) SyncIssue {
+	switch {
+	case errors.Is(err, ErrReceiveOnlyTransport):
+		return syncIssue("push_unavailable", err.Error(), true)
+	case errors.Is(err, ErrTransportUnavailable):
+		return syncIssue("transport_unavailable", err.Error(), true)
+	default:
+		return syncIssue("sync_not_ready", err.Error(), true)
+	}
+}
+
 func (m *SyncManager) verifySnapshotSigner(ctx context.Context, snapshot profilemesh.SignedProfileSnapshot) (TrustState, SyncIssue) {
 	if m.trust == nil {
 		return TrustPending, syncIssue("trust_verifier_missing", ErrTrustVerification.Error(), false)
@@ -808,19 +936,77 @@ func (t *RelaySyncTransport) GetStatus(ctx context.Context) SyncTransportStatus 
 		return SyncTransportStatus{Available: false, Summary: ErrNoRelayProvider.Error(), Issues: []SyncIssue{syncIssue("relay_missing", ErrNoRelayProvider.Error(), false)}}
 	}
 	status := t.cfg.Provider.GetStatus(ctx)
-	out := SyncTransportStatus{Available: status.Available, ProviderID: safeID(status.ProviderID), Summary: safeSummary(status.Summary, "relay transport is unavailable")}
+	out := SyncTransportStatus{ProviderAvailable: status.Available, ProviderID: safeID(status.ProviderID)}
 	for _, issue := range status.Issues {
 		out.Issues = append(out.Issues, syncIssue(safeID(issue.Code), safeSummary(issue.Message, ErrTransportUnavailable.Error()), false))
 	}
-	if !out.Available && len(out.Issues) == 0 {
+	out.PushAvailable = out.ProviderAvailable && (t.cfg.TargetDeviceID != "" || t.cfg.TargetMailboxID != "")
+	out.PullAvailable = out.ProviderAvailable && t.cfg.Mailbox.MailboxID != ""
+	if out.PullAvailable && !t.cfg.Mailbox.ExpiresAt.IsZero() && !t.cfg.Mailbox.ExpiresAt.After(t.now()) {
+		out.PullAvailable = false
+		out.Issues = append(out.Issues, syncIssue("relay_mailbox_expired", relay.ErrMailboxExpired.Error(), false))
+	}
+	out.Available = out.PushAvailable || out.PullAvailable
+	switch {
+	case out.PushAvailable && out.PullAvailable:
+		out.Summary = "profile sync relay push and pull are available"
+	case out.PullAvailable:
+		out.Summary = "profile sync relay pull is available"
+	case out.PushAvailable:
+		out.Summary = "profile sync relay push is available"
+	case out.ProviderAvailable:
+		out.Summary = "profile sync relay provider has no available configured operation"
+	default:
+		out.Summary = "profile sync relay transport is unavailable"
+	}
+	if !out.ProviderAvailable && len(out.Issues) == 0 {
 		out.Issues = append(out.Issues, syncIssue("relay_unavailable", ErrTransportUnavailable.Error(), false))
 	}
 	return out
 }
 
+// BuildDiagnostics reports safe relay capabilities without exposing routing
+// identifiers, caller signature evidence, payloads, or provider error details.
+func (t *RelaySyncTransport) BuildDiagnostics(ctx context.Context) RelaySyncDiagnostics {
+	status := t.GetStatus(ctx)
+	diagnostics := RelaySyncDiagnostics{
+		Available:           status.Available,
+		ProviderAvailable:   status.ProviderAvailable,
+		SendAvailable:       status.PushAvailable,
+		ReceiveAvailable:    status.PullAvailable,
+		ProviderID:          status.ProviderID,
+		Summary:             status.Summary,
+		Issues:              append([]SyncIssue(nil), status.Issues...),
+		MaximumPayloadBytes: relay.DefaultMaxPayloadSize,
+	}
+	if t == nil {
+		return diagnostics
+	}
+	diagnostics.SendConfigured = t.cfg.TargetDeviceID != "" || t.cfg.TargetMailboxID != ""
+	diagnostics.ReceiveConfigured = t.cfg.Mailbox.MailboxID != ""
+	diagnostics.ReceiveOnly = diagnostics.ReceiveConfigured && !diagnostics.SendConfigured
+	if t.cfg.MaxPayloadBytes > 0 {
+		diagnostics.MaximumPayloadBytes = t.cfg.MaxPayloadBytes
+	}
+	if diagnostics.SendConfigured {
+		ttl := t.cfg.MessageTTL
+		if ttl <= 0 {
+			ttl = DefaultEnvelopeTTL
+		}
+		diagnostics.MessageTTLSeconds = int64(ttl / time.Second)
+	}
+	if diagnostics.ReceiveConfigured {
+		diagnostics.MailboxExpiresAtRFC3339 = FormatStatusTimeRFC3339(t.cfg.Mailbox.ExpiresAt)
+	}
+	return diagnostics
+}
+
 func (t *RelaySyncTransport) PushEnvelope(ctx context.Context, envelope SyncEnvelope) (relay.DeliveryReceipt, error) {
 	if t == nil || t.cfg.Provider == nil {
 		return relay.DeliveryReceipt{}, ErrNoRelayProvider
+	}
+	if t.cfg.TargetDeviceID == "" && t.cfg.TargetMailboxID == "" {
+		return relay.DeliveryReceipt{}, ErrReceiveOnlyTransport
 	}
 	if err := validateEnvelopeHeaderAt(envelope, t.cfg.Namespace, t.now()); err != nil {
 		return relay.DeliveryReceipt{}, err
@@ -1240,15 +1426,29 @@ func validSyncName(value string) bool {
 	return syncNamePattern.MatchString(value) && !strings.Contains(value, "..") && !strings.ContainsAny(value, `/\`) && !reservedName(value) && !unsafeSyncText(value)
 }
 
+func validExactSyncName(value string) bool {
+	return value == strings.TrimSpace(value) && validSyncName(value)
+}
+
 func validSyncID(value string) bool {
 	value = strings.TrimSpace(value)
 	return syncIDPattern.MatchString(value) && !strings.Contains(value, "..") && !strings.ContainsAny(value, `/\`) && !unsafeSyncText(value)
+}
+
+func validExactSyncID(value string) bool {
+	return value == strings.TrimSpace(value) && validSyncID(value)
 }
 
 func unsafeSyncText(value string) bool {
 	lower := strings.ToLower(strings.TrimSpace(value))
 	if lower == "" {
 		return false
+	}
+	// Status and exchange summaries never need filesystem paths. Reject any
+	// separator so absolute, UNC, drive-relative, and relative forms are covered
+	// consistently on every host OS.
+	if strings.ContainsAny(value, `/\`) {
+		return true
 	}
 	for _, marker := range []string{"client_secret", "refresh_token", "access_token", "id_token", "auth_code", "pkce", "verifier", "private_key", "begin private key", "github_pat", "ghp_", "api_key", "apikey", "access_key", "secret_key", "authorization:", "authorization=", "bearer ", "x-api-key", "token=", "password=", "secret=", `:\`, `/users/`, `/home/`, `/tmp/`, `\\`, "appdata", "downloads", "desktop"} {
 		if strings.Contains(lower, strings.ToLower(marker)) {

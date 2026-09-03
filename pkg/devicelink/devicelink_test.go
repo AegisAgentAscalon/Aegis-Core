@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +30,17 @@ func TestPublicDeviceLinkDTOsHideKeyMaterialFromJSON(t *testing.T) {
 	if identity.PublicKey == "" || identity.PublicKeyFingerprint == "" {
 		t.Fatal("public trust material should remain available for explicit trust exchange")
 	}
+	bundle, err := svc.ExportPublicIdentityBundle(ctx)
+	if err != nil {
+		t.Fatalf("ExportPublicIdentityBundle returned error: %v", err)
+	}
+	if err := ValidatePublicIdentityBundle(bundle); err != nil {
+		t.Fatalf("ValidatePublicIdentityBundle returned error: %v", err)
+	}
+	rawBundle, err := json.Marshal(bundle)
+	if err != nil || !strings.Contains(string(rawBundle), `"public_key":`) {
+		t.Fatalf("public identity bundle did not explicitly expose exchange key: %s %v", string(rawBundle), err)
+	}
 
 	peerKey, peerFingerprint := publicTrustMaterial(t)
 	trusted, err := svc.TrustDevice(ctx, TrustDeviceRequest{
@@ -45,14 +58,71 @@ func TestPublicDeviceLinkDTOsHideKeyMaterialFromJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportRegistrySnapshot returned error: %v", err)
 	}
-	assertSafeJSON(t, snapshot)
+	rawSnapshot, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("registry snapshot marshal failed: %v", err)
+	}
+	if !strings.Contains(string(rawSnapshot), `"public_key":`) || strings.Contains(strings.ToLower(string(rawSnapshot)), "private_key") {
+		t.Fatalf("registry backup did not retain safe public trust material: %s", string(rawSnapshot))
+	}
+	var roundTrip RegistrySnapshot
+	if err := json.Unmarshal(rawSnapshot, &roundTrip); err != nil {
+		t.Fatalf("registry snapshot unmarshal failed: %v", err)
+	}
+	if len(roundTrip.Devices) != 1 || roundTrip.Devices[0].PublicKey != peerKey {
+		t.Fatalf("registry snapshot JSON round trip lost public key: %+v", roundTrip.Devices)
+	}
 
 	other, err := NewService(AppConfig{AppID: "aegis-test", DisplayName: "Aegis Test", DataDir: t.TempDir(), Namespace: "profile-a"})
 	if err != nil {
 		t.Fatalf("NewService import returned error: %v", err)
 	}
-	if err := other.ImportRegistrySnapshot(ctx, snapshot); err != nil {
-		t.Fatalf("ImportRegistrySnapshot should preserve Go-level behavior: %v", err)
+	if err := other.ImportRegistrySnapshot(ctx, roundTrip); err != nil {
+		t.Fatalf("ImportRegistrySnapshot should preserve JSON behavior: %v", err)
+	}
+}
+
+func TestPublicDeviceLinkImportsLegacyRegistryFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "registry_snapshot_v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot RegistrySnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Devices) != 1 || snapshot.Devices[0].PublicKey == "" {
+		t.Fatalf("legacy fixture lost public key during JSON decode: %+v", snapshot)
+	}
+	svc, err := NewService(AppConfig{AppID: "sample-app", DisplayName: "Sample App", DataDir: t.TempDir(), Namespace: "legacy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ImportRegistrySnapshot(context.Background(), snapshot); err != nil {
+		t.Fatalf("schema-1 registry fixture was rejected: %v", err)
+	}
+	exported, err := svc.ExportRegistrySnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exported.SchemaVersion != RegistrySnapshotSchemaVersion || len(exported.Devices) != 1 || exported.Devices[0].PublicKeyFingerprint != "630dcd2966c43366" {
+		t.Fatalf("legacy registry was not migrated safely: %+v", exported)
+	}
+}
+
+func TestPublicBootstrapInspectionDoesNotCreateStorage(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := AppConfig{AppID: "aegis-test", DisplayName: "Aegis Test", DataDir: dataDir, Namespace: "inspect"}
+	status, err := InspectBootstrap(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != BootstrapAbsent || status.Ready {
+		t.Fatalf("unexpected bootstrap status: %+v", status)
+	}
+	storageDir := filepath.Join(dataDir, cfg.AppID, cfg.Namespace, "devicelink")
+	if _, err := os.Stat(storageDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inspection created storage or returned an unexpected stat error: %v", err)
 	}
 }
 

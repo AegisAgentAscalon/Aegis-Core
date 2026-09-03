@@ -160,6 +160,10 @@ func (s *Service) GetProfileHostingConfig(ctx context.Context) (ProfileHostingCo
 }
 
 func (s *Service) RegisterProfileDevice(ctx context.Context, req RegisterProfileDeviceRequest) (ProfileDeviceRecord, error) {
+	return s.registerProfileDevice(ctx, req, false)
+}
+
+func (s *Service) registerProfileDevice(ctx context.Context, req RegisterProfileDeviceRequest, strict bool) (ProfileDeviceRecord, error) {
 	if err := contextError(ctx); err != nil {
 		return ProfileDeviceRecord{}, err
 	}
@@ -169,6 +173,8 @@ func (s *Service) RegisterProfileDevice(ctx context.Context, req RegisterProfile
 		return ProfileDeviceRecord{}, err
 	}
 	req.DeviceID = stringsTrim(req.DeviceID)
+	req.PublicKeyFingerprint = normalizeFingerprint(req.PublicKeyFingerprint)
+	req.MetadataSource = strings.TrimSpace(req.MetadataSource)
 	if req.DeviceID == "" || !validID(req.DeviceID) || !validFingerprint(req.PublicKeyFingerprint) {
 		return ProfileDeviceRecord{}, ErrDeviceNotAllowed
 	}
@@ -177,6 +183,12 @@ func (s *Service) RegisterProfileDevice(ctx context.Context, req RegisterProfile
 	}
 	if req.Status == "" {
 		req.Status = DeviceStatusActive
+	}
+	if !validDeviceTrustStatus(req.TrustStatus) || !validDeviceStatus(req.Status) {
+		return ProfileDeviceRecord{}, ErrDeviceNotAllowed
+	}
+	if (strict && !validStrictDeviceLifecycle(req.TrustStatus, req.Status)) || (req.Status == DeviceStatusRemoved && req.TrustStatus != DeviceTrustRevoked) {
+		return ProfileDeviceRecord{}, ErrDeviceNotAllowed
 	}
 	now := s.clock.Now().UTC()
 	reg, err := s.store.readDevices()
@@ -187,7 +199,7 @@ func (s *Service) RegisterProfileDevice(ctx context.Context, req RegisterProfile
 		if device.DeviceID != req.DeviceID {
 			continue
 		}
-		if device.PublicKeyFingerprint != req.PublicKeyFingerprint {
+		if normalizeFingerprint(device.PublicKeyFingerprint) != req.PublicKeyFingerprint {
 			return ProfileDeviceRecord{}, ErrDeviceNotAllowed
 		}
 		device.DisplayName = displayOrID(req.DisplayName, req.DeviceID)
@@ -196,7 +208,18 @@ func (s *Service) RegisterProfileDevice(ctx context.Context, req RegisterProfile
 		device.Capabilities = compactStrings(req.Capabilities)
 		device.MetadataSource = req.MetadataSource
 		device.UpdatedAt = now
-		device.LastSeen = now
+		switch req.Status {
+		case DeviceStatusActive, DeviceStatusStale:
+			device.LastSeen = now
+			device.RemovedAt = nil
+		case DeviceStatusRemoved:
+			if device.RemovedAt == nil {
+				removedAt := now
+				device.RemovedAt = &removedAt
+			}
+		default:
+			device.RemovedAt = nil
+		}
 		device.ProfileMetadataVersion = MetadataVersion
 		reg.Devices[i] = device
 		reg.UpdatedAt = now
@@ -212,11 +235,17 @@ func (s *Service) RegisterProfileDevice(ctx context.Context, req RegisterProfile
 		TrustStatus:            req.TrustStatus,
 		Status:                 req.Status,
 		Capabilities:           compactStrings(req.Capabilities),
-		LastSeen:               now,
 		RegisteredAt:           now,
 		UpdatedAt:              now,
 		MetadataSource:         req.MetadataSource,
 		ProfileMetadataVersion: MetadataVersion,
+	}
+	if req.Status == DeviceStatusActive || req.Status == DeviceStatusStale {
+		device.LastSeen = now
+	}
+	if req.Status == DeviceStatusRemoved {
+		removedAt := now
+		device.RemovedAt = &removedAt
 	}
 	reg.Devices = append(reg.Devices, device)
 	reg.UpdatedAt = now
@@ -224,6 +253,18 @@ func (s *Service) RegisterProfileDevice(ctx context.Context, req RegisterProfile
 		return ProfileDeviceRecord{}, err
 	}
 	return device, nil
+}
+
+// RegisterProfileDeviceStrict requires callers to make trust and lifecycle
+// state explicit. It does not infer app membership or passphrase policy.
+func (s *Service) RegisterProfileDeviceStrict(ctx context.Context, req RegisterProfileDeviceRequest) (ProfileDeviceRecord, error) {
+	if err := contextError(ctx); err != nil {
+		return ProfileDeviceRecord{}, err
+	}
+	if req.TrustStatus == "" || req.Status == "" {
+		return ProfileDeviceRecord{}, ErrDeviceNotAllowed
+	}
+	return s.registerProfileDevice(ctx, req, true)
 }
 
 func (s *Service) ListProfileDevices(ctx context.Context) ([]ProfileDeviceRecord, error) {
@@ -452,19 +493,21 @@ func (s *Service) ExportProfileMeshSnapshot(ctx context.Context) (ProfileMeshSna
 	if err != nil {
 		return ProfileMeshSnapshot{}, err
 	}
-	now := s.clock.Now().UTC()
+	createdAt := profile.CreatedAt.UTC()
+	updatedAt := latestTime(profile.UpdatedAt, hosting.UpdatedAt, devices.UpdatedAt, resources.UpdatedAt)
 	snapshot := ProfileMeshSnapshot{
-		SchemaVersion:   SchemaVersion,
+		SchemaVersion:   ProfileMeshSnapshotSchemaVersion,
 		AppID:           s.cfg.AppID,
 		Namespace:       s.cfg.Namespace,
 		Profile:         profile,
 		HostingConfig:   hosting,
 		Devices:         append([]ProfileDeviceRecord{}, devices.Devices...),
 		Resources:       append([]ProfileResourceRecord{}, resources.Resources...),
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		CreatedAt:       createdAt,
+		UpdatedAt:       updatedAt,
 		MetadataVersion: MetadataVersion,
 	}
+	snapshot = normalizeProfileMeshSnapshot(snapshot)
 	snapshot.SnapshotFingerprint = snapshotFingerprint(snapshot)
 	return snapshot, nil
 }
@@ -475,25 +518,40 @@ func (s *Service) ImportProfileMeshSnapshot(ctx context.Context, snapshot Profil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if snapshot.SchemaVersion != SchemaVersion || snapshot.AppID != s.cfg.AppID || snapshot.Namespace != s.cfg.Namespace || snapshot.Profile.ProfileID == "" || snapshot.Profile.AppID != s.cfg.AppID || snapshot.Profile.Namespace != s.cfg.Namespace {
+	if snapshot.AppID != s.cfg.AppID || snapshot.Namespace != s.cfg.Namespace || snapshot.Profile.ProfileID == "" || snapshot.Profile.AppID != s.cfg.AppID || snapshot.Profile.Namespace != s.cfg.Namespace {
 		return ErrInvalidProfileSnapshot
 	}
-	if snapshot.SnapshotFingerprint != "" && snapshot.SnapshotFingerprint != snapshotFingerprint(snapshot) {
+	switch snapshot.SchemaVersion {
+	case legacyProfileMeshSnapshotSchemaVersion:
+		if snapshot.SnapshotFingerprint != "" && snapshot.SnapshotFingerprint != legacyProfileMeshSnapshotFingerprint(snapshot) {
+			return ErrInvalidProfileSnapshot
+		}
+	case ProfileMeshSnapshotSchemaVersion:
+		if snapshot.SnapshotFingerprint == "" {
+			return ErrInvalidProfileSnapshot
+		}
+	default:
 		return ErrInvalidProfileSnapshot
 	}
-	if err := validateSnapshot(snapshot); err != nil {
+	normalized := normalizeProfileMeshSnapshot(snapshot)
+	if snapshot.SchemaVersion == ProfileMeshSnapshotSchemaVersion && snapshot.SnapshotFingerprint != snapshotFingerprint(normalized) {
+		return ErrInvalidProfileSnapshot
+	}
+	normalized.SchemaVersion = ProfileMeshSnapshotSchemaVersion
+	normalized.SnapshotFingerprint = snapshotFingerprint(normalized)
+	if err := validateSnapshot(normalized); err != nil {
 		return err
 	}
-	if err := s.store.writeProfile(snapshot.Profile); err != nil {
+	if err := s.store.writeProfile(normalized.Profile); err != nil {
 		return err
 	}
-	if err := s.store.writeHosting(snapshot.HostingConfig); err != nil {
+	if err := s.store.writeHosting(normalized.HostingConfig); err != nil {
 		return err
 	}
-	if err := s.store.writeDevices(deviceRegistryFile{SchemaVersion: SchemaVersion, Devices: append([]ProfileDeviceRecord{}, snapshot.Devices...), UpdatedAt: s.clock.Now().UTC()}); err != nil {
+	if err := s.store.writeDevices(deviceRegistryFile{SchemaVersion: SchemaVersion, Devices: append([]ProfileDeviceRecord{}, normalized.Devices...), UpdatedAt: normalized.UpdatedAt}); err != nil {
 		return err
 	}
-	return s.store.writeResources(resourceRegistryFile{SchemaVersion: SchemaVersion, Resources: append([]ProfileResourceRecord{}, snapshot.Resources...), UpdatedAt: s.clock.Now().UTC()})
+	return s.store.writeResources(resourceRegistryFile{SchemaVersion: SchemaVersion, Resources: append([]ProfileResourceRecord{}, normalized.Resources...), UpdatedAt: normalized.UpdatedAt})
 }
 
 func (s *Service) BuildProfileMeshOverview(ctx context.Context) (ProfileMeshOverview, error) {
@@ -593,6 +651,19 @@ func validateSnapshot(snapshot ProfileMeshSnapshot) error {
 		if device.DeviceID == "" || !validID(device.DeviceID) || !validFingerprint(device.PublicKeyFingerprint) {
 			return ErrInvalidProfileSnapshot
 		}
+		if !validDeviceTrustStatus(device.TrustStatus) || !validDeviceStatus(device.Status) || device.RegisteredAt.IsZero() || device.UpdatedAt.IsZero() || device.UpdatedAt.Before(device.RegisteredAt) || device.ProfileMetadataVersion != MetadataVersion {
+			return ErrInvalidProfileSnapshot
+		}
+		if !device.LastSeen.IsZero() && (device.LastSeen.Before(device.RegisteredAt) || device.LastSeen.After(device.UpdatedAt)) {
+			return ErrInvalidProfileSnapshot
+		}
+		if device.Status == DeviceStatusRemoved {
+			if device.TrustStatus != DeviceTrustRevoked || device.RemovedAt == nil || device.RemovedAt.Before(device.RegisteredAt) || device.RemovedAt.After(device.UpdatedAt) {
+				return ErrInvalidProfileSnapshot
+			}
+		} else if device.RemovedAt != nil {
+			return ErrInvalidProfileSnapshot
+		}
 		if old, ok := devices[device.DeviceID]; ok {
 			if old != device.PublicKeyFingerprint {
 				return ErrInvalidProfileSnapshot
@@ -651,6 +722,47 @@ func validAvailability(a ProfileResourceAvailability) bool {
 	default:
 		return false
 	}
+}
+
+func validDeviceTrustStatus(status ProfileDeviceTrustStatus) bool {
+	switch status {
+	case DeviceTrustUnknown, DeviceTrustTrusted, DeviceTrustRevoked, DeviceTrustStale:
+		return true
+	default:
+		return false
+	}
+}
+
+func validDeviceStatus(status ProfileDeviceStatus) bool {
+	switch status {
+	case DeviceStatusActive, DeviceStatusStale, DeviceStatusRevoked, DeviceStatusRemoved:
+		return true
+	default:
+		return false
+	}
+}
+
+func validStrictDeviceLifecycle(trust ProfileDeviceTrustStatus, status ProfileDeviceStatus) bool {
+	switch status {
+	case DeviceStatusActive:
+		return trust == DeviceTrustTrusted
+	case DeviceStatusStale:
+		return trust == DeviceTrustStale
+	case DeviceStatusRevoked, DeviceStatusRemoved:
+		return trust == DeviceTrustRevoked
+	default:
+		return false
+	}
+}
+
+func latestTime(values ...time.Time) time.Time {
+	var latest time.Time
+	for _, value := range values {
+		if value.After(latest) {
+			latest = value
+		}
+	}
+	return latest.UTC()
 }
 
 func displayOrID(displayName, id string) string {
