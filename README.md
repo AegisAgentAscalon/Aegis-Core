@@ -106,6 +106,11 @@ go test -race ./pkg/...
 go mod verify
 ```
 
+The repository workflow runs the module and vet checks on Windows and Linux,
+with a separate Linux race lane. Workflow actions are pinned to reviewable
+commits, duplicate runs for the same ref are cancelled, and Go commands use
+`-mod=readonly` so validation cannot rewrite dependency metadata.
+
 The examples also run as part of `go test ./...`.
 
 ## License

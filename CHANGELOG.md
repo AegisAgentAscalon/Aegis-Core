@@ -31,3 +31,5 @@ All notable changes to Aegis Core are recorded here. The repository remains expe
 - Updated project status language to distinguish an internal hardening review from an independent professional audit.
 - Expanded pull-request CI with module verification, ordinary test, race-test, and vet gates.
 - Added golden vectors for update manifest signature payloads, deterministic relay mailbox IDs, Profile Sync status/envelope JSON, and exchange-record JSON.
+- Hardened the Go workflow with pinned actions, cancellation of superseded runs,
+  explicit timeouts, and read-only module validation.
