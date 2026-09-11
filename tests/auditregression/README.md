@@ -49,3 +49,6 @@ W04 durable delivery remains open.
 W06 promotes the architecture and Identity Gate probes to ordinary tests.
 SD-08 is now covered by pkg/devicelink/memory_ownership_test.go, including both
 publish and discovery-output mutation. Remaining tagged findings stay failing.
+
+W07 promotes UA-05 to ordinary Updates tests. Four tagged findings remain:
+SD-02, SD-03, SD-05 and SD-06. Durable W04 remains separate.
