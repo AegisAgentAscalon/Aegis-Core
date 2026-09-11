@@ -6,14 +6,24 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
+func assertNoPendingArtifacts(t *testing.T, s *Service) {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(s.store.stagedDir(), ".pending-*"))
+	if err != nil || len(files) != 0 {
+		t.Errorf("staging left pending artifacts: %v (%v)", files, err)
+	}
+}
+
 func TestStageUpdatePreservesActiveLifecycleAndIsIdempotentOnlyBeforeHandoff(t *testing.T) {
 	ctx := context.Background()
 	svc, staged := stageInternalRecordOnlyUpdate(t, "1.2.0")
+	t.Cleanup(func() { assertNoPendingArtifacts(t, svc) })
 	beforeEnvelope, err := svc.GetLifecycleEnvelope(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +88,7 @@ func TestStageUpdatePreservesActiveLifecycleAndIsIdempotentOnlyBeforeHandoff(t *
 func TestStageUpdateRejectsDifferentPackageWhileLifecycleIsActive(t *testing.T) {
 	ctx := context.Background()
 	svc, staged := stageInternalRecordOnlyUpdate(t, "1.2.0")
+	t.Cleanup(func() { assertNoPendingArtifacts(t, svc) })
 	artifactPath := t.TempDir() + string(os.PathSeparator) + "aegis-1.3.0.zip"
 	if err := os.WriteFile(artifactPath, []byte("artifact-1.3.0"), 0o600); err != nil {
 		t.Fatal(err)

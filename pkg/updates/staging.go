@@ -44,24 +44,7 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 	if err != nil || !strings.EqualFold(got, verified.Downloaded.Artifact.SHA256) {
 		return StageResult{}, ErrVerificationFailed
 	}
-	if err := secureMkdirAll(snapshot.store.stagedDir()); err != nil {
-		return StageResult{}, ErrStorageUnavailable
-	}
 	target := filepath.Join(snapshot.store.stagedDir(), verified.Downloaded.Artifact.Filename)
-	pendingFile, err := os.CreateTemp(snapshot.store.stagedDir(), ".pending-*")
-	if err != nil {
-		return StageResult{}, ErrStorageUnavailable
-	}
-	pending := pendingFile.Name()
-	if err := pendingFile.Close(); err != nil {
-		_ = os.Remove(pending)
-		return StageResult{}, ErrStorageUnavailable
-	}
-	_ = os.Remove(pending)
-	if err := copyFileAtomic(ctx, verified.Downloaded.ArtifactPath, pending); err != nil {
-		_ = os.Remove(pending)
-		return StageResult{}, err
-	}
 	staged := stagedUpdateRecord{
 		StagedUpdate: StagedUpdate{
 			Source: sourceSummary(snapshot.cfg.Source),
@@ -72,6 +55,7 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 			StagedAt: time.Now().UTC(), RequiredRestart: verified.Downloaded.Manifest.RequiredRestart,
 			ApplyBehavior: verified.Downloaded.Manifest.ApplyBehavior,
 		},
+		Manifest:  &verified.Downloaded.Manifest,
 		SourceKey: sourceKey(snapshot.cfg.Source), PolicyKey: policyKey(snapshot.cfg.Policy),
 	}
 	if existing, handled, err := s.checkLifecycleBeforeRestage(snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
@@ -79,18 +63,39 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 	} else if handled {
 		return existing, nil
 	}
+	if err := secureMkdirAll(snapshot.store.stagedDir()); err != nil {
+		return StageResult{}, ErrStorageUnavailable
+	}
+	pendingFile, err := os.CreateTemp(snapshot.store.stagedDir(), ".pending-*")
+	if err != nil {
+		return StageResult{}, ErrStorageUnavailable
+	}
+	pending := pendingFile.Name()
+	defer os.Remove(pending)
+	if err := pendingFile.Close(); err != nil {
+		return StageResult{}, ErrStorageUnavailable
+	}
+	_ = os.Remove(pending)
+	if err := copyFileAtomic(ctx, verified.Downloaded.ArtifactPath, pending); err != nil {
+		return StageResult{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.applyInProgress {
-		_ = os.Remove(pending)
 		return StageResult{}, ErrApplyInProgress
 	}
 	if !s.currentLocked(snapshot) {
-		_ = os.Remove(pending)
 		return StageResult{}, ErrUpdateStateChanged
 	}
+	if err := contextError(ctx); err != nil {
+		return StageResult{}, err
+	}
+	if existing, handled, err := s.checkLifecycleBeforeRestage(snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
+		return StageResult{}, err
+	} else if handled {
+		return existing, nil
+	}
 	if err := replaceFile(pending, target); err != nil {
-		_ = os.Remove(pending)
 		return StageResult{}, ErrStorageUnavailable
 	}
 	if err := validateStagedUpdateReadyFor(snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {

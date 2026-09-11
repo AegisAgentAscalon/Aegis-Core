@@ -177,10 +177,26 @@ func validateSelectedUpdate(cfg AppConfig, selected selectedUpdate) error {
 	if selected.SchemaVersion != schemaVersion || !sourceAndPolicyMatch(cfg, selected.SourceKey, selected.PolicyKey) || selected.UpdatedAt.IsZero() {
 		return ErrStorageUnavailable
 	}
-	if err := validateManifest(cfg, selected.Manifest); err != nil {
+	return validateArtifactBinding(cfg, selected.Manifest, selected.Artifact)
+}
+
+// The manifest, not the detached cache record, authorizes artifact identity.
+func validateArtifactBinding(cfg AppConfig, manifest Manifest, detached Artifact) error {
+	authorized, err := selectArtifactForConfig(cfg, manifest)
+	if err != nil {
 		return err
 	}
-	return validateArtifact(cfg, selected.Artifact)
+	if (authorized.Signature == nil) != (detached.Signature == nil) {
+		return ErrVerificationFailed
+	}
+	if authorized.Signature != nil && *authorized.Signature != *detached.Signature {
+		return ErrVerificationFailed
+	}
+	authorized.Signature, detached.Signature = nil, nil
+	if authorized != detached {
+		return ErrVerificationFailed
+	}
+	return nil
 }
 
 func classifyRollbackFreezePolicy(cfg AppConfig, manifest Manifest) error {
@@ -431,10 +447,7 @@ func validateDownloadedUpdateFor(cfg AppConfig, st *store, downloaded downloaded
 	if downloaded.SchemaVersion != schemaVersion || !sourceAndPolicyMatch(cfg, downloaded.SourceKey, downloaded.PolicyKey) || downloaded.DownloadedAt.IsZero() || downloaded.BytesWritten < 0 {
 		return ErrStorageUnavailable
 	}
-	if err := validateManifest(cfg, downloaded.Manifest); err != nil {
-		return err
-	}
-	if err := validateArtifact(cfg, downloaded.Artifact); err != nil {
+	if err := validateArtifactBinding(cfg, downloaded.Manifest, downloaded.Artifact); err != nil {
 		return err
 	}
 	expectedPath := filepath.Join(st.downloadsDir(), downloaded.Artifact.Filename)
@@ -463,6 +476,25 @@ func validateStagedUpdateReadyFor(cfg AppConfig, st *store, record stagedUpdateR
 	if err := validateStagedUpdate(cfg, record); err != nil {
 		return err
 	}
+	manifest := record.Manifest
+	if manifest == nil {
+		// Older staged records can recover their authority from the verified
+		// cache. Without that evidence the caller must clear and restage.
+		verified, err := st.readVerified()
+		if err != nil || verified.SchemaVersion != schemaVersion || verified.VerifiedAt.IsZero() || !sourceAndPolicyMatch(cfg, verified.Downloaded.SourceKey, verified.Downloaded.PolicyKey) {
+			return ErrVerificationFailed
+		}
+		manifest = &verified.Downloaded.Manifest
+	}
+	artifact, err := selectArtifactForConfig(cfg, *manifest)
+	if err != nil {
+		return err
+	}
+	if staged.Version != manifest.Version || staged.ArtifactName != artifact.Filename ||
+		!strings.EqualFold(staged.SHA256, artifact.SHA256) || (artifact.Size > 0 && staged.Size != artifact.Size) ||
+		staged.RequiredRestart != manifest.RequiredRestart || staged.ApplyBehavior != manifest.ApplyBehavior {
+		return ErrVerificationFailed
+	}
 	if cfg.Policy.MaximumFutureSkew > 0 && staged.StagedAt.After(now.Add(cfg.Policy.MaximumFutureSkew)) {
 		return ErrManifestFutureDated
 	}
@@ -477,7 +509,7 @@ func validateStagedUpdateReadyFor(cfg AppConfig, st *store, record stagedUpdateR
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return ErrVerificationFailed
 	}
-	if staged.Size > 0 && info.Size() != staged.Size {
+	if info.Size() != staged.Size {
 		return ErrVerificationFailed
 	}
 	got, err := fileSHA256(expectedPath)

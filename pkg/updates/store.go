@@ -43,8 +43,9 @@ type verifiedUpdate struct {
 // the public StagedUpdate contract remains free of storage and policy keys.
 type stagedUpdateRecord struct {
 	StagedUpdate
-	SourceKey string `json:"source_key"`
-	PolicyKey string `json:"policy_key"`
+	Manifest  *Manifest `json:"manifest,omitempty"`
+	SourceKey string    `json:"source_key"`
+	PolicyKey string    `json:"policy_key"`
 }
 
 func newStore(cfg AppConfig) (*store, error) {

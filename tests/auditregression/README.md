@@ -13,6 +13,9 @@ go test -mod=readonly -tags=auditregression -run 'Test.*Audit|TestAudit' -count=
 After W01, IG-01 and IG-02 are ordinary tests under pkg/identitygate and
 internal/identitygate; 20 findings remain in this tagged suite.
 
+After W02, UA-01 and UA-02 are also ordinary tests under pkg/updates;
+18 findings remain in the tagged suite.
+
 The same-package Auth and Updates cases live beside their existing private
 test helpers. Public cases here exercise Identity Gate (IG-01 through IG-05),
 Sync/Device (SD-01 through SD-08), and projections (AR-01 through AR-04).
