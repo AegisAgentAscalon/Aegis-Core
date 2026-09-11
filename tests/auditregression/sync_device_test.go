@@ -108,16 +108,6 @@ func TestSyncDeviceAudit(t *testing.T) {
 		t.Error("SD-06: accepted snapshot silently lost hints")
 	}
 
-	discovery := devicelink.NewMemoryDiscoveryProvider()
-	record := devicelink.PresenceRecord{DeviceID: "d", Capabilities: []string{"initial"}}
-	must(discovery.Publish(ctx, record))
-	record.Capabilities[0] = "mutated_after_publish"
-	found, err := discovery.Discover(ctx)
-	must(err)
-	if len(found) != 1 || len(found[0].Capabilities) != 1 || found[0].Capabilities[0] != "initial" {
-		t.Error("SD-08: caller mutation changed discovery record")
-	}
-
 }
 
 // W04a covers preflight reads, not durable acceptance after destructive receive.

@@ -32,7 +32,7 @@ func (p *MemoryDiscoveryProvider) Publish(ctx context.Context, record PresenceRe
 	if p.err != nil {
 		return ErrDiscoveryUnavailable
 	}
-	p.records[record.DeviceID] = record
+	p.records[record.DeviceID] = clonePresenceRecord(record)
 	return nil
 }
 
@@ -47,7 +47,7 @@ func (p *MemoryDiscoveryProvider) Discover(ctx context.Context) ([]PresenceRecor
 	}
 	out := make([]PresenceRecord, 0, len(p.records))
 	for _, rec := range p.records {
-		out = append(out, rec)
+		out = append(out, clonePresenceRecord(rec))
 	}
 	return out, nil
 }
