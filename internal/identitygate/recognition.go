@@ -31,6 +31,7 @@ func (s *Service) RecognizeProfile(ctx context.Context, signals SessionSignals) 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.refresh()
 	if s.session.AssuranceLevel == AssuranceLocked {
 		return RecognitionResult{}, cloneSession(s.session), ErrLocked
 	}

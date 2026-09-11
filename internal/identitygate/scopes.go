@@ -83,7 +83,10 @@ func (s *Service) DowngradeSession(ctx context.Context, reason string) (Identity
 }
 
 func (s *Service) refresh() {
-	now := s.clock.Now().UTC()
+	s.refreshAt(s.clock.Now().UTC())
+}
+
+func (s *Service) refreshAt(now time.Time) {
 	s.pruneReplayCachesLocked(now)
 	if s.session.AssuranceLevel == AssuranceLocked {
 		return
@@ -225,6 +228,9 @@ func (s *Service) setBaseAssuranceLocked() {
 }
 
 func (s *Service) touchActivityLocked(now time.Time) {
+	// Expire before recording activity, including when a deadline passed after
+	// the caller's earlier refresh. Activity can only extend live assurance.
+	s.refreshAt(now)
 	s.session.LastActiveAt = now
 	if s.policy.IdleTimeout > 0 {
 		s.session.IdleTimeoutAt = now.Add(s.policy.IdleTimeout)

@@ -13,6 +13,9 @@ func (s *Service) ClassifyPromptFragment(ctx context.Context, fragment PromptFra
 		fragment.SourceClass = SourceUnknown
 	}
 	fragment.OperatorVerified = s.session.VerifiedOperatorUserID != "" && s.session.AssuranceLevel != AssuranceLocked
+	fragment.AllowedAsInstruction = false
+	// Classification does not grant scopes; callers must use CheckPromptAuthority.
+	fragment.GrantedScopes = nil
 	fragment.AllowedAsData = fragment.SourceClass != SourceUnknown
 	fragment.SourceTrust = SourceTrustUntrusted
 	switch fragment.SourceClass {
