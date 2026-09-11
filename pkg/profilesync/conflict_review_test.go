@@ -124,33 +124,11 @@ type conflictReviewHarness struct {
 
 func newConflictReviewHarness(t *testing.T, now time.Time) conflictReviewHarness {
 	t.Helper()
-	clock := &syncClock{now: now}
-	provider, err := relay.NewLocalDevProvider(relay.LocalDevProviderConfig{ProviderID: "local-dev-relay", Clock: clock})
-	if err != nil {
-		t.Fatalf("NewLocalDevProvider returned error: %v", err)
-	}
-	mailbox, err := provider.OpenMailbox(context.Background(), relay.MailboxOpenRequest{Namespace: "profile-a", OwnerDeviceID: "device-local", MailboxID: "mailbox-conflict-review", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	if err != nil {
-		t.Fatalf("OpenMailbox returned error: %v", err)
-	}
-	transport, err := NewRelaySyncTransport(RelaySyncTransportConfig{Provider: provider, Namespace: "profile-a", SourceDeviceID: "device-local", TargetDeviceID: "device-remote", Mailbox: mailbox, Clock: clock})
-	if err != nil {
-		t.Fatalf("NewRelaySyncTransport returned error: %v", err)
-	}
+	h := newRelayReceiverTestHarness(t, now, "mailbox-conflict-review")
 	store := NewMemoryMetadataStore()
 	store.SetLocalSnapshot(validSyncSnapshot("snapshot-local", "", now))
-	manager, err := NewSyncManager(
-		SyncConfig{Enabled: true, ProfileNamespace: "profile-a", LocalDeviceID: "device-local"},
-		WithSnapshotStore(store),
-		WithProposalStore(store),
-		WithTransport(transport),
-		WithTrustVerifier(staticTrust{trusted: true}),
-		WithClock(clock),
-	)
-	if err != nil {
-		t.Fatalf("NewSyncManager returned error: %v", err)
-	}
-	return conflictReviewHarness{provider: provider, mailbox: mailbox, store: store, manager: manager}
+	manager := h.newManager(t, store, store, staticTrust{trusted: true})
+	return conflictReviewHarness{provider: h.provider, mailbox: h.mailbox, store: store, manager: manager}
 }
 
 func unsafeProfileConflictSummary() profilemesh.ConflictSummary {

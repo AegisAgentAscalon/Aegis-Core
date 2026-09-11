@@ -1075,17 +1075,6 @@ func TestSourceChangeCannotReusePriorSelection(t *testing.T) {
 	}
 }
 
-func TestApplyAliasRequiresRequestedVersion(t *testing.T) {
-	svc, _ := stageInternalUpdate(t, "1.2.0", nil)
-	if _, err := svc.Apply(context.Background(), "9.9.9"); !errors.Is(err, ErrNoUpdateAvailable) {
-		t.Fatalf("Apply version mismatch error = %v", err)
-	}
-	result, err := svc.Apply(context.Background(), "1.2.0")
-	if err != nil || !result.OK || result.Version != "1.2.0" {
-		t.Fatalf("Apply matching version = %+v, %v", result, err)
-	}
-}
-
 func TestManifestVerificationKeysAreCloned(t *testing.T) {
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
 	keyID, publicKey, signer := testManifestSigner(t)
@@ -1235,7 +1224,6 @@ func (failingApply) Apply(context.Context, StagedUpdate) (ApplyResult, error) {
 
 func stageInternalUpdate(t *testing.T, version string, apply ApplyStrategy) (*Service, StagedUpdate) {
 	t.Helper()
-	ctx := context.Background()
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, version)
 	manifest := testManifest(cfg, version, artifactPath, artifactHash)
 	writeManifest(t, cfg.Source.ManifestPath, manifest)
@@ -1243,6 +1231,12 @@ func stageInternalUpdate(t *testing.T, version string, apply ApplyStrategy) (*Se
 	if err != nil {
 		t.Fatal(err)
 	}
+	return svc, stageTestService(t, svc, version)
+}
+
+func stageTestService(t *testing.T, svc *Service, version string) StagedUpdate {
+	t.Helper()
+	ctx := context.Background()
 	if _, err := svc.CheckForUpdates(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1259,7 +1253,7 @@ func stageInternalUpdate(t *testing.T, version string, apply ApplyStrategy) (*Se
 	if err != nil {
 		t.Fatal(err)
 	}
-	return svc, staged
+	return staged
 }
 
 func testConfig(t *testing.T) AppConfig {

@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/AegisAgentAscalon/aegis-core/pkg/relay"
 )
 
 func TestLocalMetadataStorePersistsMetadataAcrossInstances(t *testing.T) {
@@ -221,19 +219,8 @@ func TestLocalMetadataStoreCorruptFilesAndTempFilesAreSafe(t *testing.T) {
 func TestSyncManagerWithLocalMetadataStorePersistsPulledMetadata(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
-	clock := &syncClock{now: now}
-	provider, err := relay.NewLocalDevProvider(relay.LocalDevProviderConfig{ProviderID: "local-dev-relay", Clock: clock})
-	if err != nil {
-		t.Fatalf("NewLocalDevProvider returned error: %v", err)
-	}
-	mailbox, err := provider.OpenMailbox(ctx, relay.MailboxOpenRequest{Namespace: "profile-a", OwnerDeviceID: "device-local", MailboxID: "mailbox-local", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	if err != nil {
-		t.Fatalf("OpenMailbox returned error: %v", err)
-	}
-	transport, err := NewRelaySyncTransport(RelaySyncTransportConfig{Provider: provider, Namespace: "profile-a", SourceDeviceID: "device-local", TargetDeviceID: "device-remote", Mailbox: mailbox, Clock: clock})
-	if err != nil {
-		t.Fatalf("NewRelaySyncTransport returned error: %v", err)
-	}
+	h := newRelayReceiverTestHarness(t, now, "mailbox-local")
+	provider, mailbox, clock := h.provider, h.mailbox, h.clock
 	root := t.TempDir()
 	store, err := NewLocalMetadataStore(LocalMetadataStoreConfig{RootDir: root, ProfileNamespace: "profile-a", Clock: clock})
 	if err != nil {
@@ -243,17 +230,7 @@ func TestSyncManagerWithLocalMetadataStorePersistsPulledMetadata(t *testing.T) {
 	if err := store.SaveLocalSnapshot(ctx, localSnapshot); err != nil {
 		t.Fatalf("SaveLocalSnapshot returned error: %v", err)
 	}
-	manager, err := NewSyncManager(
-		SyncConfig{Enabled: true, ProfileNamespace: "profile-a", LocalDeviceID: "device-local"},
-		WithSnapshotStore(store),
-		WithProposalStore(store),
-		WithTransport(transport),
-		WithTrustVerifier(staticTrust{trusted: true}),
-		WithClock(clock),
-	)
-	if err != nil {
-		t.Fatalf("NewSyncManager returned error: %v", err)
-	}
+	manager := h.newManager(t, store, store, staticTrust{trusted: true})
 	remote := validSyncSnapshot("snapshot-persisted", localSnapshot.Metadata.SnapshotID, now)
 	sendSyncEnvelope(t, provider, mailbox.MailboxID, snapshotEnvelope("profile-a", "device-remote", remote, now), now, "msg-persisted")
 	pull, err := manager.PullRemote(ctx)
@@ -291,17 +268,7 @@ func TestSyncManagerWithLocalMetadataStorePersistsPulledMetadata(t *testing.T) {
 	if err := os.WriteFile(remoteDir, []byte("not a directory"), 0o600); err != nil {
 		t.Fatalf("write blocking file: %v", err)
 	}
-	blockedManager, err := NewSyncManager(
-		SyncConfig{Enabled: true, ProfileNamespace: "profile-a", LocalDeviceID: "device-local"},
-		WithSnapshotStore(blockedStore),
-		WithProposalStore(blockedStore),
-		WithTransport(transport),
-		WithTrustVerifier(staticTrust{trusted: true}),
-		WithClock(clock),
-	)
-	if err != nil {
-		t.Fatalf("blocked NewSyncManager returned error: %v", err)
-	}
+	blockedManager := h.newManager(t, blockedStore, blockedStore, staticTrust{trusted: true})
 	sendSyncEnvelope(t, provider, mailbox.MailboxID, snapshotEnvelope("profile-a", "device-remote", validSyncSnapshot("snapshot-write-failure", localSnapshot.Metadata.SnapshotID, now), now), now, "msg-write-failure")
 	pull, err = blockedManager.PullRemote(ctx)
 	if !errors.Is(err, ErrStoreUnavailable) || len(pull.Issues) == 0 {

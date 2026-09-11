@@ -356,30 +356,13 @@ func (a *countingLifecycleApply) Apply(context.Context, StagedUpdate) (ApplyResu
 
 func stageInternalRecordOnlyUpdate(t *testing.T, version string) (*Service, StagedUpdate) {
 	t.Helper()
-	ctx := context.Background()
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, version)
 	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, version, artifactPath, artifactHash))
 	svc, err := NewRecordOnlyService(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.CheckForUpdates(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.DownloadUpdate(ctx, version); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.VerifyUpdate(ctx, version); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.StageUpdate(ctx, version); err != nil {
-		t.Fatal(err)
-	}
-	staged, err := svc.store.readStaged()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return svc, staged
+	return svc, stageTestService(t, svc, version)
 }
 
 func assertFalseExecutionCapabilities(t *testing.T, capabilities ExecutionCapabilities) {

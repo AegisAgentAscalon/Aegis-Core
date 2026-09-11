@@ -119,31 +119,11 @@ func TestPushAndPullSnapshotThroughRelayTransport(t *testing.T) {
 func TestPullRemoteSnapshotFailureModes(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
-	clock := &syncClock{now: now}
-	provider, err := relay.NewLocalDevProvider(relay.LocalDevProviderConfig{ProviderID: "local-dev-relay", Clock: clock})
-	if err != nil {
-		t.Fatalf("NewLocalDevProvider returned error: %v", err)
-	}
-	mailbox, err := provider.OpenMailbox(ctx, relay.MailboxOpenRequest{Namespace: "profile-a", OwnerDeviceID: "device-local", MailboxID: "mailbox-local", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	if err != nil {
-		t.Fatalf("OpenMailbox returned error: %v", err)
-	}
-	transport, err := NewRelaySyncTransport(RelaySyncTransportConfig{Provider: provider, Namespace: "profile-a", SourceDeviceID: "device-local", TargetDeviceID: "device-remote", Mailbox: mailbox, Clock: clock})
-	if err != nil {
-		t.Fatalf("NewRelaySyncTransport returned error: %v", err)
-	}
+	h := newRelayReceiverTestHarness(t, now, "mailbox-local")
+	provider, mailbox := h.provider, h.mailbox
 	store := NewMemoryMetadataStore()
 	store.SetLocalSnapshot(validSyncSnapshot("snapshot-local", "", now))
-	manager, err := NewSyncManager(
-		SyncConfig{Enabled: true, ProfileNamespace: "profile-a", LocalDeviceID: "device-local"},
-		WithSnapshotStore(store),
-		WithProposalStore(store),
-		WithTransport(transport),
-		WithClock(clock),
-	)
-	if err != nil {
-		t.Fatalf("NewSyncManager returned error: %v", err)
-	}
+	manager := h.newManager(t, store, store, nil)
 
 	stale := validSyncSnapshot("snapshot-stale", "snapshot-local", now)
 	stale.Metadata.UpdatedAt = now.Add(-profilemesh.DefaultSnapshotFreshnessWindow - time.Minute)
@@ -173,32 +153,11 @@ func TestPullRemoteSnapshotFailureModes(t *testing.T) {
 func TestPullRemoteProposalConflictAndUntrustedSigner(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
-	clock := &syncClock{now: now}
-	provider, err := relay.NewLocalDevProvider(relay.LocalDevProviderConfig{ProviderID: "local-dev-relay", Clock: clock})
-	if err != nil {
-		t.Fatalf("NewLocalDevProvider returned error: %v", err)
-	}
-	mailbox, err := provider.OpenMailbox(ctx, relay.MailboxOpenRequest{Namespace: "profile-a", OwnerDeviceID: "device-local", MailboxID: "mailbox-local", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	if err != nil {
-		t.Fatalf("OpenMailbox returned error: %v", err)
-	}
-	transport, err := NewRelaySyncTransport(RelaySyncTransportConfig{Provider: provider, Namespace: "profile-a", SourceDeviceID: "device-local", TargetDeviceID: "device-remote", Mailbox: mailbox, Clock: clock})
-	if err != nil {
-		t.Fatalf("NewRelaySyncTransport returned error: %v", err)
-	}
+	h := newRelayReceiverTestHarness(t, now, "mailbox-local")
+	provider, mailbox := h.provider, h.mailbox
 	store := NewMemoryMetadataStore()
 	store.SetLocalSnapshot(validSyncSnapshot("snapshot-local", "", now))
-	manager, err := NewSyncManager(
-		SyncConfig{Enabled: true, ProfileNamespace: "profile-a", LocalDeviceID: "device-local"},
-		WithSnapshotStore(store),
-		WithProposalStore(store),
-		WithTransport(transport),
-		WithTrustVerifier(staticTrust{trusted: false}),
-		WithClock(clock),
-	)
-	if err != nil {
-		t.Fatalf("NewSyncManager returned error: %v", err)
-	}
+	manager := h.newManager(t, store, store, staticTrust{trusted: false})
 	proposal := validSyncProposal("proposal-1", "snapshot-other", now)
 	proposal.RequiresUserReview = true
 	proposal.Conflicts = []profilemesh.ConflictSummary{{ConflictID: "conflict-1", ResourceID: "profile-kb", ResourceType: "profile_data", Summary: "metadata branch conflict", RequiresUserReview: true}}
@@ -291,32 +250,11 @@ func TestRelaySyncTransportRejectsTamperedCarrierEnvelope(t *testing.T) {
 func TestRelaySyncTransportRejectsFutureSyncEnvelope(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
-	clock := &syncClock{now: now}
-	provider, err := relay.NewLocalDevProvider(relay.LocalDevProviderConfig{ProviderID: "local-dev-relay", Clock: clock})
-	if err != nil {
-		t.Fatalf("NewLocalDevProvider returned error: %v", err)
-	}
-	mailbox, err := provider.OpenMailbox(ctx, relay.MailboxOpenRequest{Namespace: "profile-a", OwnerDeviceID: "device-local", MailboxID: "mailbox-local", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	if err != nil {
-		t.Fatalf("OpenMailbox returned error: %v", err)
-	}
-	transport, err := NewRelaySyncTransport(RelaySyncTransportConfig{Provider: provider, Namespace: "profile-a", SourceDeviceID: "device-local", TargetDeviceID: "device-remote", Mailbox: mailbox, Clock: clock})
-	if err != nil {
-		t.Fatalf("NewRelaySyncTransport returned error: %v", err)
-	}
+	h := newRelayReceiverTestHarness(t, now, "mailbox-local")
+	provider, mailbox := h.provider, h.mailbox
 	store := NewMemoryMetadataStore()
 	store.SetLocalSnapshot(validSyncSnapshot("snapshot-local", "", now))
-	manager, err := NewSyncManager(
-		SyncConfig{Enabled: true, ProfileNamespace: "profile-a", LocalDeviceID: "device-local"},
-		WithSnapshotStore(store),
-		WithProposalStore(store),
-		WithTransport(transport),
-		WithTrustVerifier(staticTrust{trusted: true}),
-		WithClock(clock),
-	)
-	if err != nil {
-		t.Fatalf("NewSyncManager returned error: %v", err)
-	}
+	manager := h.newManager(t, store, store, staticTrust{trusted: true})
 	futureEnvelope := snapshotEnvelope("profile-a", "device-remote", validSyncSnapshot("snapshot-future-envelope", "", now), now.Add(10*time.Minute))
 	sendSyncEnvelope(t, provider, mailbox.MailboxID, futureEnvelope, now, "msg-future-envelope")
 	pull, err := manager.PullRemote(ctx)
@@ -329,33 +267,12 @@ func TestRelaySyncTransportRejectsFutureSyncEnvelope(t *testing.T) {
 func TestPullRemoteStoreFailuresAndUnsafeTrustMessagesAreSanitized(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
-	clock := &syncClock{now: now}
-	provider, err := relay.NewLocalDevProvider(relay.LocalDevProviderConfig{ProviderID: "local-dev-relay", Clock: clock})
-	if err != nil {
-		t.Fatalf("NewLocalDevProvider returned error: %v", err)
-	}
-	mailbox, err := provider.OpenMailbox(ctx, relay.MailboxOpenRequest{Namespace: "profile-a", OwnerDeviceID: "device-local", MailboxID: "mailbox-local", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	if err != nil {
-		t.Fatalf("OpenMailbox returned error: %v", err)
-	}
-	transport, err := NewRelaySyncTransport(RelaySyncTransportConfig{Provider: provider, Namespace: "profile-a", SourceDeviceID: "device-local", TargetDeviceID: "device-remote", Mailbox: mailbox, Clock: clock})
-	if err != nil {
-		t.Fatalf("NewRelaySyncTransport returned error: %v", err)
-	}
+	h := newRelayReceiverTestHarness(t, now, "mailbox-local")
+	provider, mailbox := h.provider, h.mailbox
 	baseStore := NewMemoryMetadataStore()
 	baseStore.SetLocalSnapshot(validSyncSnapshot("snapshot-local", "", now))
 	listFailingStore := &snapshotStoreHarness{MemoryMetadataStore: baseStore, listErr: errors.New(`C:\Users\person\AppData\client_secret=raw`)}
-	manager, err := NewSyncManager(
-		SyncConfig{Enabled: true, ProfileNamespace: "profile-a", LocalDeviceID: "device-local"},
-		WithSnapshotStore(listFailingStore),
-		WithProposalStore(baseStore),
-		WithTransport(transport),
-		WithTrustVerifier(staticTrust{trusted: true}),
-		WithClock(clock),
-	)
-	if err != nil {
-		t.Fatalf("NewSyncManager returned error: %v", err)
-	}
+	manager := h.newManager(t, listFailingStore, baseStore, staticTrust{trusted: true})
 	sendSyncEnvelope(t, provider, mailbox.MailboxID, snapshotEnvelope("profile-a", "device-remote", validSyncSnapshot("snapshot-list-fail", "", now), now), now, "msg-list-fail")
 	pull, err := manager.PullRemote(ctx)
 	if !errors.Is(err, ErrStoreUnavailable) || pull.Rejected != 1 || len(pull.Issues) == 0 {
@@ -365,17 +282,7 @@ func TestPullRemoteStoreFailuresAndUnsafeTrustMessagesAreSanitized(t *testing.T)
 
 	storeWithUnsafeTrust := NewMemoryMetadataStore()
 	storeWithUnsafeTrust.SetLocalSnapshot(validSyncSnapshot("snapshot-local", "", now))
-	manager, err = NewSyncManager(
-		SyncConfig{Enabled: true, ProfileNamespace: "profile-a", LocalDeviceID: "device-local"},
-		WithSnapshotStore(storeWithUnsafeTrust),
-		WithProposalStore(storeWithUnsafeTrust),
-		WithTransport(transport),
-		WithTrustVerifier(unsafeTrust{}),
-		WithClock(clock),
-	)
-	if err != nil {
-		t.Fatalf("NewSyncManager with unsafe trust returned error: %v", err)
-	}
+	manager = h.newManager(t, storeWithUnsafeTrust, storeWithUnsafeTrust, unsafeTrust{})
 	sendSyncEnvelope(t, provider, mailbox.MailboxID, snapshotEnvelope("profile-a", "device-remote", validSyncSnapshot("snapshot-unsafe-trust", "", now), now), now, "msg-unsafe-trust")
 	pull, err = manager.PullRemote(ctx)
 	if err != nil || pull.ReceivedSnapshots != 1 || !pull.ReviewRequired {
@@ -385,17 +292,7 @@ func TestPullRemoteStoreFailuresAndUnsafeTrustMessagesAreSanitized(t *testing.T)
 
 	writeFailingStore := &snapshotStoreHarness{MemoryMetadataStore: NewMemoryMetadataStore(), saveErr: errors.New(`C:\Users\person\Downloads\raw-payload.json`)}
 	writeFailingStore.SetLocalSnapshot(validSyncSnapshot("snapshot-local", "", now))
-	manager, err = NewSyncManager(
-		SyncConfig{Enabled: true, ProfileNamespace: "profile-a", LocalDeviceID: "device-local"},
-		WithSnapshotStore(writeFailingStore),
-		WithProposalStore(writeFailingStore),
-		WithTransport(transport),
-		WithTrustVerifier(staticTrust{trusted: true}),
-		WithClock(clock),
-	)
-	if err != nil {
-		t.Fatalf("NewSyncManager with write failure returned error: %v", err)
-	}
+	manager = h.newManager(t, writeFailingStore, writeFailingStore, staticTrust{trusted: true})
 	sendSyncEnvelope(t, provider, mailbox.MailboxID, snapshotEnvelope("profile-a", "device-remote", validSyncSnapshot("snapshot-write-fail", "", now), now), now, "msg-write-fail")
 	pull, err = manager.PullRemote(ctx)
 	if !errors.Is(err, ErrStoreUnavailable) || pull.Rejected != 1 || len(pull.Issues) == 0 {
@@ -497,6 +394,47 @@ func validSyncProposal(proposalID, baseSnapshotID string, now time.Time) profile
 		UpdatedAt:            now,
 		MergePlan:            profilemesh.MergePlan{FutureOnly: true, Summary: "metadata review placeholder"},
 	}
+}
+
+type relayReceiverTestHarness struct {
+	provider  relay.RelayProvider
+	mailbox   relay.MailboxRef
+	clock     *syncClock
+	transport *RelaySyncTransport
+}
+
+func newRelayReceiverTestHarness(t *testing.T, now time.Time, mailboxID string) relayReceiverTestHarness {
+	t.Helper()
+	clock := &syncClock{now: now}
+	provider, err := relay.NewLocalDevProvider(relay.LocalDevProviderConfig{ProviderID: "local-dev-relay", Clock: clock})
+	if err != nil {
+		t.Fatalf("NewLocalDevProvider returned error: %v", err)
+	}
+	mailbox, err := provider.OpenMailbox(context.Background(), relay.MailboxOpenRequest{Namespace: "profile-a", OwnerDeviceID: "device-local", MailboxID: mailboxID, CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("OpenMailbox returned error: %v", err)
+	}
+	transport, err := NewRelaySyncTransport(RelaySyncTransportConfig{Provider: provider, Namespace: "profile-a", SourceDeviceID: "device-local", TargetDeviceID: "device-remote", Mailbox: mailbox, Clock: clock})
+	if err != nil {
+		t.Fatalf("NewRelaySyncTransport returned error: %v", err)
+	}
+	return relayReceiverTestHarness{provider: provider, mailbox: mailbox, clock: clock, transport: transport}
+}
+
+func (h relayReceiverTestHarness) newManager(t *testing.T, snapshots SnapshotStore, proposals ProposalStore, trust TrustVerifier) *SyncManager {
+	t.Helper()
+	manager, err := NewSyncManager(
+		SyncConfig{Enabled: true, ProfileNamespace: "profile-a", LocalDeviceID: "device-local"},
+		WithSnapshotStore(snapshots),
+		WithProposalStore(proposals),
+		WithTransport(h.transport),
+		WithTrustVerifier(trust),
+		WithClock(h.clock),
+	)
+	if err != nil {
+		t.Fatalf("NewSyncManager returned error: %v", err)
+	}
+	return manager
 }
 
 func sendSyncEnvelope(t *testing.T, provider relay.RelayProvider, mailboxID string, envelope SyncEnvelope, now time.Time, relayMessageID string) {
