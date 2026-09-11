@@ -59,14 +59,8 @@ func (s *Service) requireActiveDeviceLocked(deviceID string) (ProfileDeviceRecor
 	if err != nil {
 		return ProfileDeviceRecord{}, err
 	}
-	if device.Status == DeviceStatusRemoved || device.Status == DeviceStatusRevoked || device.TrustStatus == DeviceTrustRevoked {
-		return ProfileDeviceRecord{}, ErrDeviceRevoked
-	}
-	if device.Status == DeviceStatusStale || device.TrustStatus == DeviceTrustStale || isStale(s.clock.Now().UTC(), device.LastSeen) {
-		return ProfileDeviceRecord{}, ErrDeviceStale
-	}
-	if device.TrustStatus != DeviceTrustTrusted || device.Status != DeviceStatusActive {
-		return ProfileDeviceRecord{}, ErrDeviceNotAllowed
+	if err := validateActiveDevice(device, s.clock.Now().UTC()); err != nil {
+		return ProfileDeviceRecord{}, err
 	}
 	return device, nil
 }

@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-func validateSnapshot(snapshot ProfileMeshSnapshot) error {
-	devices := map[string]string{}
+func validateSnapshot(snapshot ProfileMeshSnapshot, now time.Time) error {
+	devices := map[string]ProfileDeviceRecord{}
 	for _, device := range snapshot.Devices {
 		if device.DeviceID == "" || !validID(device.DeviceID) || !validFingerprint(device.PublicKeyFingerprint) {
 			return ErrInvalidProfileSnapshot
@@ -24,28 +24,23 @@ func validateSnapshot(snapshot ProfileMeshSnapshot) error {
 		} else if device.RemovedAt != nil {
 			return ErrInvalidProfileSnapshot
 		}
-		if old, ok := devices[device.DeviceID]; ok {
-			if old != device.PublicKeyFingerprint {
-				return ErrInvalidProfileSnapshot
-			}
+		if _, ok := devices[device.DeviceID]; ok {
 			return ErrInvalidProfileSnapshot
 		}
-		devices[device.DeviceID] = device.PublicKeyFingerprint
+		devices[device.DeviceID] = device
 	}
 	resources := map[string]bool{}
 	for _, resource := range snapshot.Resources {
-		if resource.ResourceID == "" || !validID(resource.ResourceID) || !validResourceType(resource.ResourceType) || resource.ProfileOwnerID != snapshot.Profile.ProfileID {
-			return ErrInvalidProfileSnapshot
+		if err := validateResource(resource, snapshot.Profile.ProfileID, devices, now); err != nil {
+			if err == ErrInvalidResource {
+				return ErrInvalidProfileSnapshot
+			}
+			return err
 		}
 		if resources[resource.ResourceID] {
 			return ErrInvalidProfileSnapshot
 		}
 		resources[resource.ResourceID] = true
-		if resource.CurrentHostDeviceID != "" {
-			if _, ok := devices[resource.CurrentHostDeviceID]; !ok {
-				return ErrDeviceNotAllowed
-			}
-		}
 	}
 	if snapshot.HostingConfig.HostingMode == HostingMultiProfileDevices {
 		return ErrUnsupportedHostingMode
@@ -53,15 +48,56 @@ func validateSnapshot(snapshot ProfileMeshSnapshot) error {
 	if snapshot.HostingConfig.HostingMode != HostingSingleProfileDevice {
 		return ErrInvalidProfileSnapshot
 	}
-	if snapshot.HostingConfig.PrimaryProfileDeviceID != "" {
-		if _, ok := devices[snapshot.HostingConfig.PrimaryProfileDeviceID]; !ok {
+	for _, id := range []string{snapshot.HostingConfig.PrimaryProfileDeviceID, snapshot.HostingConfig.ProfileDataHostDeviceID} {
+		if id != "" {
+			if err := validateHost(id, devices, now); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateResource(resource ProfileResourceRecord, profileID string, devices map[string]ProfileDeviceRecord, now time.Time) error {
+	if !validID(resource.ResourceID) || !validResourceType(resource.ResourceType) || resource.ProfileOwnerID != profileID || !validAvailability(resource.Availability) {
+		return ErrInvalidResource
+	}
+	if resource.HostingMode != ResourceHostingSingleHost {
+		return ErrUnsupportedHostingMode
+	}
+	for _, id := range resource.AllowedHostDeviceIDs {
+		if err := validateHost(id, devices, now); err != nil {
+			return err
+		}
+	}
+	if host := resource.CurrentHostDeviceID; host != "" {
+		if err := validateHost(host, devices, now); err != nil {
+			return err
+		}
+		if len(resource.AllowedHostDeviceIDs) > 0 && !contains(resource.AllowedHostDeviceIDs, host) {
 			return ErrDeviceNotAllowed
 		}
 	}
-	if snapshot.HostingConfig.ProfileDataHostDeviceID != "" {
-		if _, ok := devices[snapshot.HostingConfig.ProfileDataHostDeviceID]; !ok {
-			return ErrDeviceNotAllowed
-		}
+	return nil
+}
+
+func validateHost(id string, devices map[string]ProfileDeviceRecord, now time.Time) error {
+	device, ok := devices[id]
+	if !ok {
+		return ErrDeviceNotAllowed
+	}
+	return validateActiveDevice(device, now)
+}
+
+func validateActiveDevice(device ProfileDeviceRecord, now time.Time) error {
+	if device.Status == DeviceStatusRemoved || device.Status == DeviceStatusRevoked || device.TrustStatus == DeviceTrustRevoked {
+		return ErrDeviceRevoked
+	}
+	if device.Status == DeviceStatusStale || device.TrustStatus == DeviceTrustStale || isStale(now, device.LastSeen) {
+		return ErrDeviceStale
+	}
+	if !isDeviceUsable(device) {
+		return ErrDeviceNotAllowed
 	}
 	return nil
 }

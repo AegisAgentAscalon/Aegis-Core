@@ -55,6 +55,11 @@ func (s *Service) ImportProfileMeshSnapshot(ctx context.Context, snapshot Profil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The legacy multi-file store has no durable home for these fields yet.
+	// Reject before writing anything rather than accepting and discarding them.
+	if len(snapshot.RelayHints) > 0 || len(snapshot.EndpointHints) > 0 {
+		return ErrInvalidProfileSnapshot
+	}
 	if snapshot.AppID != s.cfg.AppID || snapshot.Namespace != s.cfg.Namespace || snapshot.Profile.ProfileID == "" || snapshot.Profile.AppID != s.cfg.AppID || snapshot.Profile.Namespace != s.cfg.Namespace {
 		return ErrInvalidProfileSnapshot
 	}
@@ -76,7 +81,16 @@ func (s *Service) ImportProfileMeshSnapshot(ctx context.Context, snapshot Profil
 	}
 	normalized.SchemaVersion = ProfileMeshSnapshotSchemaVersion
 	normalized.SnapshotFingerprint = snapshotFingerprint(normalized)
-	if err := validateSnapshot(normalized); err != nil {
+	validationTime := s.clock.Now().UTC()
+	// Schema 1 is a historical-state import, not a fresh presence assertion.
+	// Keep its recorded time; live host queries still use the service clock.
+	if snapshot.SchemaVersion == legacyProfileMeshSnapshotSchemaVersion && !normalized.UpdatedAt.IsZero() {
+		validationTime = normalized.UpdatedAt
+	}
+	// Validate raw references before normalization can drop blank allowlist IDs.
+	validationSnapshot := normalized
+	validationSnapshot.Resources = snapshot.Resources
+	if err := validateSnapshot(validationSnapshot, validationTime); err != nil {
 		return err
 	}
 	if err := s.store.writeProfile(normalized.Profile); err != nil {

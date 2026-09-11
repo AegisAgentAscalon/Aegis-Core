@@ -2,6 +2,8 @@ package profilemesh
 
 import (
 	"context"
+	"errors"
+	"os"
 	"sort"
 )
 
@@ -16,23 +18,11 @@ func (s *Service) RegisterProfileResource(ctx context.Context, req RegisterProfi
 		return ProfileResourceRecord{}, err
 	}
 	req.ResourceID = stringsTrim(req.ResourceID)
-	if req.ResourceID == "" || !validID(req.ResourceID) || !validResourceType(req.ResourceType) {
-		return ProfileResourceRecord{}, ErrInvalidResource
-	}
 	if req.HostingMode == "" {
 		req.HostingMode = ResourceHostingSingleHost
 	}
-	if req.HostingMode == ResourceHostingMultiHostPlanned {
-		return ProfileResourceRecord{}, ErrUnsupportedHostingMode
-	}
-	if req.HostingMode != ResourceHostingSingleHost {
-		return ProfileResourceRecord{}, ErrUnsupportedHostingMode
-	}
 	if req.Availability == "" {
 		req.Availability = ResourceUnknown
-	}
-	if !validAvailability(req.Availability) {
-		return ProfileResourceRecord{}, ErrInvalidResource
 	}
 	host := req.CurrentHostDeviceID
 	if host == "" && req.ResourceType == ResourceProfileData {
@@ -42,15 +32,7 @@ func (s *Service) RegisterProfileResource(ctx context.Context, req RegisterProfi
 			} else {
 				host = config.PrimaryProfileDeviceID
 			}
-		}
-	}
-	if host != "" {
-		if _, err := s.requireActiveDeviceLocked(host); err != nil {
-			return ProfileResourceRecord{}, err
-		}
-	}
-	for _, allowed := range req.AllowedHostDeviceIDs {
-		if _, err := s.requireActiveDeviceLocked(allowed); err != nil {
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return ProfileResourceRecord{}, err
 		}
 	}
@@ -70,7 +52,7 @@ func (s *Service) RegisterProfileResource(ctx context.Context, req RegisterProfi
 		DisplayName:          displayOrID(req.DisplayName, req.ResourceID),
 		ProfileOwnerID:       profile.ProfileID,
 		CurrentHostDeviceID:  host,
-		AllowedHostDeviceIDs: compactStrings(req.AllowedHostDeviceIDs),
+		AllowedHostDeviceIDs: req.AllowedHostDeviceIDs,
 		Availability:         req.Availability,
 		HostingMode:          req.HostingMode,
 		Tags:                 compactStrings(req.Tags),
@@ -81,6 +63,10 @@ func (s *Service) RegisterProfileResource(ctx context.Context, req RegisterProfi
 	if resource.CurrentHostDeviceID != "" && resource.Availability == ResourceUnknown {
 		resource.Availability = ResourceAvailable
 	}
+	if err := s.validateResourceLocked(resource, profile.ProfileID); err != nil {
+		return ProfileResourceRecord{}, err
+	}
+	resource.AllowedHostDeviceIDs = compactStrings(resource.AllowedHostDeviceIDs)
 	reg.Resources = append(reg.Resources, resource)
 	reg.UpdatedAt = now
 	if err := s.store.writeResources(reg); err != nil {
@@ -122,12 +108,16 @@ func (s *Service) SetResourceHost(ctx context.Context, req SetResourceHostReques
 		if resource.ResourceID != req.ResourceID {
 			continue
 		}
-		if len(resource.AllowedHostDeviceIDs) > 0 && !contains(resource.AllowedHostDeviceIDs, req.DeviceID) {
-			return ProfileResourceRecord{}, ErrDeviceNotAllowed
-		}
 		resource.CurrentHostDeviceID = req.DeviceID
 		resource.Availability = ResourceAvailable
 		resource.UpdatedAt = now
+		profile, err := s.store.readProfile()
+		if err != nil {
+			return ProfileResourceRecord{}, err
+		}
+		if err := s.validateResourceLocked(resource, profile.ProfileID); err != nil {
+			return ProfileResourceRecord{}, err
+		}
 		reg.Resources[i] = resource
 		reg.UpdatedAt = now
 		if err := s.store.writeResources(reg); err != nil {
@@ -165,4 +155,25 @@ func (s *Service) GetResourceHost(ctx context.Context, resourceID string) (Profi
 	status.Availability = ResourceUnavailable
 	status.Message = "profile-owned resource host is not currently available"
 	return status, nil
+}
+
+// Read the device registry once for all references in a proposed resource.
+func (s *Service) validateResourceLocked(resource ProfileResourceRecord, profileID string) error {
+	reg, err := s.store.readDevices()
+	if err != nil {
+		return err
+	}
+	devices := make(map[string]ProfileDeviceRecord, len(reg.Devices))
+	for _, device := range reg.Devices {
+		devices[device.DeviceID] = device
+	}
+	// Preserve the live API's missing-device sentinel.
+	for _, id := range append([]string{resource.CurrentHostDeviceID}, resource.AllowedHostDeviceIDs...) {
+		if id != "" {
+			if _, ok := devices[id]; !ok {
+				return ErrDeviceNotRegistered
+			}
+		}
+	}
+	return validateResource(resource, profileID, devices, s.clock.Now().UTC())
 }
