@@ -26,24 +26,20 @@ func absolute(path string) (string, error) {
 			return "", ErrUnsafePath
 		}
 	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
 	if runtime.GOOS == "windows" {
-		volume := filepath.VolumeName(abs)
+		volume := filepath.VolumeName(path)
 		if strings.HasPrefix(volume, `\\`) {
 			return "", ErrUnsafePath
 		}
-		for _, part := range strings.FieldsFunc(strings.TrimPrefix(abs, volume), func(r rune) bool { return r == '/' || r == '\\' }) {
+		for _, part := range strings.FieldsFunc(strings.TrimPrefix(path, volume), func(r rune) bool { return r == '/' || r == '\\' }) {
 			stem, _, _ := strings.Cut(strings.ToUpper(part), ".")
 			reserved := stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" || stem == "CONIN$" || stem == "CONOUT$" || len(stem) == 4 && (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) && stem[3] >= '1' && stem[3] <= '9'
-			if reserved || !filepath.IsLocal(part) || strings.Contains(part, ":") || strings.TrimRight(part, ". ") != part {
+			if reserved || !filepath.IsLocal(part) || strings.Contains(part, ":") || part != "." && strings.TrimRight(part, ". ") != part {
 				return "", ErrUnsafePath
 			}
 		}
 	}
-	return abs, nil
+	return filepath.Abs(path)
 }
 
 // EnsureDir creates private directories without chmodding caller-owned ancestors.
