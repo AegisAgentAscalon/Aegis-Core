@@ -6,6 +6,7 @@ package auditregression
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/AegisAgentAscalon/aegis-core/pkg/appbridge"
@@ -94,7 +95,7 @@ func TestArchitectureAudit(t *testing.T) {
 	if ap.calls != 1 || authErr != nil || !authResult.Status.Configured {
 		t.Errorf("AR-03: incoherent auth snapshot: calls=%d err=%v", ap.calls, authErr)
 	}
-	if setup.Capabilities[0].Summary == sentinel {
+	if strings.Contains(setup.Capabilities[0].Summary, "audit-sentinel") || strings.Contains(setup.Capabilities[0].Summary, `C:\Users\audit\token.json`) {
 		t.Error("AR-04: unsafe setup summary preserved")
 	}
 }
