@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/AegisAgentAscalon/aegis-core/internal/filepersist"
 )
 
 func (p *FileObjectProvider) ensure(ctx context.Context) error {
@@ -21,7 +23,7 @@ func (p *FileObjectProvider) ensureLocked(ctx context.Context) error {
 		}
 	}
 	for _, dir := range []string{p.namespaceRoot(), p.objectsDir()} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := filepersist.EnsureDir(ctx, dir); err != nil {
 			return ErrCloudProviderUnavailable
 		}
 	}
@@ -60,8 +62,8 @@ func (p *FileObjectProvider) legacyObjectPath(ref CloudObjectRef) string {
 	return filepath.Join(p.legacyRoot(), "objects", name)
 }
 
-func (p *FileObjectProvider) findObjectByIdentityLocked(profileNamespace string, kind CloudObjectKind, objectID string) (CloudObjectRef, bool, error) {
-	refs, err := p.objectRefsLocked()
+func (p *FileObjectProvider) findObjectByIdentityLocked(ctx context.Context, profileNamespace string, kind CloudObjectKind, objectID string) (CloudObjectRef, bool, error) {
+	refs, err := p.objectRefsLocked(ctx)
 	if err != nil {
 		return CloudObjectRef{}, false, err
 	}
@@ -75,7 +77,7 @@ func (p *FileObjectProvider) findObjectByIdentityLocked(profileNamespace string,
 
 // Legacy files are read-only. Exact embedded identities, never their lossy old
 // filenames, determine ownership. Conflicting surviving records fail closed.
-func (p *FileObjectProvider) objectRefsLocked() ([]CloudObjectRef, error) {
+func (p *FileObjectProvider) objectRefsLocked(ctx context.Context) ([]CloudObjectRef, error) {
 	var refs []CloudObjectRef
 	seen := make(map[string]CloudObjectRef)
 	for _, dir := range []string{p.objectsDir(), filepath.Join(p.legacyRoot(), "objects")} {
@@ -91,7 +93,7 @@ func (p *FileObjectProvider) objectRefsLocked() ([]CloudObjectRef, error) {
 				continue
 			}
 			var file objectFile
-			if err := readJSONFile(filepath.Join(dir, entry.Name()), &file); err != nil {
+			if err := readJSONFile(ctx, filepath.Join(dir, entry.Name()), &file); err != nil {
 				return nil, ErrCloudStoreCorrupt
 			}
 			if err := ValidateCloudObjectRef(file.Ref); err != nil || cloudObjectHash(file.Body) != file.Ref.Hash || len(file.Body) != file.Ref.SizeBytes {

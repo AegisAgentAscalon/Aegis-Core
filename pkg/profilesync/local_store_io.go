@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/AegisAgentAscalon/aegis-core/internal/filepersist"
 )
 
 func (s *LocalMetadataStore) ensureInitialized(ctx context.Context) error {
@@ -28,17 +30,17 @@ func (s *LocalMetadataStore) ensureInitializedLocked(ctx context.Context) error 
 		return ErrInvalidConfig
 	}
 	for _, dir := range []string{s.namespaceRoot(), s.remoteSnapshotsDir(), s.localProposalsDir(), s.remoteProposalsDir(), s.exchangesDir()} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := filepersist.EnsureDir(ctx, dir); err != nil {
 			return ErrStoreUnavailable
 		}
 	}
 	metaPath := s.metadataPath()
 	var meta localStoreMetadataFile
-	if err := readJSONFile(metaPath, &meta); err != nil {
+	if err := readJSONFile(ctx, metaPath, &meta); err != nil {
 		if errors.Is(err, ErrLocalStoreNotFound) {
 			now := s.now()
 			meta = localStoreMetadataFile{SchemaVersion: localMetadataStoreSchemaVersion, ProfileNamespace: s.namespace, CreatedAt: now, UpdatedAt: now}
-			return writeJSONAtomic(metaPath, meta)
+			return writeJSONAtomic(ctx, metaPath, meta)
 		}
 		return err
 	}
@@ -48,9 +50,9 @@ func (s *LocalMetadataStore) ensureInitializedLocked(ctx context.Context) error 
 	return nil
 }
 
-func (s *LocalMetadataStore) readRemoteSnapshotLocked(path string) (RemoteSnapshotRecord, error) {
+func (s *LocalMetadataStore) readRemoteSnapshotLocked(ctx context.Context, path string) (RemoteSnapshotRecord, error) {
 	var file remoteSnapshotFile
-	if err := readJSONFile(path, &file); err != nil {
+	if err := readJSONFile(ctx, path, &file); err != nil {
 		return RemoteSnapshotRecord{}, err
 	}
 	if file.SchemaVersion != localMetadataStoreSchemaVersion || file.ProfileNamespace != s.namespace {
@@ -63,9 +65,9 @@ func (s *LocalMetadataStore) readRemoteSnapshotLocked(path string) (RemoteSnapsh
 	return record, nil
 }
 
-func (s *LocalMetadataStore) readRemoteProposalLocked(path string) (RemoteProposalRecord, error) {
+func (s *LocalMetadataStore) readRemoteProposalLocked(ctx context.Context, path string) (RemoteProposalRecord, error) {
 	var file remoteProposalFile
-	if err := readJSONFile(path, &file); err != nil {
+	if err := readJSONFile(ctx, path, &file); err != nil {
 		return RemoteProposalRecord{}, err
 	}
 	if file.SchemaVersion != localMetadataStoreSchemaVersion || file.ProfileNamespace != s.namespace {
@@ -168,55 +170,28 @@ func skipStoreDataFile(entry os.DirEntry) bool {
 	return entry.IsDir() || strings.HasPrefix(name, ".tmp-") || !strings.HasSuffix(name, ".json")
 }
 
-func readJSONFile(path string, out any) error {
-	file, err := os.Open(path)
+func readJSONFile(ctx context.Context, path string, out any) error {
+	err := filepersist.ReadJSON(ctx, path, maxLocalJSONFileBytes, out)
 	if os.IsNotExist(err) {
 		return ErrLocalStoreNotFound
 	}
-	if err != nil {
-		return ErrStoreUnavailable
-	}
-	defer file.Close()
-	raw, err := io.ReadAll(io.LimitReader(file, maxLocalJSONFileBytes+1))
-	if err != nil {
-		return ErrStoreUnavailable
-	}
-	if len(raw) == 0 || len(raw) > maxLocalJSONFileBytes {
+	if errors.Is(err, filepersist.ErrTooLarge) || errors.Is(err, filepersist.ErrInvalidJSON) {
 		return ErrLocalStoreCorrupt
 	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return ErrLocalStoreCorrupt
+	if err != nil {
+		return ErrStoreUnavailable
 	}
 	return nil
 }
 
-func writeJSONAtomic(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return ErrStoreUnavailable
-	}
-	tmp := filepath.Join(filepath.Dir(path), fmt.Sprintf(".tmp-%s-%d", filepath.Base(path), time.Now().UnixNano()))
-	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+func writeJSONAtomic(ctx context.Context, path string, value any) error {
+	err := filepersist.Write(ctx, path, 0600, maxLocalJSONFileBytes, func(w io.Writer) error {
+		encoder := json.NewEncoder(w)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(value)
+	})
 	if err != nil {
 		return ErrStoreUnavailable
-	}
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	encodeErr := encoder.Encode(value)
-	syncErr := file.Sync()
-	closeErr := file.Close()
-	if encodeErr != nil || syncErr != nil || closeErr != nil {
-		_ = os.Remove(tmp)
-		return ErrStoreUnavailable
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
-			_ = os.Remove(tmp)
-			return ErrStoreUnavailable
-		}
-		if err := os.Rename(tmp, path); err != nil {
-			_ = os.Remove(tmp)
-			return ErrStoreUnavailable
-		}
 	}
 	return nil
 }

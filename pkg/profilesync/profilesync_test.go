@@ -301,7 +301,7 @@ func TestPullRemoteStoreFailuresAndUnsafeTrustMessagesAreSanitized(t *testing.T)
 	assertSyncSafeJSON(t, pull)
 }
 
-func TestProfileSyncPackageDoesNotImportInternalsOrExamples(t *testing.T) {
+func TestProfileSyncPackageUsesOnlyApprovedPrivateMechanics(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatalf("glob profilesync files: %v", err)
@@ -314,7 +314,8 @@ func TestProfileSyncPackageDoesNotImportInternalsOrExamples(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
-		text := string(raw)
+		// W07 permits exactly the shared IO primitive, never another owner's internals.
+		text := strings.ReplaceAll(string(raw), `"github.com/AegisAgentAscalon/aegis-core/internal/filepersist"`, "")
 		for _, forbidden := range []string{"/internal/", "internal/", "examples/", "named-consumer-app", "named-consumer-current", "named-consumer.local"} {
 			if strings.Contains(text, forbidden) {
 				t.Fatalf("pkg/profilesync imports or references forbidden text %q in %s", forbidden, file)

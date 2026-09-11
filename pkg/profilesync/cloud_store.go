@@ -94,7 +94,7 @@ func (p *FileObjectProvider) PutManifest(ctx context.Context, manifest CloudProf
 	if err := p.ensureLocked(ctx); err != nil {
 		return err
 	}
-	return writeJSONAtomic(filepath.Join(p.namespaceRoot(), "manifest.json"), manifestFile{Manifest: manifest})
+	return writeJSONAtomic(ctx, filepath.Join(p.namespaceRoot(), "manifest.json"), manifestFile{Manifest: manifest})
 }
 
 func (p *FileObjectProvider) GetManifest(ctx context.Context, profileNamespace string) (CloudProfileManifest, error) {
@@ -110,9 +110,9 @@ func (p *FileObjectProvider) GetManifest(ctx context.Context, profileNamespace s
 		return CloudProfileManifest{}, err
 	}
 	var file manifestFile
-	err := readJSONFile(filepath.Join(p.namespaceRoot(), "manifest.json"), &file)
+	err := readJSONFile(ctx, filepath.Join(p.namespaceRoot(), "manifest.json"), &file)
 	if errors.Is(err, ErrLocalStoreNotFound) {
-		err = readJSONFile(filepath.Join(p.legacyRoot(), "manifest.json"), &file)
+		err = readJSONFile(ctx, filepath.Join(p.legacyRoot(), "manifest.json"), &file)
 	}
 	if err != nil {
 		if errors.Is(err, ErrLocalStoreNotFound) {
@@ -143,7 +143,7 @@ func (p *FileObjectProvider) PutObject(ctx context.Context, object CloudSyncObje
 	if err := p.ensureLocked(ctx); err != nil {
 		return CloudObjectRef{}, err
 	}
-	existing, ok, err := p.findObjectByIdentityLocked(ref.ProfileNamespace, ref.Kind, ref.ObjectID)
+	existing, ok, err := p.findObjectByIdentityLocked(ctx, ref.ProfileNamespace, ref.Kind, ref.ObjectID)
 	if err != nil {
 		return CloudObjectRef{}, err
 	}
@@ -157,7 +157,7 @@ func (p *FileObjectProvider) PutObject(ctx context.Context, object CloudSyncObje
 	if err != nil {
 		return CloudObjectRef{}, err
 	}
-	return ref, writeJSONAtomic(path, objectFile{Ref: ref, Body: append([]byte{}, object.Body...)})
+	return ref, writeJSONAtomic(ctx, path, objectFile{Ref: ref, Body: append([]byte{}, object.Body...)})
 }
 
 func (p *FileObjectProvider) GetObject(ctx context.Context, ref CloudObjectRef) ([]byte, error) {
@@ -177,9 +177,9 @@ func (p *FileObjectProvider) GetObject(ctx context.Context, ref CloudObjectRef) 
 		return nil, err
 	}
 	var file objectFile
-	err = readJSONFile(path, &file)
+	err = readJSONFile(ctx, path, &file)
 	if errors.Is(err, ErrLocalStoreNotFound) {
-		err = readJSONFile(p.legacyObjectPath(ref), &file)
+		err = readJSONFile(ctx, p.legacyObjectPath(ref), &file)
 	}
 	if err != nil {
 		if errors.Is(err, ErrLocalStoreNotFound) {
@@ -208,7 +208,7 @@ func (p *FileObjectProvider) ListObjects(ctx context.Context, query CloudObjectQ
 	if err := p.ensureLocked(ctx); err != nil {
 		return nil, err
 	}
-	all, err := p.objectRefsLocked()
+	all, err := p.objectRefsLocked(ctx)
 	if err != nil {
 		return nil, err
 	}

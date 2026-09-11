@@ -209,7 +209,7 @@ func TestCloudLegacyNamespaceOwnershipAndDuplicateConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest, _ := NormalizeCloudManifest(CloudProfileManifest{SchemaVersion: 1, ProfileNamespace: "Profile", ManifestID: "old", CreatedAt: obj.CreatedAt})
-	if err := writeJSONAtomic(filepath.Join(p.legacyRoot(), "manifest.json"), manifestFile{Manifest: manifest}); err != nil {
+	if err := writeJSONAtomic(context.Background(), filepath.Join(p.legacyRoot(), "manifest.json"), manifestFile{Manifest: manifest}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := p.GetManifest(ctx, "profile"); !errors.Is(err, ErrCloudStoreCorrupt) {

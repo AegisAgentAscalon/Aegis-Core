@@ -101,7 +101,7 @@ func TestLocalMetadataStoreReadsLegacySchemaOneExchangeRecord(t *testing.T) {
 		StatusSummary:    "legacy exchange completed",
 		RecordedAt:       now,
 	}
-	if err := writeJSONAtomic(store.lastExchangePath(), legacy); err != nil {
+	if err := writeJSONAtomic(context.Background(), store.lastExchangePath(), legacy); err != nil {
 		t.Fatalf("write legacy exchange: %v", err)
 	}
 	loaded, err := store.LoadLastExchange(ctx)
