@@ -10,6 +10,9 @@ import (
 )
 
 func ReadJSON(ctx context.Context, path string, limit int64, out any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if limit <= 0 || limit > 64<<20 {
 		return ErrTooLarge
 	}
@@ -95,6 +98,9 @@ func diskOperations() operations {
 // Write commits only after encoding, Sync and Close succeed. limit=-1 permits
 // an externally bounded artifact stream. The callback must propagate IO errors.
 func Write(ctx context.Context, path string, perm os.FileMode, limit int64, encode func(io.Writer) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return write(ctx, path, perm, limit, encode, diskOperations())
 }
 
@@ -159,6 +165,9 @@ func write(ctx context.Context, path string, perm os.FileMode, limit int64, enco
 // canceled. os.Rename uses MoveFileEx(REPLACE_EXISTING) on Windows and rename on
 // Linux; neither this wrapper nor File.Sync claims parent-directory durability.
 func Replace(ctx context.Context, src, dst string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	src, err := absolute(src)
 	if err != nil {
 		return err

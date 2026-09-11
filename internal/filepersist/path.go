@@ -44,6 +44,9 @@ func absolute(path string) (string, error) {
 
 // EnsureDir creates private directories without chmodding caller-owned ancestors.
 func EnsureDir(ctx context.Context, path string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	abs, err := absolute(path)
 	if err != nil {
 		return err
@@ -106,6 +109,9 @@ func regular(ctx context.Context, path string, missingOK bool) (os.FileInfo, err
 }
 
 func OpenRegular(ctx context.Context, path string) (*os.File, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	abs, err := absolute(path)
 	if err != nil {
 		return nil, err
