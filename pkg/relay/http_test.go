@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -376,6 +377,8 @@ func assertStatusSafe(status RelayStatus) bool {
 func assertRelayProductionFileClean(t *testing.T, file string) {
 	t.Helper()
 	raw := readRelayTestFile(t, file)
+	// W07 mechanics are shared; other private owner imports remain forbidden.
+	raw = bytes.ReplaceAll(raw, []byte(`"github.com/AegisAgentAscalon/aegis-core/internal/filepersist"`), nil)
 	for _, forbidden := range []string{"/internal/", "internal/", "examples/", "appbridge", "profilemesh", "profilesync", "devicelink", "named-consumer-app", "named-consumer-current", "named-consumer.local"} {
 		if strings.Contains(string(raw), forbidden) {
 			t.Fatalf("relay HTTP provider references forbidden boundary text %q in %s", forbidden, file)

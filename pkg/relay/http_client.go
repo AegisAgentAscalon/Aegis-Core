@@ -204,6 +204,9 @@ func (c *HTTPRelayClient) doJSON(ctx context.Context, method, path string, in an
 		if err != nil {
 			return ErrProviderUnavailable
 		}
+		if strings.HasPrefix(path, "/v2/") && len(raw)+1 > ReliableBatchBytes {
+			return ErrPayloadTooLarge
+		}
 		body = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
@@ -231,6 +234,9 @@ func (c *HTTPRelayClient) doJSON(ctx context.Context, method, path string, in an
 	limit := int64(c.maxPayload) * 2
 	if path == "/envelopes/receive" {
 		limit = maxReceivePageBytes
+	}
+	if strings.HasPrefix(path, "/v2/") {
+		limit = ReliableBatchBytes
 	}
 	if err := decodeBoundedJSON(resp.Body, limit, out, false); err != nil {
 		return ErrProviderUnavailable

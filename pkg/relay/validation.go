@@ -119,7 +119,10 @@ func ValidateEnvelope(envelope RelayEnvelope) error {
 }
 
 func ValidateEnvelopeWithLimit(envelope RelayEnvelope, maxPayloadBytes int) error {
-	now := nowFrom(envelope.CreatedAt)
+	return validateEnvelopeAt(envelope, maxPayloadBytes, nowFrom(envelope.CreatedAt))
+}
+
+func validateEnvelopeAt(envelope RelayEnvelope, maxPayloadBytes int, now time.Time) error {
 	if envelope.ProtocolVersion != ProtocolVersion {
 		return ErrUnsupportedProtocolVersion
 	}
