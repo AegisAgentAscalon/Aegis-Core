@@ -39,3 +39,6 @@ otherwise. No work package changes consumers' committed dependency selections
 without a separate migration decision.
 
 W03 promotes SD-01/SD-07 to ordinary cloud identity regression tests; 16 audited findings remain.
+
+W04a fixes SD-04. SD-02/SD-03 remain red for response loss and remote-write loss;
+15 findings remain. W04 durable delivery requires W07 and protocol review.

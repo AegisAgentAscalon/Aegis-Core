@@ -183,6 +183,9 @@ func (c *HTTPRelayClient) ReceiveEnvelopes(ctx context.Context, mailbox MailboxR
 	if err := c.doJSON(ctx, http.MethodPost, "/envelopes/receive", mailbox, &out); err != nil {
 		return nil, err
 	}
+	if len(out) > maxReceivePageCount {
+		return nil, ErrProviderUnavailable
+	}
 	for _, envelope := range out {
 		if err := ValidateEnvelopeWithLimit(envelope, c.maxPayload); err != nil {
 			return nil, ErrProviderUnavailable
@@ -225,7 +228,11 @@ func (c *HTTPRelayClient) doJSON(ctx context.Context, method, path string, in an
 	if out == nil {
 		return nil
 	}
-	if err := decodeBoundedJSON(resp.Body, int64(c.maxPayload*2), out, false); err != nil {
+	limit := int64(c.maxPayload) * 2
+	if path == "/envelopes/receive" {
+		limit = maxReceivePageBytes
+	}
+	if err := decodeBoundedJSON(resp.Body, limit, out, false); err != nil {
 		return ErrProviderUnavailable
 	}
 	return nil

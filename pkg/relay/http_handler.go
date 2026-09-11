@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 )
@@ -254,6 +255,11 @@ func (h *httpRelayHandler) envelopes(w http.ResponseWriter, r *http.Request) {
 		writeRelayError(w, statusForRelayError(err), err)
 		return
 	}
+	raw, err := json.Marshal(envelope)
+	if err != nil || len(raw)+3 > maxReceivePageBytes {
+		writeRelayError(w, http.StatusRequestEntityTooLarge, ErrPayloadTooLarge)
+		return
+	}
 	receipt, err := h.provider.SendEnvelope(r.Context(), envelope)
 	if err != nil {
 		writeRelayError(w, statusForRelayError(err), err)
@@ -277,7 +283,13 @@ func (h *httpRelayHandler) receiveEnvelopes(w http.ResponseWriter, r *http.Reque
 		writeRelayError(w, statusForRelayError(err), err)
 		return
 	}
-	writeRelayJSON(w, http.StatusOK, envelopes)
+	raw, err := json.Marshal(envelopes)
+	if err != nil || len(envelopes) > maxReceivePageCount || len(raw)+1 > maxReceivePageBytes {
+		writeRelayError(w, http.StatusRequestEntityTooLarge, ErrPayloadTooLarge)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(append(raw, '\n'))
 }
 
 func (h *httpRelayHandler) decode(w http.ResponseWriter, r *http.Request, out any) bool {

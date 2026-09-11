@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -136,10 +137,10 @@ func (p *LocalDevProvider) ListEndpointHints(ctx context.Context, query Endpoint
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.cleanupExpiredLocked(now)
+	p.cleanupExpiredLocked(p.now())
 	out := []EndpointHint{}
 	for _, hint := range p.hints {
-		if hint.Namespace != query.Namespace || (query.DeviceID != "" && hint.DeviceID != query.DeviceID) {
+		if hint.Namespace != query.Namespace || (query.DeviceID != "" && hint.DeviceID != query.DeviceID) || expiredAt(hint.ExpiresAt, now) {
 			continue
 		}
 		out = append(out, cloneEndpointHint(hint))
@@ -199,12 +200,12 @@ func (p *LocalDevProvider) Query(ctx context.Context, query RendezvousQuery) ([]
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.cleanupExpiredLocked(now)
+	p.cleanupExpiredLocked(p.now())
 	out := []RendezvousPeerHint{}
 	for _, announcement := range p.announcements {
 		if announcement.Namespace != query.Namespace ||
 			(query.ProfileID != "" && announcement.ProfileID != query.ProfileID) ||
-			(query.DeviceID != "" && announcement.DeviceID != query.DeviceID) {
+			(query.DeviceID != "" && announcement.DeviceID != query.DeviceID) || expiredAt(announcement.ExpiresAt, now) {
 			continue
 		}
 		out = append(out, RendezvousPeerHint{
@@ -269,6 +270,10 @@ func (p *LocalDevProvider) SendEnvelope(ctx context.Context, envelope RelayEnvel
 	if err := ValidateEnvelopeWithLimit(envelope, p.maxPayload); err != nil {
 		return DeliveryReceipt{}, err
 	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil || len(encoded)+3 > maxReceivePageBytes {
+		return DeliveryReceipt{}, ErrPayloadTooLarge
+	}
 	now := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -310,14 +315,35 @@ func (p *LocalDevProvider) ReceiveEnvelopes(ctx context.Context, mailbox Mailbox
 	}
 	key := mailboxKey(mailbox.Namespace, mailbox.MailboxID)
 	queued := p.envelopes[key]
-	out := make([]RelayEnvelope, 0, len(queued))
-	for _, envelope := range queued {
+	// Legacy receive consumes only the returned page. Undelivered pages stay queued.
+	out := make([]RelayEnvelope, 0)
+	size, consumed := 3, 0 // array brackets and Encoder's trailing newline
+	for i, envelope := range queued {
 		if expiredAt(envelope.ExpiresAt, now) {
+			consumed = i + 1
 			continue
 		}
+		raw, err := json.Marshal(envelope)
+		if err != nil || len(raw)+3 > maxReceivePageBytes {
+			return nil, ErrPayloadTooLarge
+		}
+		extra := len(raw)
+		if len(out) > 0 {
+			extra++
+		}
+		if len(out) == maxReceivePageCount || size+extra > maxReceivePageBytes {
+			break
+		}
 		out = append(out, cloneRelayEnvelope(envelope))
+		size += extra
+		consumed = i + 1
 	}
-	delete(p.envelopes, key)
+	if consumed == len(queued) {
+		delete(p.envelopes, key)
+	} else {
+		p.envelopes[key] = append([]RelayEnvelope(nil), queued[consumed:]...)
+	}
+
 	return out, nil
 }
 

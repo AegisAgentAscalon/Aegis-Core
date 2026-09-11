@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -46,17 +47,21 @@ func TestSyncDeviceAudit(t *testing.T) {
 		_, err = client.SendEnvelope(ctx, relay.RelayEnvelope{RelayEnvelopeMetadata: relay.RelayEnvelopeMetadata{ProtocolVersion: relay.ProtocolVersion, Namespace: "audit", SourceDeviceID: "sender", TargetMailboxID: "inbox", MessageKind: relay.MessageKindOpaque, MessageID: fmt.Sprintf("m%d", i), CreatedAt: now, ExpiresAt: now.Add(time.Hour), PayloadHash: relay.PayloadSHA256(body)}, Payload: body})
 		must(err)
 	}
+	// Legacy receive deletes before the HTTP response is delivered.
+	mailboxJSON, err := json.Marshal(mailbox)
+	must(err)
+	handler.ServeHTTP(failedResponseWriter{httptest.NewRecorder()}, httptest.NewRequest(http.MethodPost, "/envelopes/receive", bytes.NewReader(mailboxJSON)))
 	received, receiveErr := client.ReceiveEnvelopes(ctx, mailbox)
 	retry, retryErr := client.ReceiveEnvelopes(ctx, mailbox)
 	if len(received)+len(retry) != 2 || retryErr != nil {
-		t.Errorf("SD-02: accepted HTTP batch lost: first=%v retry=%v total=%d", receiveErr, retryErr, len(received)+len(retry))
+		t.Errorf("SD-02: accepted HTTP batch lost after response failure: first=%v retry=%v total=%d", receiveErr, retryErr, len(received)+len(retry))
 	}
 
 	syncbox, err := provider.OpenMailbox(ctx, relay.MailboxOpenRequest{Namespace: "audit", MailboxID: "sync-inbox", OwnerDeviceID: "owner", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
 	must(err)
 	transport, err := profilesync.NewReceiveOnlyRelaySyncTransport(profilesync.RelaySyncTransportConfig{Provider: provider, Namespace: "audit", SourceDeviceID: "owner", Mailbox: syncbox})
 	must(err)
-	store := profilesync.NewMemoryMetadataStore()
+	store := &failingRemoteWriteStore{MemoryMetadataStore: profilesync.NewMemoryMetadataStore()}
 	snapshot := profilemesh.SignedProfileSnapshot{Metadata: profilemesh.ProfileSnapshotMetadata{ProfileNamespace: "audit", ProfileID: "profile", SnapshotID: "snapshot", SnapshotFingerprint: strings.Repeat("a", 64), SourceDeviceID: "sender", CreatedAt: now, UpdatedAt: now}, Signature: profilemesh.SnapshotSignatureSummary{SignerDeviceID: "sender"}}
 	store.SetLocalSnapshot(snapshot)
 	manager, err := profilesync.NewSyncManager(profilesync.SyncConfig{Enabled: true, ProfileNamespace: "audit", LocalDeviceID: "owner"}, profilesync.WithSnapshotStore(store), profilesync.WithTransport(transport))
@@ -65,24 +70,15 @@ func TestSyncDeviceAudit(t *testing.T) {
 	must(err)
 	_, err = provider.SendEnvelope(ctx, relay.RelayEnvelope{RelayEnvelopeMetadata: relay.RelayEnvelopeMetadata{ProtocolVersion: 1, Namespace: "audit", SourceDeviceID: "sender", TargetMailboxID: "sync-inbox", MessageKind: relay.MessageKindOpaque, MessageID: "sync-message", CreatedAt: now, ExpiresAt: now.Add(time.Hour), PayloadHash: relay.PayloadSHA256(payload)}, Payload: payload})
 	must(err)
-	store.SetError(fmt.Errorf("temporary store failure"))
+	store.fail = true
 	_, syncErr := manager.PullRemote(ctx)
-	store.SetError(nil)
+	store.fail = false
 	secondPull, secondErr := manager.PullRemote(ctx)
 	if syncErr == nil {
 		t.Fatal("expected injected store failure")
 	}
 	if secondErr != nil || secondPull.ReceivedSnapshots != 1 {
-		t.Errorf("SD-03: sync payload lost after store failure: retry=%v received=%d", secondErr, secondPull.ReceivedSnapshots)
-	}
-
-	mailbox, err = provider.OpenMailbox(ctx, relay.MailboxOpenRequest{Namespace: "victim", MailboxID: "victim-inbox", OwnerDeviceID: "owner", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
-	must(err)
-	_, err = provider.ListEndpointHints(ctx, relay.EndpointHintQuery{Namespace: "unrelated", Now: now.Add(24 * time.Hour)})
-	must(err)
-	_, queryErr := provider.ReceiveEnvelopes(ctx, mailbox)
-	if queryErr != nil {
-		t.Errorf("SD-04: unrelated query removed mailbox: %v", queryErr)
+		t.Errorf("SD-03: sync payload lost after remote write failure: retry=%v received=%d", secondErr, secondPull.ReceivedSnapshots)
 	}
 
 	mesh, err := profilemesh.NewService(profilemesh.AppConfig{AppID: "audit", DisplayName: "Audit", Namespace: "audit", DataDir: root + "/mesh"})
@@ -122,4 +118,23 @@ func TestSyncDeviceAudit(t *testing.T) {
 		t.Error("SD-08: caller mutation changed discovery record")
 	}
 
+}
+
+// W04a covers preflight reads, not durable acceptance after destructive receive.
+type failingRemoteWriteStore struct {
+	*profilesync.MemoryMetadataStore
+	fail bool
+}
+
+func (s *failingRemoteWriteStore) SaveRemoteSnapshot(ctx context.Context, record profilesync.RemoteSnapshotRecord) error {
+	if s.fail {
+		return fmt.Errorf("temporary remote write failure")
+	}
+	return s.MemoryMetadataStore.SaveRemoteSnapshot(ctx, record)
+}
+
+type failedResponseWriter struct{ http.ResponseWriter }
+
+func (w failedResponseWriter) Write([]byte) (int, error) {
+	return 0, fmt.Errorf("response disconnected")
 }

@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// Shared legacy receive limits include JSON/base64 expansion and framing.
+const maxReceivePageBytes = 1 << 20
+const maxReceivePageCount = 64
+
 const defaultHTTPRelayProviderID = "http-relay"
 
 const defaultHTTPRelayTimeout = 15 * time.Second

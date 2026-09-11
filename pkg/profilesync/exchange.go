@@ -85,6 +85,12 @@ func (m *SyncManager) PullRemote(ctx context.Context) (PullResult, error) {
 		result.Issues = append(result.Issues, syncOperationReadinessIssue(err))
 		return result, err
 	}
+	// A failed local read must not consume the legacy transport queue.
+	local, localErr := m.snapshots.LoadLocalSnapshot(ctx)
+	if localErr != nil {
+		result.Issues = append(result.Issues, syncIssue("snapshot_store_unavailable", ErrStoreUnavailable.Error(), true))
+		return result, ErrStoreUnavailable
+	}
 	envelopes, err := m.transport.PullEnvelopes(ctx)
 	if err != nil {
 		if errors.Is(err, ErrInvalidSyncEnvelope) {
@@ -93,11 +99,6 @@ func (m *SyncManager) PullRemote(ctx context.Context) (PullResult, error) {
 		}
 		result.Issues = append(result.Issues, syncIssue("transport_unavailable", ErrTransportUnavailable.Error(), true))
 		return result, ErrTransportUnavailable
-	}
-	local, localErr := m.snapshots.LoadLocalSnapshot(ctx)
-	if localErr != nil {
-		result.Issues = append(result.Issues, syncIssue("snapshot_store_unavailable", ErrStoreUnavailable.Error(), true))
-		return result, ErrStoreUnavailable
 	}
 	for _, envelope := range envelopes {
 		if err := validateEnvelopeHeaderAt(envelope, m.cfg.ProfileNamespace, m.now()); err != nil {
