@@ -30,16 +30,7 @@ func (s *store) writeSession(sess pendingSession) error {
 			return ErrStorageUnavailable
 		}
 		return s.mutateProtectedSessions(func(sessions []pendingSession) ([]pendingSession, error) {
-			for i := range sessions {
-				if sessions[i].SessionID == sess.SessionID {
-					sessions[i] = sess
-					return sessions, nil
-				}
-			}
-			if len(sessions) >= maxPendingSessionFiles {
-				return nil, ErrStorageUnavailable
-			}
-			return append(sessions, sess), nil
+			return appendPendingSession(sessions, sess, time.Now().UTC())
 		})
 	}
 	if err := ensurePrivateDir(s.sessionsDir()); err != nil {
@@ -50,6 +41,39 @@ func (s *store) writeSession(sess pendingSession) error {
 		return ErrStorageUnavailable
 	}
 	return writeFileAtomic(s.sessionPath(sess.SessionID), b, 0o600)
+}
+
+// Keep the existing bounded record format. Forgotten states cannot be claimed:
+// consumeSessionByState rejects unknown states before any token exchange.
+func appendPendingSession(sessions []pendingSession, sess pendingSession, now time.Time) ([]pendingSession, error) {
+	kept := sessions[:0]
+	for _, existing := range sessions {
+		if !now.After(existing.ExpiresAt) {
+			kept = append(kept, existing)
+		}
+	}
+	for i := range kept {
+		if kept[i].SessionID == sess.SessionID {
+			if kept[i].Consumed && !sess.Consumed {
+				return nil, ErrSessionConsumed
+			}
+			kept[i] = sess
+			return kept, nil
+		}
+	}
+	if len(kept) >= maxPendingSessionFiles {
+		consumed := -1
+		for i := range kept {
+			if kept[i].Consumed && (consumed < 0 || kept[i].ExpiresAt.Before(kept[consumed].ExpiresAt)) {
+				consumed = i
+			}
+		}
+		if consumed < 0 {
+			return nil, ErrStorageUnavailable
+		}
+		kept = append(kept[:consumed], kept[consumed+1:]...)
+	}
+	return append(kept, sess), nil
 }
 
 func (s *store) readSession(sessionID string) (pendingSession, error) {

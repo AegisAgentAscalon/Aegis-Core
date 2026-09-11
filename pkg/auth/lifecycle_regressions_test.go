@@ -1,5 +1,3 @@
-//go:build auditregression
-
 package auth
 
 import (
@@ -12,16 +10,22 @@ import (
 	devsecretstore "github.com/AegisAgentAscalon/aegis-core/internal/secretstore"
 )
 
-func TestAuditStrictExpiredSessionsExhaustSignIn(t *testing.T) {
+func TestStrictExpiredSessionsDoNotExhaustSignIn(t *testing.T) {
 	svc, err := NewStrictService(testConfig(t), devsecretstore.NewMemoryStore())
 	if err != nil {
 		t.Fatal(err)
 	}
+	var oldSessions []pendingSession
 	for i := 0; i < 5; i++ {
 		old := pendingSession{SessionID: fmt.Sprintf("old-%d", i), State: fmt.Sprintf("state-%d", i), Verifier: "verifier", RedirectURI: "http://127.0.0.1:56789/oauth/callback", CreatedAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(-30 * time.Minute), Consumed: true}
-		if err := svc.store.writeSession(old); err != nil {
-			t.Fatal(err)
-		}
+		oldSessions = append(oldSessions, old)
+	}
+	raw, err := encodeProtectedSessions(oldSessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.store.putProtected(svc.store.sessionsKey, raw); err != nil {
+		t.Fatal(err)
 	}
 	_, err = svc.StartSignIn(context.Background())
 	if err != nil {
@@ -30,7 +34,7 @@ func TestAuditStrictExpiredSessionsExhaustSignIn(t *testing.T) {
 
 }
 
-func TestAuditValidTokenCorruptProfileLosesReconnect(t *testing.T) {
+func TestValidTokenCorruptProfileRequiresReconnect(t *testing.T) {
 	for _, strict := range []bool{false, true} {
 		t.Run(fmt.Sprintf("strict=%t", strict), func(t *testing.T) {
 			var svc *Service

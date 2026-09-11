@@ -126,7 +126,7 @@ func (s *store) readProfile() (profileFile, error) {
 		return profileFile{}, err
 	}
 	var p profileFile
-	if err := json.Unmarshal(b, &p); err != nil {
+	if err := json.Unmarshal(b, &p); err != nil || strings.TrimSpace(p.Subject) == "" {
 		return profileFile{}, ErrInvalidProviderResponse
 	}
 	return p, nil

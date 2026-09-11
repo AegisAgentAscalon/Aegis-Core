@@ -43,47 +43,29 @@ func (s *store) status(cfg AppConfig) (AuthStatus, error) {
 		TokenNamespace:      cfg.TokenStore.Namespace,
 		LastError:           s.readLastError(),
 	}
-	if _, err := os.Stat(s.profilePath()); err == nil {
-		st.ProfilePresent = true
-	}
-	if p, err := s.readProfile(); err == nil {
+	// Profile and token validity contribute independently to reconnect state.
+	p, profileErr := s.readProfile()
+	st.ProfilePresent = !errors.Is(profileErr, os.ErrNotExist)
+	profileInvalid := profileErr != nil && !errors.Is(profileErr, os.ErrNotExist)
+	if profileErr == nil {
 		st.Profile = ProfileSummary{Email: p.Email, DisplayName: p.DisplayName, Subject: p.Subject, PictureURL: p.PictureURL}
-	} else if st.ProfilePresent {
-		st.NeedsReconnect = true
-		if st.LastError == "" {
-			st.LastError = "stored auth data is invalid; sign in again"
-		}
 	}
-	if s.isStrict() {
-		t, err := s.readToken()
-		switch {
-		case err == nil:
-			st.TokenPresent = true
-			st.SignedIn = true
-			st.AccessTokenExpired = time.Until(t.Expiry) <= 90*time.Second
-			st.NeedsReconnect = st.AccessTokenExpired
-		case errors.Is(err, secretstore.ErrNotFound):
-		default:
-			return AuthStatus{}, err
-		}
-	} else {
-		if _, err := os.Stat(s.tokenPath()); err == nil {
-			st.TokenPresent = true
-		}
-		if t, err := s.readToken(); err == nil {
-			st.SignedIn = true
-			st.AccessTokenExpired = time.Until(t.Expiry) <= 90*time.Second
-			st.NeedsReconnect = st.AccessTokenExpired
-		} else if st.TokenPresent {
-			st.NeedsReconnect = true
-			if st.LastError == "" {
-				st.LastError = "stored auth data is invalid; sign in again"
-			}
-		}
+	t, tokenErr := s.readToken()
+	tokenMissing := errors.Is(tokenErr, os.ErrNotExist) || errors.Is(tokenErr, secretstore.ErrNotFound)
+	if s.isStrict() && tokenErr != nil && !tokenMissing {
+		return AuthStatus{}, tokenErr
+	}
+	st.TokenPresent = !tokenMissing
+	st.SignedIn = tokenErr == nil
+	tokenInvalid := tokenErr != nil && !tokenMissing
+	if st.SignedIn {
+		st.AccessTokenExpired = time.Until(t.Expiry) <= 90*time.Second
+	}
+	st.NeedsReconnect = profileInvalid || tokenInvalid || st.AccessTokenExpired ||
+		(st.SignedIn && !st.ProfilePresent) || (st.ProfilePresent && !st.TokenPresent)
+	if (profileInvalid || tokenInvalid) && st.LastError == "" {
+		st.LastError = "stored auth data is invalid; sign in again"
 	}
 	st.Configured = st.ClientIDPresent && st.ClientIDShapeValid && len(st.Scopes) > 0
-	if st.SignedIn && !st.ProfilePresent {
-		st.NeedsReconnect = true
-	}
 	return st, nil
 }

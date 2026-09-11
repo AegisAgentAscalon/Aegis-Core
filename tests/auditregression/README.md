@@ -42,3 +42,6 @@ W03 promotes SD-01/SD-07 to ordinary cloud identity regression tests; 16 audited
 
 W04a fixes SD-04. SD-02/SD-03 remain red for response loss and remote-write loss;
 15 findings remain. W04 durable delivery requires W07 and protocol review.
+
+W05 promotes UA-03/UA-04 into ordinary Auth regression tests; 13 findings remain.
+W04 durable delivery remains open.
