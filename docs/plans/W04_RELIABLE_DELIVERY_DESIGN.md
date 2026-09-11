@@ -1,4 +1,7 @@
-# W04 reliable delivery design — review draft
+Historical W04a draft. See W04_RELIABLE_DELIVERY_CONTRACT.md for the reviewed
+and locally implemented W04b contract. Statements below describe W04a.
+
+# W04 reliable delivery design â€” review draft
 
 Status: W04a implements bounded legacy pages, provider-clock cleanup and local
 snapshot preflight. This document proposes W04b; it does not add a public API.

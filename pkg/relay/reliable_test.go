@@ -253,6 +253,18 @@ func TestReliableHTTPRejectsTruncatedOrMismatchedReplies(t *testing.T) {
 	}
 }
 
+func TestReliableExactEncodedBoundary(t *testing.T) {
+	value := map[string]string{"v": strings.Repeat("a", ReliableBatchBytes-9)}
+	raw, err := encodedReliable(value)
+	if err != nil || len(raw) != ReliableBatchBytes {
+		t.Fatal("exact limit rejected", len(raw), err)
+	}
+	value["v"] += "a"
+	if _, err := encodedReliable(value); !errors.Is(err, ErrPayloadTooLarge) {
+		t.Fatal("limit+1 accepted", err)
+	}
+}
+
 type failedReliableResponse struct{ header http.Header }
 
 func (w *failedReliableResponse) Header() http.Header       { return w.header }

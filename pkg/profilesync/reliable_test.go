@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -512,5 +514,26 @@ func TestReliableInboxProcessBoundary(t *testing.T) {
 	}
 	if result, err := r.PullRemote(ctx); err != nil || result.ReceivedSnapshots != 0 {
 		t.Fatal("process recovery reapplied", result, err)
+	}
+}
+
+func TestReliableReceiverOverHTTP(t *testing.T) {
+	h := newReliableHarness(t)
+	h.snapshot(t, "one", "remote")
+	handler, err := relay.NewReliableRelayHandler(relay.ReliableRelayHandlerConfig{Provider: h.p, Authorize: func(r *http.Request, action string, ref relay.ReliableMailboxRef, source string) bool {
+		return r.Header.Get("Authorization") == "Bearer receiver" && ref == h.p.Mailbox() && source == "" && (action == "receive" || action == "ack")
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client, err := relay.NewHTTPRelayClient(relay.HTTPRelayClientConfig{BaseURL: server.URL, Bearer: "receiver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.r.cfg.Provider = client
+	if result, err := h.r.PullRemote(context.Background()); err != nil || result.ReceivedSnapshots != 1 || h.pending(t) != 0 {
+		t.Fatal("HTTP custody transfer failed", result, err)
 	}
 }

@@ -1,6 +1,7 @@
 # W04b implementation contract
 
-Status: concrete proposal for independent review before exported implementation.
+Status: independently reviewed at 674c35d before exported implementation;
+implemented locally by ca00c33 and 5cf41a3, with qualification still pending.
 Supersedes the proposed choices in W04_RELIABLE_DELIVERY_DESIGN.md; the historical
 W04a behavior and limitations in that document remain accurate.
 
@@ -124,6 +125,10 @@ classification on a private temporary transaction view. Do not call the legacy
 store's SaveRemote methods and then set an applied flag. One inbox snapshot commits
 both the classified metadata effect and terminal receipt state; retry cannot
 incrementally apply that metadata twice. Preserve the first recorded receive time.
+Processing records ProcessedAt separately and evaluates freshness at that time.
+Read projections expose historical Freshness.ObservedAt; they do not assert current
+availability. Candidate states are validated before replacement, including nonzero
+clocks and stored domain/trust/review invariants.
 Across distinct receipts, compare canonical domain-content digests for the same
 snapshot/proposal ID: exact duplicates have no additional effect; changed content
 is an explicit conflict without overwrite. Legacy ID-only duplicate checks alone
@@ -150,6 +155,9 @@ entry, six times its payload length and 16 KiB of terminal/effect headroom. The
 factor accounts for JSON escaping expansion when base64 payload becomes an inline
 domain object; processing replaces raw ingress with the domain record rather than
 duplicating it. This deliberately conservative quota covers full effect growth.
+An additional 4 KiB global inbox margin covers revision/ack bookkeeping. Configured
+quotas govern admission; reducing them cannot block already reserved processing
+or custody-reducing acknowledgements within the hard limits.
 
 No automatic pruning of replay tombstones, pending messages or inbox receipts.
 Operators must provision capacity or perform a separately reviewed offline
