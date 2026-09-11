@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version-file: go.mod
+          go-version: '1.27.1'
       - name: Verify module cache
         run: go mod verify
       - name: Test
@@ -45,8 +45,32 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version-file: go.mod
+          go-version: '1.27.1'
       - name: Race test internal packages
         run: go test -race -mod=readonly ./internal/...
       - name: Race test public packages
         run: go test -race -mod=readonly ./pkg/...
+
+  minimum-language:
+    name: Minimum language compatibility (compile only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.22.12'
+      - run: go test -mod=readonly -run '^$' ./...
+        env:
+          GOTOOLCHAIN: local
+
+  security:
+    name: Vulnerability scan (patched compiler)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.27.1'
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
