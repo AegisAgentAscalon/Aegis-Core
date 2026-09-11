@@ -33,6 +33,7 @@ func BuildOverview(ctx context.Context, cfg AppSetupConfig, providers map[Capabi
 			overview.BlockingIssues = append(overview.BlockingIssues, SetupIssue{Capability: capability, Code: "provider_error", Message: "setup status is unavailable", Blocking: true})
 			overview.Ready = false
 		} else {
+			status.Summary = safeSummary(status.Summary, "setup status is available")
 			status.Capability = capability
 			status.Enabled = true
 			if status.State == "" {
@@ -44,7 +45,8 @@ func BuildOverview(ctx context.Context, cfg AppSetupConfig, providers map[Capabi
 			}
 			if status.State == StateWarning {
 				overview.Warnings = append(overview.Warnings, SetupIssue{Capability: capability, Code: "capability_warning", Message: safeSummary(status.Summary, "capability has a warning"), Blocking: false})
-			} else if status.State == StateBlocked || !status.Ready {
+			}
+			if status.State == StateBlocked || !status.Ready {
 				overview.BlockingIssues = append(overview.BlockingIssues, SetupIssue{Capability: capability, Code: "capability_not_ready", Message: safeSummary(status.Summary, "capability is not ready"), Blocking: true})
 				overview.Ready = false
 			}

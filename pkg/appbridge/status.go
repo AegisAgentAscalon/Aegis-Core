@@ -18,30 +18,32 @@ func (b *Bridge) AuthStatus(ctx context.Context) (AuthStatusResult, error) {
 	if !b.cfg.Auth.Enabled {
 		return AuthStatusResult{}, ErrDisabled
 	}
-	status, err := b.authSetupStatus(ctx)
+	if b.cfg.Auth.Service == nil {
+		return AuthStatusResult{Card: SetupCapabilityCard{Capability: setupstate.CapabilityAuth, Enabled: true, State: setupstate.StateBlocked, Summary: "auth service is not configured"}}, nil
+	}
+	status, err := b.cfg.Auth.Service.Status(ctx)
 	if err != nil {
 		return AuthStatusResult{}, err
 	}
-	var authStatus auth.AuthStatus
-	if b.cfg.Auth.Service != nil {
-		authStatus, _ = b.cfg.Auth.Service.Status(ctx)
-	}
-	return AuthStatusResult{Status: sanitizeAuthStatus(authStatus), Card: cardFromStatus(status)}, nil
+	status = sanitizeAuthStatus(status)
+	capability := authCapabilityStatus(status)
+	return AuthStatusResult{Status: status, Card: cardFromStatus(capability)}, nil
 }
 
 func (b *Bridge) UpdateStatus(ctx context.Context) (UpdateStatusResult, error) {
 	if !b.cfg.Updates.Enabled {
 		return UpdateStatusResult{}, ErrDisabled
 	}
-	status, err := b.updateSetupStatus(ctx)
+	if b.cfg.Updates.Service == nil {
+		return UpdateStatusResult{Card: SetupCapabilityCard{Capability: setupstate.CapabilityUpdates, Enabled: true, State: setupstate.StateBlocked, Summary: "update service is not configured"}}, nil
+	}
+	status, err := b.cfg.Updates.Service.GetStatus(ctx)
 	if err != nil {
 		return UpdateStatusResult{}, err
 	}
-	var updateStatus updates.CurrentState
-	if b.cfg.Updates.Service != nil {
-		updateStatus, _ = b.cfg.Updates.Service.GetStatus(ctx)
-	}
-	return UpdateStatusResult{Status: sanitizeUpdateStatus(updateStatus), Card: cardFromStatus(status)}, nil
+	status = sanitizeUpdateStatus(status)
+	capability := updateCapabilityStatus(status)
+	return UpdateStatusResult{Status: status, Card: cardFromStatus(capability)}, nil
 }
 
 func (b *Bridge) DeviceLinkStatus(ctx context.Context) (DeviceLinkStatus, error) {
@@ -117,39 +119,33 @@ func (b *Bridge) RelayStatus(ctx context.Context) (RelayStatusResult, error) {
 }
 
 func (b *Bridge) authSetupStatus(ctx context.Context) (setupstate.CapabilityStatus, error) {
-	if b.cfg.Auth.Service == nil {
-		return setupstate.CapabilityStatus{Capability: setupstate.CapabilityAuth, Enabled: true, Ready: false, State: setupstate.StateBlocked, Summary: "auth service is not configured"}, nil
-	}
-	status, err := b.cfg.Auth.Service.Status(ctx)
-	if err != nil {
-		return setupstate.CapabilityStatus{}, err
-	}
-	status = sanitizeAuthStatus(status)
+	result, err := b.AuthStatus(ctx)
+	return statusFromCard(result.Card), err
+}
+
+func authCapabilityStatus(status auth.AuthStatus) setupstate.CapabilityStatus {
 	if !status.Configured {
-		return setupstate.CapabilityStatus{Capability: setupstate.CapabilityAuth, Enabled: true, Ready: false, State: setupstate.StateBlocked, Summary: "auth is not configured"}, nil
+		return setupstate.CapabilityStatus{Capability: setupstate.CapabilityAuth, Enabled: true, Ready: false, State: setupstate.StateBlocked, Summary: "auth is not configured"}
 	}
 	if !status.SignedIn || status.NeedsReconnect {
-		return setupstate.CapabilityStatus{Capability: setupstate.CapabilityAuth, Enabled: true, Ready: false, State: setupstate.StateBlocked, Summary: "auth sign-in is required"}, nil
+		return setupstate.CapabilityStatus{Capability: setupstate.CapabilityAuth, Enabled: true, Ready: false, State: setupstate.StateBlocked, Summary: "auth sign-in is required"}
 	}
-	return setupstate.CapabilityStatus{Capability: setupstate.CapabilityAuth, Enabled: true, Ready: true, State: setupstate.StateReady, Summary: "auth ready"}, nil
+	return setupstate.CapabilityStatus{Capability: setupstate.CapabilityAuth, Enabled: true, Ready: true, State: setupstate.StateReady, Summary: "auth ready"}
 }
 
 func (b *Bridge) updateSetupStatus(ctx context.Context) (setupstate.CapabilityStatus, error) {
-	if b.cfg.Updates.Service == nil {
-		return setupstate.CapabilityStatus{Capability: setupstate.CapabilityUpdates, Enabled: true, Ready: false, State: setupstate.StateBlocked, Summary: "update service is not configured"}, nil
-	}
-	status, err := b.cfg.Updates.Service.GetStatus(ctx)
-	if err != nil {
-		return setupstate.CapabilityStatus{}, err
-	}
-	status = sanitizeUpdateStatus(status)
+	result, err := b.UpdateStatus(ctx)
+	return statusFromCard(result.Card), err
+}
+
+func updateCapabilityStatus(status updates.CurrentState) setupstate.CapabilityStatus {
 	if !status.Configured {
-		return setupstate.CapabilityStatus{Capability: setupstate.CapabilityUpdates, Enabled: true, Ready: false, State: setupstate.StateBlocked, Summary: "updates are not configured"}, nil
+		return setupstate.CapabilityStatus{Capability: setupstate.CapabilityUpdates, Enabled: true, Ready: false, State: setupstate.StateBlocked, Summary: "updates are not configured"}
 	}
 	if status.UpdateAvailable {
-		return setupstate.CapabilityStatus{Capability: setupstate.CapabilityUpdates, Enabled: true, Ready: true, State: setupstate.StateWarning, Summary: "update is available"}, nil
+		return setupstate.CapabilityStatus{Capability: setupstate.CapabilityUpdates, Enabled: true, Ready: true, State: setupstate.StateWarning, Summary: "update is available"}
 	}
-	return setupstate.CapabilityStatus{Capability: setupstate.CapabilityUpdates, Enabled: true, Ready: true, State: setupstate.StateReady, Summary: "updates ready"}, nil
+	return setupstate.CapabilityStatus{Capability: setupstate.CapabilityUpdates, Enabled: true, Ready: true, State: setupstate.StateReady, Summary: "updates ready"}
 }
 
 func (b *Bridge) deviceLinkSetupStatus(ctx context.Context) (setupstate.CapabilityStatus, error) {
@@ -278,9 +274,13 @@ func securityPostureCard(summary securityposture.Summary) SetupCapabilityCard {
 	case securityposture.PostureReady:
 		card.State = setupstate.StateReady
 		card.Summary = "security posture ready"
-	case securityposture.PostureDegraded, securityposture.PostureReviewRequired, securityposture.PostureUnknown, securityposture.PostureOutOfScope:
+	case securityposture.PostureDegraded, securityposture.PostureReviewRequired, securityposture.PostureOutOfScope:
 		card.State = setupstate.StateWarning
 		card.Summary = "security posture requires review"
+	default:
+		card.Ready = false
+		card.State = setupstate.StateWarning
+		card.Summary = "security posture is unknown; review required"
 	}
 	for _, issue := range summary.Issues {
 		blocking := issue.Posture == securityposture.PostureBlocked

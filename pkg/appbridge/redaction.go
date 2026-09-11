@@ -2,6 +2,7 @@ package appbridge
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/AegisAgentAscalon/aegis-core/pkg/auth"
@@ -95,6 +96,7 @@ func (b *Bridge) safeRelayStatus(ctx context.Context) relay.RelayStatus {
 	status.Enabled = true
 	status.ProviderID = sanitizeIdentifier(status.ProviderID)
 	status.Summary = sanitizeSummary(status.Summary, "relay is degraded")
+	status.Issues = slices.Clone(status.Issues)
 	for i, issue := range status.Issues {
 		status.Issues[i] = relay.RelayIssue{Code: sanitizeIdentifier(issue.Code), Message: sanitizeSummary(issue.Message, "relay is degraded"), Blocking: false}
 	}
@@ -102,6 +104,7 @@ func (b *Bridge) safeRelayStatus(ctx context.Context) relay.RelayStatus {
 }
 
 func sanitizeAuthStatus(status auth.AuthStatus) auth.AuthStatus {
+	status.Scopes = slices.Clone(status.Scopes)
 	status.LastError = sanitizeSummary(status.LastError, "")
 	status.DisplayName = sanitizeSummary(status.DisplayName, status.AppID)
 	status.AppID = sanitizeIdentifier(status.AppID)
@@ -112,6 +115,10 @@ func sanitizeAuthStatus(status auth.AuthStatus) auth.AuthStatus {
 }
 
 func sanitizeUpdateStatus(status updates.CurrentState) updates.CurrentState {
+	if status.LatestRelease != nil {
+		release := *status.LatestRelease
+		status.LatestRelease = &release
+	}
 	status.AppID = sanitizeIdentifier(status.AppID)
 	status.DisplayName = sanitizeSummary(status.DisplayName, status.AppID)
 	status.LastError = sanitizeSummary(status.LastError, "")
@@ -125,9 +132,12 @@ func sanitizeSecurityPostureSummary(summary securityposture.Summary) securitypos
 	if summary.Capability == "" {
 		summary.Capability = "security_posture"
 	}
-	if summary.Posture == "" {
+	switch summary.Posture {
+	case securityposture.PostureReady, securityposture.PostureBlocked, securityposture.PostureDegraded, securityposture.PostureReviewRequired, securityposture.PostureOutOfScope, securityposture.PostureUnknown:
+	default:
 		summary.Posture = securityposture.PostureUnknown
 	}
+	summary.Issues = slices.Clone(summary.Issues)
 	for i, issue := range summary.Issues {
 		summary.Issues[i] = securityposture.Issue{
 			Code:           sanitizeIdentifier(issue.Code),
@@ -159,6 +169,7 @@ func sanitizeProfileSyncStatus(status profilesync.SyncStatus) profilesync.SyncSt
 	status.ProfileNamespace = sanitizeIdentifier(status.ProfileNamespace)
 	status.LocalSnapshotID = sanitizeIdentifier(status.LocalSnapshotID)
 	status.Summary = sanitizeSummary(status.Summary, "")
+	status.Issues = slices.Clone(status.Issues)
 	for i, issue := range status.Issues {
 		status.Issues[i] = profilesync.SyncIssue{Code: sanitizeIdentifier(issue.Code), Message: sanitizeSummary(issue.Message, "profile sync issue"), Blocking: issue.Blocking}
 	}
@@ -173,9 +184,11 @@ func sanitizeProfileMeshOverview(overview profilemesh.ProfileMeshOverview) profi
 	overview.Message = sanitizeSummary(overview.Message, "")
 	overview.PrimaryProfileDeviceID = sanitizeIdentifier(overview.PrimaryProfileDeviceID)
 	overview.ProfileDataHostDeviceID = sanitizeIdentifier(overview.ProfileDataHostDeviceID)
+	overview.Issues = slices.Clone(overview.Issues)
 	for i, issue := range overview.Issues {
 		overview.Issues[i] = profilemesh.ProfileMeshIssue{Code: sanitizeIdentifier(issue.Code), Message: sanitizeSummary(issue.Message, "profile mesh issue"), Blocking: issue.Blocking}
 	}
+	overview.Warnings = slices.Clone(overview.Warnings)
 	for i, warning := range overview.Warnings {
 		overview.Warnings[i] = profilemesh.ProfileMeshIssue{Code: sanitizeIdentifier(warning.Code), Message: sanitizeSummary(warning.Message, "profile mesh warning"), Blocking: false}
 	}

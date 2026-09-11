@@ -1,5 +1,3 @@
-//go:build auditregression
-
 package auditregression
 
 // This audit-only program exercises public APIs without changing the Core tree.
