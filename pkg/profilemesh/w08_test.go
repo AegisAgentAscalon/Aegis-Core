@@ -70,7 +70,7 @@ func TestW08ResourceValidationAcrossWriters(t *testing.T) {
 		{"stale allowed host", func(_ *ProfileResourceRecord, d []ProfileDeviceRecord) {
 			d[1].Status = DeviceStatusStale
 			d[1].TrustStatus = DeviceTrustStale
-		}, false, true},
+		}, true, true},
 		{"expired presence", func(_ *ProfileResourceRecord, d []ProfileDeviceRecord) {
 			d[0].RegisteredAt = d[0].RegisteredAt.Add(-time.Hour)
 			d[0].LastSeen = d[0].LastSeen.Add(-time.Hour)

@@ -87,10 +87,7 @@ func (s *Service) ImportProfileMeshSnapshot(ctx context.Context, snapshot Profil
 	if snapshot.SchemaVersion == legacyProfileMeshSnapshotSchemaVersion && !normalized.UpdatedAt.IsZero() {
 		validationTime = normalized.UpdatedAt
 	}
-	// Validate raw references before normalization can drop blank allowlist IDs.
-	validationSnapshot := normalized
-	validationSnapshot.Resources = snapshot.Resources
-	if err := validateSnapshot(validationSnapshot, validationTime); err != nil {
+	if err := validateSnapshot(normalized, validationTime); err != nil {
 		return err
 	}
 	if err := s.store.writeProfile(normalized.Profile); err != nil {

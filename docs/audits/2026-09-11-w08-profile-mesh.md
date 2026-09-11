@@ -1,5 +1,8 @@
 # W08: Profile Mesh resource invariants and explicit hint rejection
 
+Historical initial pass. The subsequent [review corrections](2026-09-11-w08-review-corrections.md)
+refine allowlist normalization and separate alternative-host permission from liveness.
+
 Baseline: W04 correction 8822bcfea47ffad2f53803647640c14c34f557c4.
 
 Resource registration, host changes and snapshot imports share validateResource:

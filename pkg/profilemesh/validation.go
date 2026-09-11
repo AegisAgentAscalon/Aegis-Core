@@ -66,8 +66,10 @@ func validateResource(resource ProfileResourceRecord, profileID string, devices 
 		return ErrUnsupportedHostingMode
 	}
 	for _, id := range resource.AllowedHostDeviceIDs {
-		if err := validateHost(id, devices, now); err != nil {
-			return err
+		// Permission to host does not assert current availability. An unavailable
+		// alternative must not prevent failover to an eligible selected host.
+		if _, ok := devices[id]; !ok || !validID(id) {
+			return ErrDeviceNotAllowed
 		}
 	}
 	if host := resource.CurrentHostDeviceID; host != "" {

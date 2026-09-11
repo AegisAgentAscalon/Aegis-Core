@@ -404,6 +404,21 @@ func compactStrings(in []string) []string {
 	return out
 }
 
+// Host IDs are authorization data: sorting and deduplication must not redact,
+// trim or drop entries. Validation rejects invalid references before storage.
+func uniqueHostIDs(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	var out []string
+	for _, id := range in {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func cloneMetadata(in map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range in {
@@ -462,7 +477,7 @@ func normalizeProfileMeshSnapshot(snapshot ProfileMeshSnapshot) ProfileMeshSnaps
 	}
 	normalized.Resources = append([]ProfileResourceRecord{}, snapshot.Resources...)
 	for i := range normalized.Resources {
-		normalized.Resources[i].AllowedHostDeviceIDs = compactStrings(normalized.Resources[i].AllowedHostDeviceIDs)
+		normalized.Resources[i].AllowedHostDeviceIDs = uniqueHostIDs(normalized.Resources[i].AllowedHostDeviceIDs)
 		normalized.Resources[i].Tags = compactStrings(normalized.Resources[i].Tags)
 		normalized.Resources[i].Metadata = cloneMetadata(normalized.Resources[i].Metadata)
 	}

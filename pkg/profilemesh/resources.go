@@ -52,7 +52,7 @@ func (s *Service) RegisterProfileResource(ctx context.Context, req RegisterProfi
 		DisplayName:          displayOrID(req.DisplayName, req.ResourceID),
 		ProfileOwnerID:       profile.ProfileID,
 		CurrentHostDeviceID:  host,
-		AllowedHostDeviceIDs: req.AllowedHostDeviceIDs,
+		AllowedHostDeviceIDs: uniqueHostIDs(req.AllowedHostDeviceIDs),
 		Availability:         req.Availability,
 		HostingMode:          req.HostingMode,
 		Tags:                 compactStrings(req.Tags),
@@ -66,7 +66,6 @@ func (s *Service) RegisterProfileResource(ctx context.Context, req RegisterProfi
 	if err := s.validateResourceLocked(resource, profile.ProfileID); err != nil {
 		return ProfileResourceRecord{}, err
 	}
-	resource.AllowedHostDeviceIDs = compactStrings(resource.AllowedHostDeviceIDs)
 	reg.Resources = append(reg.Resources, resource)
 	reg.UpdatedAt = now
 	if err := s.store.writeResources(reg); err != nil {
