@@ -37,6 +37,9 @@ func (s *Service) checkForUpdatesSnapshot(ctx context.Context, snapshot serviceS
 	if err != nil {
 		return CheckResult{}, sanitizeProviderError(err)
 	}
+	if err := contextError(ctx); err != nil {
+		return CheckResult{}, err
+	}
 	artifact, err := selectArtifactForConfig(snapshot.cfg, manifest)
 	if err != nil {
 		if errors.Is(err, ErrNoUpdateAvailable) || errors.Is(err, ErrNoCompatibleArtifact) {
@@ -78,6 +81,9 @@ func (s *Service) checkForUpdatesSnapshot(ctx context.Context, snapshot serviceS
 				return CheckResult{}, err
 			}
 		}
+	} else if errors.Is(readErr, ErrContextCanceled) {
+		// Cancellation says nothing about the validity of the stored candidate.
+		return CheckResult{}, readErr
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		if err := snapshot.store.clearCandidateState(); err != nil {
 			return CheckResult{}, err

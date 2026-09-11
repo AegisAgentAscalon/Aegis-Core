@@ -13,6 +13,47 @@ import (
 
 type failedReader struct{}
 
+type cancelAfterManifest struct {
+	Provider
+	cancel context.CancelFunc
+}
+
+func (p cancelAfterManifest) LoadManifest(ctx context.Context) (Manifest, error) {
+	manifest, err := p.Provider.LoadManifest(ctx)
+	p.cancel()
+	return manifest, err
+}
+
+func TestCanceledCheckPreservesCandidate(t *testing.T) {
+	s := signedBindingService(t)
+	if _, err := s.VerifyUpdate(context.Background(), "1.2.0"); err != nil {
+		t.Fatal(err)
+	}
+	downloaded, err := s.store.readDownloaded(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := make(map[string][]byte)
+	for _, path := range []string{s.store.selectedPath(), s.store.downloadedPath(), s.store.verifiedPath(), downloaded.ArtifactPath} {
+		before[path], err = os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.provider = cancelAfterManifest{Provider: s.provider, cancel: cancel}
+	if _, err := s.CheckForUpdates(ctx); !errors.Is(err, ErrContextCanceled) {
+		t.Fatalf("expected cancellation, got %v", err)
+	}
+	for path, expected := range before {
+		actual, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(expected, actual) {
+			t.Errorf("canceled check changed existing candidate %s: %v", path, err)
+		}
+	}
+}
+
 func (failedReader) Read([]byte) (int, error) { return 0, errors.New("source failed") }
 
 func TestPersistenceEncodingReopenAndCancellation(t *testing.T) {
