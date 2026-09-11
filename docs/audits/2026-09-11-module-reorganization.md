@@ -15,8 +15,9 @@ implementation owners.
 
 Validation for this candidate includes the full ordinary suite and vet, public
 type/method/field/constant compatibility checks, concrete-type comparability and
-positional-literal checks, 596 synthetic public JSON comparisons, existing
-golden and legacy-format tests, and a sampled VargBot consumer compiled with a
+positional-literal checks, 894 synthetic public JSON comparisons, existing
+golden and legacy-format tests, a baseline-to-candidate-to-baseline persistence
+probe, and a sampled VargBot consumer compiled with a
 temporary module replacement. The consumer's source dependency declarations
 remain unchanged. Race execution and hosted CI remain separate outstanding
 gates; the local environment has CGO disabled and no supported C compiler.

@@ -73,7 +73,7 @@ func (s *Service) registerProfileDevice(ctx context.Context, req RegisterProfile
 		if err := s.store.writeDevices(reg); err != nil {
 			return ProfileDeviceRecord{}, err
 		}
-		return device, nil
+		return cloneProfileDevice(device), nil
 	}
 	device := ProfileDeviceRecord{
 		DeviceID:               req.DeviceID,
@@ -99,7 +99,7 @@ func (s *Service) registerProfileDevice(ctx context.Context, req RegisterProfile
 	if err := s.store.writeDevices(reg); err != nil {
 		return ProfileDeviceRecord{}, err
 	}
-	return device, nil
+	return cloneProfileDevice(device), nil
 }
 
 // RegisterProfileDeviceStrict requires callers to make trust and lifecycle
@@ -124,7 +124,7 @@ func (s *Service) ListProfileDevices(ctx context.Context) ([]ProfileDeviceRecord
 	if err != nil {
 		return nil, err
 	}
-	out := append([]ProfileDeviceRecord{}, reg.Devices...)
+	out := cloneProfileDevices(reg.Devices)
 	sort.Slice(out, func(i, j int) bool { return out[i].DeviceID < out[j].DeviceID })
 	return out, nil
 }

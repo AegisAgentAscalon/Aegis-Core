@@ -20,6 +20,19 @@ type registryDeviceRecord struct {
 	ProfileMetadataVersion int         `json:"profile_metadata_version"`
 }
 
+type registrySnapshotRecord struct {
+	SchemaVersion          int                     `json:"schema_version"`
+	Purpose                RegistrySnapshotPurpose `json:"purpose"`
+	AppID                  string                  `json:"app_id"`
+	Namespace              string                  `json:"namespace"`
+	Devices                []registryDeviceRecord  `json:"devices"`
+	CreatedAt              time.Time               `json:"created_at"`
+	UpdatedAt              time.Time               `json:"updated_at"`
+	OriginDeviceID         string                  `json:"origin_device_id,omitempty"`
+	SnapshotFingerprint    string                  `json:"snapshot_fingerprint,omitempty"`
+	ProfileMetadataVersion int                     `json:"profile_metadata_version"`
+}
+
 type identityFile struct {
 	DeviceID             string    `json:"device_id"`
 	DisplayName          string    `json:"display_name"`
@@ -75,6 +88,33 @@ func trustedDeviceFromRegistryRecord(device registryDeviceRecord) TrustedDevice 
 	}
 }
 
+func registrySnapshotRecordFrom(snapshot RegistrySnapshot, materializeEmptyCapabilities bool) registrySnapshotRecord {
+	devices := make([]registryDeviceRecord, 0, len(snapshot.Devices))
+	for _, device := range snapshot.Devices {
+		record := registryDeviceRecordFrom(device)
+		if materializeEmptyCapabilities {
+			// The public facade's converters materialized absent capability slices
+			// as an empty slice in registry snapshots. Keep that public JSON shape
+			// separate from the private registry file's nil-preserving wire form.
+			record.Capabilities = append([]string{}, device.Capabilities...)
+		}
+		devices = append(devices, record)
+	}
+	return registrySnapshotRecord{
+		SchemaVersion: snapshot.SchemaVersion, Purpose: snapshot.Purpose,
+		AppID: snapshot.AppID, Namespace: snapshot.Namespace, Devices: devices,
+		CreatedAt: snapshot.CreatedAt, UpdatedAt: snapshot.UpdatedAt,
+		OriginDeviceID: snapshot.OriginDeviceID, SnapshotFingerprint: snapshot.SnapshotFingerprint,
+		ProfileMetadataVersion: snapshot.ProfileMetadataVersion,
+	}
+}
+
+func trustedDeviceFromRegistrySnapshotRecord(device registryDeviceRecord) TrustedDevice {
+	trusted := trustedDeviceFromRegistryRecord(device)
+	trusted.Capabilities = append([]string{}, device.Capabilities...)
+	return trusted
+}
+
 func (reg registryFile) MarshalJSON() ([]byte, error) {
 	type wire struct {
 		SchemaVersion int                    `json:"schema_version"`
@@ -107,52 +147,17 @@ func (reg *registryFile) UnmarshalJSON(data []byte) error {
 }
 
 func (snapshot RegistrySnapshot) MarshalJSON() ([]byte, error) {
-	type wire struct {
-		SchemaVersion          int                     `json:"schema_version"`
-		Purpose                RegistrySnapshotPurpose `json:"purpose"`
-		AppID                  string                  `json:"app_id"`
-		Namespace              string                  `json:"namespace"`
-		Devices                []registryDeviceRecord  `json:"devices"`
-		CreatedAt              time.Time               `json:"created_at"`
-		UpdatedAt              time.Time               `json:"updated_at"`
-		OriginDeviceID         string                  `json:"origin_device_id,omitempty"`
-		SnapshotFingerprint    string                  `json:"snapshot_fingerprint,omitempty"`
-		ProfileMetadataVersion int                     `json:"profile_metadata_version"`
-	}
-	devices := make([]registryDeviceRecord, 0, len(snapshot.Devices))
-	for _, device := range snapshot.Devices {
-		devices = append(devices, registryDeviceRecordFrom(device))
-	}
-	return json.Marshal(wire{
-		SchemaVersion: snapshot.SchemaVersion, Purpose: snapshot.Purpose,
-		AppID: snapshot.AppID, Namespace: snapshot.Namespace, Devices: devices,
-		CreatedAt: snapshot.CreatedAt, UpdatedAt: snapshot.UpdatedAt,
-		OriginDeviceID:         snapshot.OriginDeviceID,
-		SnapshotFingerprint:    snapshot.SnapshotFingerprint,
-		ProfileMetadataVersion: snapshot.ProfileMetadataVersion,
-	})
+	return json.Marshal(registrySnapshotRecordFrom(snapshot, true))
 }
 
 func (snapshot *RegistrySnapshot) UnmarshalJSON(data []byte) error {
-	type wire struct {
-		SchemaVersion          int                     `json:"schema_version"`
-		Purpose                RegistrySnapshotPurpose `json:"purpose"`
-		AppID                  string                  `json:"app_id"`
-		Namespace              string                  `json:"namespace"`
-		Devices                []registryDeviceRecord  `json:"devices"`
-		CreatedAt              time.Time               `json:"created_at"`
-		UpdatedAt              time.Time               `json:"updated_at"`
-		OriginDeviceID         string                  `json:"origin_device_id,omitempty"`
-		SnapshotFingerprint    string                  `json:"snapshot_fingerprint,omitempty"`
-		ProfileMetadataVersion int                     `json:"profile_metadata_version"`
-	}
-	var decoded wire
+	var decoded registrySnapshotRecord
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
 	devices := make([]TrustedDevice, 0, len(decoded.Devices))
 	for _, device := range decoded.Devices {
-		devices = append(devices, trustedDeviceFromRegistryRecord(device))
+		devices = append(devices, trustedDeviceFromRegistrySnapshotRecord(device))
 	}
 	*snapshot = RegistrySnapshot{
 		SchemaVersion: decoded.SchemaVersion, Purpose: decoded.Purpose,

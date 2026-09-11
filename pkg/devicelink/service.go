@@ -45,6 +45,10 @@ func NewService(config AppConfig, opts ...Option) (*Service, error) {
 	if options.discovery == nil {
 		options.discovery = noopDiscoveryProvider{}
 	}
+	options.discovery = ownedDiscoveryProvider{provider: options.discovery}
+	if options.transport != nil {
+		options.transport = ownedTransport{transport: options.transport}
+	}
 	if options.clock == nil {
 		options.clock = realClock{}
 	}

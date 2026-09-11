@@ -46,7 +46,7 @@ func (s *Service) ExportProfileMeshSnapshot(ctx context.Context) (ProfileMeshSna
 	}
 	snapshot = normalizeProfileMeshSnapshot(snapshot)
 	snapshot.SnapshotFingerprint = snapshotFingerprint(snapshot)
-	return snapshot, nil
+	return publicProfileMeshSnapshot(snapshot), nil
 }
 
 func (s *Service) ImportProfileMeshSnapshot(ctx context.Context, snapshot ProfileMeshSnapshot) error {

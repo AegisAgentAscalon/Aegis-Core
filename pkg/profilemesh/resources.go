@@ -86,7 +86,7 @@ func (s *Service) RegisterProfileResource(ctx context.Context, req RegisterProfi
 	if err := s.store.writeResources(reg); err != nil {
 		return ProfileResourceRecord{}, err
 	}
-	return resource, nil
+	return cloneProfileResource(resource), nil
 }
 
 func (s *Service) ListProfileResources(ctx context.Context) ([]ProfileResourceRecord, error) {
@@ -99,7 +99,7 @@ func (s *Service) ListProfileResources(ctx context.Context) ([]ProfileResourceRe
 	if err != nil {
 		return nil, err
 	}
-	out := append([]ProfileResourceRecord{}, reg.Resources...)
+	out := cloneProfileResources(reg.Resources)
 	sort.Slice(out, func(i, j int) bool { return out[i].ResourceID < out[j].ResourceID })
 	return out, nil
 }
@@ -133,7 +133,7 @@ func (s *Service) SetResourceHost(ctx context.Context, req SetResourceHostReques
 		if err := s.store.writeResources(reg); err != nil {
 			return ProfileResourceRecord{}, err
 		}
-		return resource, nil
+		return cloneProfileResource(resource), nil
 	}
 	return ProfileResourceRecord{}, ErrResourceNotFound
 }

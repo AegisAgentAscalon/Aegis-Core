@@ -90,6 +90,7 @@ func (s *Service) ListKnownRemoteResources(ctx context.Context) ([]RemoteResourc
 					DisplayName:   string(summary.Type),
 					OwnerDeviceID: peer.DeviceID,
 					Availability:  availability,
+					Tags:          []string{},
 					LastUpdated:   peer.LastSeen,
 				},
 				DeviceDisplayName:    peer.DisplayName,

@@ -105,7 +105,10 @@ func snapshotFingerprint(snapshot RegistrySnapshot) string {
 		}
 		return canonical.Devices[i].DeviceID < canonical.Devices[j].DeviceID
 	})
-	raw, _ := json.Marshal(canonical)
+	// Registry snapshots have a public codec that materializes nil capability
+	// slices as [] for compatibility. Fingerprints retain the historical
+	// canonical wire shape, including private-wire nil capability handling.
+	raw, _ := json.Marshal(registrySnapshotRecordFrom(canonical, false))
 	sum := sha256String(string(raw))
 	return sum[:16]
 }

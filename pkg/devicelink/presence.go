@@ -25,6 +25,7 @@ func (s *Service) PublishPresence(ctx context.Context) (PresenceRecord, error) {
 		SchemaVersion:        schemaVersion,
 		DeviceID:             current.DeviceID,
 		DisplayName:          current.DisplayName,
+		EndpointHints:        []EndpointHint{},
 		Capabilities:         append([]string{}, current.Capabilities...),
 		ResourcesSummary:     summarizeResources(resources.Resources),
 		LastSeen:             s.clock.Now().UTC(),

@@ -1165,3 +1165,144 @@ func (c *sendFailConnection) Receive(context.Context) (Message, error) {
 func (c *sendFailConnection) Close() error {
 	return nil
 }
+
+type copyCheckDiscovery struct {
+	published PresenceRecord
+	records   []PresenceRecord
+}
+
+func (p *copyCheckDiscovery) Publish(_ context.Context, record PresenceRecord) error {
+	p.published = record
+	return nil
+}
+
+func (p *copyCheckDiscovery) Discover(context.Context) ([]PresenceRecord, error) {
+	return p.records, nil
+}
+
+func TestServiceDiscoveryPortPreservesFacadeOwnershipAndEmptySlices(t *testing.T) {
+	discovery := &copyCheckDiscovery{}
+	svc := newTestService(t, "discovery-copy", WithDiscoveryProvider(discovery))
+	if _, err := svc.BootstrapCurrentDevice(context.Background(), BootstrapDeviceRequest{Capabilities: []string{"capability"}}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := svc.PublishPresence(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.EndpointHints == nil || record.Capabilities == nil || record.ResourcesSummary == nil {
+		t.Fatalf("successful presence output lost baseline empty-slice shape: %+v", record)
+	}
+	if discovery.published.Capabilities == nil {
+		t.Fatal("discovery provider received nil capabilities")
+	}
+	record.Capabilities[0] = "caller-mutated"
+	if discovery.published.Capabilities[0] == "caller-mutated" {
+		t.Fatal("discovery provider retained service result capability storage")
+	}
+	discovery.published.Capabilities[0] = "provider-mutated"
+	if record.Capabilities[0] == "provider-mutated" {
+		t.Fatal("service result retained discovery provider capability storage")
+	}
+}
+
+func TestDiscoveryPortCopiesProviderResults(t *testing.T) {
+	providerRecords := []PresenceRecord{{Capabilities: []string{"capability"}}}
+	owned := ownedDiscoveryProvider{provider: &copyCheckDiscovery{records: providerRecords}}
+	records, err := owned.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	records[0].Capabilities[0] = "caller-mutated"
+	if providerRecords[0].Capabilities[0] == "caller-mutated" {
+		t.Fatal("service retained discovery provider result storage")
+	}
+	if &records[0] == &providerRecords[0] {
+		t.Fatal("service retained discovery provider result slice storage")
+	}
+}
+
+type copyCheckTransport struct {
+	peer DiscoveredPeer
+	conn *copyCheckConnection
+}
+
+func (t *copyCheckTransport) Open(_ context.Context, peer DiscoveredPeer) (Connection, error) {
+	t.peer = peer
+	return t.conn, nil
+}
+
+type copyCheckConnection struct {
+	sent     Message
+	received Message
+}
+
+func (c *copyCheckConnection) Send(_ context.Context, msg Message) error {
+	c.sent = msg
+	return nil
+}
+
+func (c *copyCheckConnection) Receive(context.Context) (Message, error) {
+	return c.received, nil
+}
+
+func (c *copyCheckConnection) Close() error { return nil }
+
+func TestServiceTransportPortPreservesFacadeMessageOwnership(t *testing.T) {
+	transport := &copyCheckTransport{conn: &copyCheckConnection{received: Message{Payload: map[string]string{"reply": "original"}}}}
+	owned := ownedTransport{transport: transport}
+	peer := DiscoveredPeer{Presence: PresenceRecord{Capabilities: []string{"capability"}}}
+	conn, err := owned.Open(context.Background(), peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer.Presence.Capabilities[0] = "caller-mutated"
+	if transport.peer.Presence.Capabilities[0] == "caller-mutated" {
+		t.Fatal("transport retained caller peer storage")
+	}
+	payload := map[string]string{"request": "original"}
+	if err := conn.Send(context.Background(), Message{Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	payload["request"] = "caller-mutated"
+	if transport.conn.sent.Payload["request"] == "caller-mutated" {
+		t.Fatal("transport retained caller message payload storage")
+	}
+	received, err := conn.Receive(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	received.Payload["reply"] = "caller-mutated"
+	if transport.conn.received.Payload["reply"] == "caller-mutated" {
+		t.Fatal("caller retained transport message payload storage")
+	}
+}
+
+func TestPublicRegistrySnapshotMaterializesEmptyCapabilities(t *testing.T) {
+	publicKey, fingerprint := publicTrustMaterial(t)
+	snapshot := RegistrySnapshot{
+		SchemaVersion: RegistrySnapshotSchemaVersion,
+		Purpose:       RegistrySnapshotLocalBackup,
+		AppID:         "sample-app",
+		Namespace:     "snapshot",
+		Devices: []TrustedDevice{{
+			DeviceID: "device-peer", PublicKey: publicKey, PublicKeyFingerprint: fingerprint,
+			Capabilities: nil,
+		}},
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"capabilities":[]`) || strings.Contains(string(raw), `"capabilities":null`) {
+		t.Fatalf("public snapshot did not preserve empty capability JSON shape: %s", raw)
+	}
+	var decoded RegistrySnapshot
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Devices[0].Capabilities == nil {
+		t.Fatal("public snapshot decode returned nil capabilities")
+	}
+}
