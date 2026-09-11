@@ -54,6 +54,8 @@ Canonical digest means lowercase SHA-256 of Go encoding/json.Marshal on the type
 RelayEnvelope, exposed through ReliableEnvelopeDigest and used at every boundary.
 It is a Go JSON encoding contract, not a general cross-language canonical JSON
 standard. Domain digests use json.Marshal of the typed snapshot or proposal.
+Reliable envelope digests reject invalid UTF-8 metadata before acceptance so JSON
+repair cannot change persisted digests across supported Go toolchains.
 Look up accepted logical identity before current-time or quota admission so an
 exact retry still succeeds after expiry or at capacity. Reopen validates static
 structure and digests, never current-time validity of already accepted records.
@@ -135,6 +137,8 @@ is an explicit conflict without overwrite. Legacy ID-only duplicate checks alone
 are insufficient. Classify outside the inbox data lock, including trust callbacks;
 commit only if the saved revision still matches. Revision conflict retries a
 bounded number of times or leaves the item pending for the next call.
+Domains that decode but cannot be serialized receive a durable invalid_envelope
+rejection, including when recovering previously acknowledged pending ingress.
 
 Inbox ListRemoteSnapshots/ListRemoteProposals are the authoritative projections for
 this path. They do not silently write or merge legacy LocalMetadataStore files.

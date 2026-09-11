@@ -229,6 +229,11 @@ func (r *ReliableSyncReceiver) classify(ctx context.Context, state inboxState, e
 		digest = domainDigest(*decoded.Proposal)
 		key = decoded.Proposal.ProposalID
 	}
+	// Some timestamps decode successfully but cannot be encoded for storage.
+	// Quarantine the domain instead of leaving acknowledged ingress pending.
+	if digest == "" {
+		return reject("invalid_envelope")
+	}
 	view := NewMemoryMetadataStore()
 	for _, old := range state.Entries {
 		if old.Snapshot != nil {

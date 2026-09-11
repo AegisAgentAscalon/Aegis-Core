@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 )
 
 const ReliableProtocolVersion = 2
@@ -95,6 +96,12 @@ func ValidateReliableMailbox(ref ReliableMailboxRef) error {
 // ReliableEnvelopeDigest hashes encoding/json.Marshal of the typed envelope.
 // This is Go JSON encoding, not a cross-language canonical JSON standard.
 func ReliableEnvelopeDigest(envelope RelayEnvelope) (string, error) {
+	// JSON repairs invalid UTF-8; its re-encoding can change the saved digest.
+	for key, value := range envelope.Metadata {
+		if !utf8.ValidString(key) || !utf8.ValidString(value) {
+			return "", ErrInvalidMetadata
+		}
+	}
 	raw, err := json.Marshal(envelope)
 	if err != nil {
 		return "", ErrInvalidEnvelope
