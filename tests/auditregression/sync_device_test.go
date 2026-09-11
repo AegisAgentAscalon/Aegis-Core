@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AegisAgentAscalon/aegis-core/pkg/devicelink"
 	"github.com/AegisAgentAscalon/aegis-core/pkg/profilemesh"
 	"github.com/AegisAgentAscalon/aegis-core/pkg/profilesync"
 	"github.com/AegisAgentAscalon/aegis-core/pkg/relay"
