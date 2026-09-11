@@ -10,7 +10,7 @@ func (s *Service) ClaimIdentity(ctx context.Context, userID string) (IdentitySes
 		return IdentitySession{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	if s.session.AssuranceLevel == AssuranceLocked {
 		return cloneSession(s.session), ErrLocked
 	}
@@ -21,7 +21,7 @@ func (s *Service) ClaimIdentity(ctx context.Context, userID string) (IdentitySes
 	s.session.OperatorAssurance = OperatorClaimed
 	s.touchActivityLocked(s.clock.Now().UTC())
 	s.recompute()
-	s.record(ctx, EventIdentityClaimed, "identity claimed")
+	s.recordLocked(ctx, EventIdentityClaimed, "identity claimed")
 	return cloneSession(s.session), nil
 }
 
@@ -30,7 +30,7 @@ func (s *Service) RecognizeProfile(ctx context.Context, signals SessionSignals) 
 		return RecognitionResult{}, IdentitySession{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	s.refresh()
 	if s.session.AssuranceLevel == AssuranceLocked {
 		return RecognitionResult{}, cloneSession(s.session), ErrLocked
@@ -72,7 +72,7 @@ func (s *Service) RecognizeProfile(ctx context.Context, signals SessionSignals) 
 		s.setBaseAssuranceLocked()
 	}
 	if best.CandidateUserID != "" {
-		s.record(ctx, EventProfileRecognized, "profile recognized; verification still required")
+		s.recordLocked(ctx, EventProfileRecognized, "profile recognized; verification still required")
 	}
 	s.touchActivityLocked(s.clock.Now().UTC())
 	s.recompute()

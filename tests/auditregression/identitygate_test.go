@@ -1,5 +1,3 @@
-//go:build auditregression
-
 // Audit-only public API probes. Does not modify the audited source.
 package auditregression
 

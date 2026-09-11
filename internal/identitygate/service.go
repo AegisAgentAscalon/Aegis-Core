@@ -15,6 +15,8 @@ type Service struct {
 	providerName      string
 	clock             Clock
 	audit             AuditSink
+	auditQueue        []queuedAuditEvent
+	auditDraining     bool
 	verifiedHardUntil time.Time
 	freshHardUntil    time.Time
 	usedAttemptIDs    map[string]time.Time
@@ -70,7 +72,7 @@ func (s *Service) CurrentSession(ctx context.Context) (IdentitySession, error) {
 		return IdentitySession{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	s.refresh()
 	return cloneSession(s.session), nil
 }

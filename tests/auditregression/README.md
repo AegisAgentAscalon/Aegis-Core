@@ -45,3 +45,7 @@ W04a fixes SD-04. SD-02/SD-03 remain red for response loss and remote-write loss
 
 W05 promotes UA-03/UA-04 into ordinary Auth regression tests; 13 findings remain.
 W04 durable delivery remains open.
+
+W06 promotes the architecture and Identity Gate probes to ordinary tests.
+SD-08 is now covered by pkg/devicelink/memory_ownership_test.go, including both
+publish and discovery-output mutation. Remaining tagged findings stay failing.

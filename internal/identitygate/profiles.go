@@ -2,6 +2,8 @@ package identitygate
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -13,7 +15,14 @@ func (s *Service) CreateUserProfile(ctx context.Context, profile UserProfile) (U
 		return UserProfile{}, ErrInvalidProfile
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.profiles[profile.UserID] = profile
-	return profile, nil
+	defer s.unlockAndDrainAudit()
+	s.profiles[profile.UserID] = cloneProfile(profile)
+	return cloneProfile(profile), nil
+}
+
+func cloneProfile(profile UserProfile) UserProfile {
+	profile.RecognitionFeatures.Aliases = slices.Clone(profile.RecognitionFeatures.Aliases)
+	profile.RecognitionFeatures.Topics = slices.Clone(profile.RecognitionFeatures.Topics)
+	profile.RecognitionFeatures.SafeMetadata = maps.Clone(profile.RecognitionFeatures.SafeMetadata)
+	return profile
 }

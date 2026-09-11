@@ -7,7 +7,7 @@ func (s *Service) CreateModelIdentityPacket(ctx context.Context) (ModelIdentityP
 		return ModelIdentityPacket{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	s.refresh()
 	now := s.clock.Now().UTC()
 	packet := ModelIdentityPacket{
@@ -29,6 +29,6 @@ func (s *Service) CreateModelIdentityPacket(ctx context.Context) (ModelIdentityP
 	if !s.session.FreshVerifiedAt.IsZero() {
 		packet.FreshAgeSeconds = int64(now.Sub(s.session.FreshVerifiedAt).Seconds())
 	}
-	s.record(ctx, EventModelPacketCreated, "model identity packet created")
+	s.recordLocked(ctx, EventModelPacketCreated, "model identity packet created")
 	return packet, nil
 }

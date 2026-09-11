@@ -67,13 +67,13 @@ func (s *Service) requestReceipt(ctx context.Context, userID, reason string, fre
 
 func (s *Service) issueVerificationRequest(ctx context.Context, userID, reason string, fresh bool) (VerificationRequest, IdentitySession, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	s.refresh()
 	if err := ctx.Err(); err != nil {
 		return VerificationRequest{}, cloneSession(s.session), err
 	}
 	if s.session.AssuranceLevel == AssuranceLocked {
-		s.record(ctx, EventVerificationFailed, "verification denied because session is locked")
+		s.recordLocked(ctx, EventVerificationFailed, "verification denied because session is locked")
 		return VerificationRequest{}, cloneSession(s.session), ErrLocked
 	}
 	if len(s.usedAttemptIDs) >= maxReplayCacheEntries || len(s.usedAssertionIDs) >= maxReplayCacheEntries || len(s.usedReceiptIDs) >= maxReplayCacheEntries {
@@ -101,7 +101,7 @@ func (s *Service) issueVerificationRequest(ctx context.Context, userID, reason s
 		RequestedAt:       now,
 		ExpiresAt:         expiresAt,
 	}
-	s.record(ctx, EventVerificationRequested, "verification requested")
+	s.recordLocked(ctx, EventVerificationRequested, "verification requested")
 	return request, cloneSession(s.session), nil
 }
 
@@ -124,11 +124,11 @@ func (s *Service) reserveRandomIDLocked(prefix string, used map[string]time.Time
 
 func (s *Service) evaluateVerificationReceipt(ctx context.Context, request VerificationRequest, receipt VerificationReceipt) (VerificationReceipt, IdentitySession, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	s.refresh()
 
 	fail := func(err error) (VerificationReceipt, IdentitySession, error) {
-		s.record(ctx, EventVerificationFailed, "verification receipt rejected")
+		s.recordLocked(ctx, EventVerificationFailed, "verification receipt rejected")
 		return receipt, cloneSession(s.session), err
 	}
 	if err := ctx.Err(); err != nil {
@@ -222,7 +222,7 @@ func (s *Service) evaluateVerificationReceipt(ctx context.Context, request Verif
 		s.freshHardUntil = freshHardUntil
 	}
 	s.recompute()
-	s.record(ctx, EventVerificationSucceeded, "verification succeeded")
+	s.recordLocked(ctx, EventVerificationSucceeded, "verification succeeded")
 	return receipt, cloneSession(s.session), nil
 }
 
@@ -289,15 +289,15 @@ func pruneReplayCache(cache map[string]time.Time, now time.Time) {
 
 func (s *Service) failVerification(ctx context.Context) IdentitySession {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	s.refresh()
-	s.record(ctx, EventVerificationFailed, "verification failed")
+	s.recordLocked(ctx, EventVerificationFailed, "verification failed")
 	return cloneSession(s.session)
 }
 
 func (s *Service) sessionSnapshot() IdentitySession {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	s.refresh()
 	return cloneSession(s.session)
 }

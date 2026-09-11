@@ -14,16 +14,16 @@ func (s *Service) evaluateScope(ctx context.Context, scope Scope, consumeFresh b
 		return ScopeAccessDecision{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	s.refresh()
 	if s.session.AssuranceLevel != AssuranceLocked {
 		s.touchActivityLocked(s.clock.Now().UTC())
 	}
 	decision := s.evaluateScopeLocked(scope)
 	if decision.Allowed {
-		s.record(ctx, EventScopeAllowed, "scope allowed")
+		s.recordLocked(ctx, EventScopeAllowed, "scope allowed")
 	} else {
-		s.record(ctx, EventScopeDenied, decision.Reason)
+		s.recordLocked(ctx, EventScopeDenied, decision.Reason)
 	}
 	if decision.Allowed && consumeFresh && high(scope) && s.policy.BurnFreshAfterSensitiveUse {
 		s.burnFreshLocked()
@@ -58,14 +58,14 @@ func (s *Service) LockSession(ctx context.Context, reason string) (IdentitySessi
 		return IdentitySession{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	s.bumpVerificationEpochLocked()
 	s.clearVerificationStateLocked(safe(reason))
 	s.session.AssuranceLevel = AssuranceLocked
 	s.session.OperatorAssurance = OperatorLocked
 	s.session.LockReason = safe(reason)
 	s.recompute()
-	s.record(ctx, EventSessionLocked, "session locked")
+	s.recordLocked(ctx, EventSessionLocked, "session locked")
 	return cloneSession(s.session), nil
 }
 
@@ -74,11 +74,11 @@ func (s *Service) DowngradeSession(ctx context.Context, reason string) (Identity
 		return IdentitySession{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	s.bumpVerificationEpochLocked()
 	s.clearVerificationStateLocked(safe(reason))
 	s.recompute()
-	s.record(ctx, EventSessionDowngraded, "session downgraded")
+	s.recordLocked(ctx, EventSessionDowngraded, "session downgraded")
 	return cloneSession(s.session), nil
 }
 

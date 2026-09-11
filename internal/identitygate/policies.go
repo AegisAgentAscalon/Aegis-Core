@@ -26,6 +26,11 @@ type ChannelPolicyDecision struct {
 }
 
 func EvaluateChannelPolicy(req ChannelPolicyRequest) ChannelPolicyDecision {
+	switch req.Channel {
+	case DeliveryVoice, DeliveryDirect, DeliveryScreen:
+	default:
+		return ChannelPolicyDecision{Hold: true, SafeMessage: "Use a safer channel before continuing."}
+	}
 	if !req.ProtectedContent && !req.HighRiskContent {
 		return ChannelPolicyDecision{Allowed: true}
 	}

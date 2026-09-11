@@ -7,7 +7,7 @@ func (s *Service) ClassifyPromptFragment(ctx context.Context, fragment PromptFra
 		return PromptFragment{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer s.unlockAndDrainAudit()
 	s.refresh()
 	if fragment.SourceClass == "" {
 		fragment.SourceClass = SourceUnknown
