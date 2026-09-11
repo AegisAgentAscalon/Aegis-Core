@@ -3,7 +3,6 @@ package profilesync
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -111,14 +110,18 @@ func (p *FileObjectProvider) GetManifest(ctx context.Context, profileNamespace s
 		return CloudProfileManifest{}, err
 	}
 	var file manifestFile
-	if err := readJSONFile(filepath.Join(p.namespaceRoot(), "manifest.json"), &file); err != nil {
+	err := readJSONFile(filepath.Join(p.namespaceRoot(), "manifest.json"), &file)
+	if errors.Is(err, ErrLocalStoreNotFound) {
+		err = readJSONFile(filepath.Join(p.legacyRoot(), "manifest.json"), &file)
+	}
+	if err != nil {
 		if errors.Is(err, ErrLocalStoreNotFound) {
 			return CloudProfileManifest{}, ErrCloudObjectNotFound
 		}
 		return CloudProfileManifest{}, ErrCloudStoreCorrupt
 	}
 	manifest, err := NormalizeCloudManifest(file.Manifest)
-	if err != nil {
+	if err != nil || manifest.ProfileNamespace != p.namespace {
 		return CloudProfileManifest{}, ErrCloudStoreCorrupt
 	}
 	return manifest, nil
@@ -174,13 +177,17 @@ func (p *FileObjectProvider) GetObject(ctx context.Context, ref CloudObjectRef) 
 		return nil, err
 	}
 	var file objectFile
-	if err := readJSONFile(path, &file); err != nil {
+	err = readJSONFile(path, &file)
+	if errors.Is(err, ErrLocalStoreNotFound) {
+		err = readJSONFile(p.legacyObjectPath(ref), &file)
+	}
+	if err != nil {
 		if errors.Is(err, ErrLocalStoreNotFound) {
 			return nil, ErrCloudObjectNotFound
 		}
 		return nil, ErrCloudStoreCorrupt
 	}
-	if err := ValidateCloudObjectRef(file.Ref); err != nil || !sameCloudObjectRef(file.Ref, ref) || cloudObjectHash(file.Body) != ref.Hash {
+	if err := ValidateCloudObjectRef(file.Ref); err != nil || !sameCloudObjectRef(file.Ref, ref) || cloudObjectHash(file.Body) != ref.Hash || len(file.Body) != ref.SizeBytes {
 		return nil, ErrCloudHashMismatch
 	}
 	return append([]byte{}, file.Body...), nil
@@ -201,27 +208,14 @@ func (p *FileObjectProvider) ListObjects(ctx context.Context, query CloudObjectQ
 	if err := p.ensureLocked(ctx); err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(p.objectsDir())
+	all, err := p.objectRefsLocked()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, ErrCloudProviderUnavailable
+		return nil, err
 	}
 	var refs []CloudObjectRef
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		var file objectFile
-		if err := readJSONFile(filepath.Join(p.objectsDir(), entry.Name()), &file); err != nil {
-			return nil, ErrCloudStoreCorrupt
-		}
-		if err := ValidateCloudObjectRef(file.Ref); err != nil || file.Ref.ProfileNamespace != p.namespace || cloudObjectHash(file.Body) != file.Ref.Hash {
-			return nil, ErrCloudStoreCorrupt
-		}
-		if query.Kind == "" || file.Ref.Kind == query.Kind {
-			refs = append(refs, file.Ref)
+	for _, ref := range all {
+		if query.Kind == "" || ref.Kind == query.Kind {
+			refs = append(refs, ref)
 		}
 	}
 	sort.Slice(refs, func(i, j int) bool { return refs[i].ObjectID < refs[j].ObjectID })

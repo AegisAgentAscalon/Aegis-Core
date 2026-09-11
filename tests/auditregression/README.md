@@ -37,3 +37,5 @@ replacement for ordinary CI or a claim that every audit scenario is covered.
 Execute one work package per user turn unless the user explicitly authorizes
 otherwise. No work package changes consumers' committed dependency selections
 without a separate migration decision.
+
+W03 promotes SD-01/SD-07 to ordinary cloud identity regression tests; 16 audited findings remain.

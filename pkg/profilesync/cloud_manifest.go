@@ -84,6 +84,9 @@ func CompareCloudManifests(local *CloudProfileManifest, remote CloudProfileManif
 	if err != nil {
 		return cloudManifestComparison(CloudManifestInvalid, true, local, &remoteNormalized, cloudIssue("invalid_local_manifest", err, true))
 	}
+	if localNormalized.ProfileNamespace != remoteNormalized.ProfileNamespace {
+		return cloudManifestComparison(CloudManifestInvalid, true, &localNormalized, &remoteNormalized, cloudIssue("manifest_namespace_mismatch", ErrInvalidCloudManifest, true))
+	}
 	switch {
 	case remoteNormalized.Generation > localNormalized.Generation:
 		return cloudManifestComparison(CloudManifestRemoteNewer, false, &localNormalized, &remoteNormalized)

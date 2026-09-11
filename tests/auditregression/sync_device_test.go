@@ -31,21 +31,6 @@ func TestSyncDeviceAudit(t *testing.T) {
 	now := time.Now().UTC()
 	root := t.TempDir()
 
-	cloud, err := profilesync.NewFileObjectProvider(profilesync.FileObjectProviderConfig{RootDir: root + "/cloud", ProfileNamespace: "audit"})
-	must(err)
-	object := profilesync.CloudSyncObject{ProfileNamespace: "audit", ObjectID: "a:b", Kind: profilesync.CloudObjectSnapshotMetadata, Body: []byte(`{"x":1}`), CreatedAt: now}
-	first, err := cloud.PutObject(ctx, object)
-	must(err)
-	object.ObjectID = "a_b"
-	_, err = cloud.PutObject(ctx, object)
-	must(err)
-	_, firstErr := cloud.GetObject(ctx, first)
-	refs, err := cloud.ListObjects(ctx, profilesync.CloudObjectQuery{ProfileNamespace: "audit"})
-	must(err)
-	if firstErr != nil || len(refs) != 2 {
-		t.Errorf("SD-01: colliding object IDs: retrieval=%v count=%d", firstErr, len(refs))
-	}
-
 	provider, err := relay.NewLocalDevProvider(relay.LocalDevProviderConfig{})
 	must(err)
 	handler, err := relay.NewHTTPRelayHandler(relay.HTTPRelayHandlerConfig{Provider: provider, AllowUnauthenticated: true})
@@ -137,10 +122,4 @@ func TestSyncDeviceAudit(t *testing.T) {
 		t.Error("SD-08: caller mutation changed discovery record")
 	}
 
-	local := profilesync.CloudProfileManifest{SchemaVersion: 1, ProfileNamespace: "profile-a", ManifestID: "ma", Generation: 1, CreatedAt: now}
-	remote := profilesync.CloudProfileManifest{SchemaVersion: 1, ProfileNamespace: "profile-b", ManifestID: "mb", Generation: 2, CreatedAt: now}
-	comparison := profilesync.CompareCloudManifests(&local, remote, now)
-	if comparison.Relation == "remote_newer" {
-		t.Error("SD-07: unrelated namespaces compared as remote newer")
-	}
 }
