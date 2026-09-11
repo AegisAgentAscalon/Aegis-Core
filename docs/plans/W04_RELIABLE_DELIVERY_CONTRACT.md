@@ -14,6 +14,9 @@ The guarantee concerns acknowledged filesystem commits and process restart under
 W07's trusted, single-writer root contract. It is not a power-loss guarantee or a
 cross-process transaction. Parent-directory flush and hosted Linux/Windows/race
 qualification remain outside the proven local capability.
+One owning provider/inbox instance per state path is required. Multiple receivers
+may share that inbox instance; revision checks do not coordinate independently
+reopened objects or another process.
 
 Custody transitions are provider spool -> local inbox -> committed metadata or
 durable rejection. A receive is read-only. Acknowledge follows persisted ingress.
@@ -46,6 +49,10 @@ logical identity (source device ID, message ID) before reporting acceptance.
 The same logical identity and digest returns the same receipt, including after
 acknowledgement; a changed digest is a conflict. The caller retries the exact
 envelope, including timestamps, after an ambiguous send response.
+Canonical digest means lowercase SHA-256 of Go encoding/json.Marshal on the typed
+RelayEnvelope, exposed through ReliableEnvelopeDigest and used at every boundary.
+It is a Go JSON encoding contract, not a general cross-language canonical JSON
+standard. Domain digests use json.Marshal of the typed snapshot or proposal.
 Look up accepted logical identity before current-time or quota admission so an
 exact retry still succeeds after expiry or at capacity. Reopen validates static
 structure and digests, never current-time validity of already accepted records.
