@@ -5,41 +5,44 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
-
-	internal "github.com/AegisAgentAscalon/aegis-core/internal/profilemesh"
 )
 
 func TestProfileMeshPublicDTOConversionsPreserveSnapshotHints(t *testing.T) {
-	internalSnapshot := internal.ProfileMeshSnapshot{
+	snapshot := ProfileMeshSnapshot{
 		SchemaVersion: 1,
 		AppID:         "aegis-test",
 		Namespace:     "profilemesh-test",
-		Profile:       internal.ProfileIdentity{ProfileID: "prof_test", AppID: "aegis-test", Namespace: "profilemesh-test"},
-		RelayHints: []internal.ProfileRelayHint{{
+		Profile:       ProfileIdentity{ProfileID: "prof_test", AppID: "aegis-test", Namespace: "profilemesh-test"},
+		RelayHints: []ProfileRelayHint{{
 			ProfileID:       "prof_test",
 			DeviceID:        "device-1",
 			RelayProviderID: "relay-test",
-			EndpointType:    internal.EndpointRelay,
+			EndpointType:    EndpointRelay,
 			Capabilities:    []string{"rendezvous"},
 			Metadata:        map[string]string{"safe": "value"},
 		}},
-		EndpointHints: []internal.ProfileEndpointHint{{
+		EndpointHints: []ProfileEndpointHint{{
 			ProfileID:    "prof_test",
 			DeviceID:     "device-1",
-			EndpointType: internal.EndpointLocal,
+			EndpointType: EndpointLocal,
 			Address:      "127.0.0.1",
 			Capabilities: []string{"lan"},
 		}},
 	}
-	publicSnapshot := fromInternalSnapshot(internalSnapshot)
-	roundTrip := toInternalSnapshot(publicSnapshot)
-	if !reflect.DeepEqual(roundTrip.RelayHints, internalSnapshot.RelayHints) {
-		t.Fatalf("relay hints were not preserved: got %+v want %+v", roundTrip.RelayHints, internalSnapshot.RelayHints)
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(roundTrip.EndpointHints, internalSnapshot.EndpointHints) {
-		t.Fatalf("endpoint hints were not preserved: got %+v want %+v", roundTrip.EndpointHints, internalSnapshot.EndpointHints)
+	var roundTrip ProfileMeshSnapshot
+	if err := json.Unmarshal(raw, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if len(roundTrip.RelayHints) != 1 || roundTrip.RelayHints[0].Metadata["safe"] != "value" {
+		t.Fatalf("relay hints were not preserved: got %+v", roundTrip.RelayHints)
+	}
+	if len(roundTrip.EndpointHints) != 1 || roundTrip.EndpointHints[0].Address != "127.0.0.1" {
+		t.Fatalf("endpoint hints were not preserved: got %+v", roundTrip.EndpointHints)
 	}
 }
 

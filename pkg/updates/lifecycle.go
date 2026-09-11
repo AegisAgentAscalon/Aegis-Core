@@ -1,12 +1,28 @@
+// Package updates exposes the public, app-agnostic Aegis Update Framework.
 package updates
 
 import (
 	"context"
-
-	internal "github.com/AegisAgentAscalon/aegis-core/internal/updates"
+	"errors"
+	"os"
+	"strings"
+	"time"
 )
 
-const LifecycleHistoryLimit = internal.LifecycleHistoryLimit
+const (
+	lifecycleSchemaVersion    = 1
+	LifecycleHistoryLimit     = 32
+	lifecycleIdempotencyLimit = 64
+)
+
+var (
+	ErrLifecycleRevisionStale       = errors.New("update lifecycle revision is stale")
+	ErrLifecycleIdempotencyConflict = errors.New("update lifecycle idempotency conflict")
+	ErrLifecycleRestageConflict     = errors.New("active update lifecycle conflicts with restaging")
+	ErrLifecycleTransition          = errors.New("illegal update lifecycle transition")
+	ErrInvalidLifecycleRequest      = errors.New("invalid update lifecycle request")
+	ErrLegacyExecutionDisabled      = errors.New("legacy update execution is disabled")
+)
 
 type LifecyclePhase string
 
@@ -96,8 +112,7 @@ type ValidationSummary struct {
 	HandoffRehashedAt string `json:"handoff_rehashed_at,omitempty"`
 }
 
-// ExecutionCapabilities is explicit: Core can reveal and record, but cannot
-// install, extract, restart, or roll back an application.
+// ExecutionCapabilities truthfully separates Core records from app execution.
 type ExecutionCapabilities struct {
 	CanRevealVerifiedPackage bool `json:"can_reveal_verified_package"`
 	CanRecordExternalReports bool `json:"can_record_external_reports"`
@@ -129,7 +144,7 @@ type ActionHistoryEntry struct {
 	ConsumerID string             `json:"consumer_id,omitempty"`
 }
 
-// LifecycleEnvelope is one atomic, safe summary separate from Manifest v1.
+// LifecycleEnvelope is the single atomic, safe record of package lifecycle state.
 type LifecycleEnvelope struct {
 	LifecycleID  string                `json:"lifecycle_id"`
 	Revision     uint64                `json:"revision"`
@@ -149,8 +164,7 @@ type PackageHandoffRequest struct {
 	ConsumerID       string `json:"consumer_id"`
 }
 
-// PackageHandoff exposes ArtifactPath only to the direct Go caller. JSON and
-// safe summaries omit it.
+// PackageHandoff returns a freshly rehashed local path only to the direct Go caller.
 type PackageHandoff struct {
 	Envelope     LifecycleEnvelope `json:"envelope"`
 	ArtifactPath string            `json:"-"`
@@ -171,105 +185,281 @@ type ExternalCompletionReport struct {
 	Outcome          CompletionOutcome `json:"outcome"`
 }
 
-// GetLifecycleEnvelope returns the safe record-only lifecycle state.
+type lifecycleRecord struct {
+	SchemaVersion int                          `json:"schema_version"`
+	Envelope      LifecycleEnvelope            `json:"envelope"`
+	Idempotency   []lifecycleIdempotencyRecord `json:"idempotency"`
+}
+
+type lifecycleIdempotencyRecord struct {
+	Key         string `json:"key"`
+	Fingerprint string `json:"fingerprint"`
+}
+
 func (s *Service) GetLifecycleEnvelope(ctx context.Context) (LifecycleEnvelope, error) {
-	envelope, err := s.svc.GetLifecycleEnvelope(ctx)
+	ctx = normalizeContext(ctx)
+	if err := contextError(ctx); err != nil {
+		return LifecycleEnvelope{}, err
+	}
+	s.workflowMu.Lock()
+	defer s.workflowMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, _, err := s.lifecycleRecordLocked(time.Now().UTC())
 	if err != nil {
 		return LifecycleEnvelope{}, err
 	}
-	return fromInternalLifecycleEnvelope(envelope), nil
+	return cloneLifecycleEnvelope(record.Envelope), nil
 }
 
-// RecordPackageHandoff records a handoff and reveals freshly rehashed package
-// bytes without invoking callbacks, processes, shells, or installers.
+// RecordPackageHandoff records a consumer handoff and reveals no path until the
+// staged bytes have been rehashed immediately before the atomic record write.
 func (s *Service) RecordPackageHandoff(ctx context.Context, request PackageHandoffRequest) (PackageHandoff, error) {
-	handoff, err := s.svc.RecordPackageHandoff(ctx, internal.PackageHandoffRequest{
-		ExpectedRevision: request.ExpectedRevision,
-		IdempotencyKey:   request.IdempotencyKey,
-		ConsumerID:       request.ConsumerID,
-	})
+	ctx = normalizeContext(ctx)
+	if err := contextError(ctx); err != nil {
+		return PackageHandoff{}, err
+	}
+	if err := validateHandoffRequest(request); err != nil {
+		return PackageHandoff{}, err
+	}
+	s.workflowMu.Lock()
+	defer s.workflowMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	record, staged, err := s.lifecycleRecordLocked(now)
 	if err != nil {
 		return PackageHandoff{}, err
 	}
-	return PackageHandoff{Envelope: fromInternalLifecycleEnvelope(handoff.Envelope), ArtifactPath: handoff.ArtifactPath}, nil
+	fingerprint := lifecycleFingerprint("handoff", request.ConsumerID)
+	if duplicate, err := lifecycleDuplicate(record, request.IdempotencyKey, fingerprint); err != nil {
+		return PackageHandoff{}, err
+	} else if duplicate {
+		return PackageHandoff{Envelope: cloneLifecycleEnvelope(record.Envelope), ArtifactPath: staged.ArtifactPath}, nil
+	}
+	if request.ExpectedRevision != record.Envelope.Revision {
+		return PackageHandoff{}, ErrLifecycleRevisionStale
+	}
+	if record.Envelope.Phase != LifecyclePhaseStaged {
+		return PackageHandoff{}, ErrLifecycleTransition
+	}
+
+	at := lifecycleTimestamp(now)
+	record.Envelope.Revision++
+	record.Envelope.Phase = LifecyclePhaseHandoffRecorded
+	record.Envelope.Route.ConsumerID = request.ConsumerID
+	record.Envelope.Validation.RehashedAtHandoff = true
+	record.Envelope.Validation.HandoffRehashedAt = at
+	record.Envelope.Steps.Handoff = LifecycleStep{Status: LifecycleStepCompleted, At: at}
+	record.Envelope.UpdatedAt = at
+	appendLifecycleHistory(&record.Envelope, ActionHistoryEntry{
+		Revision: record.Envelope.Revision, Event: LifecycleEventHandoff,
+		Status: string(LifecycleStepCompleted), At: at, ConsumerID: request.ConsumerID,
+	})
+	rememberLifecycleIdempotency(&record, request.IdempotencyKey, fingerprint)
+	if err := s.store.writeLifecycle(record); err != nil {
+		return PackageHandoff{}, err
+	}
+	return PackageHandoff{Envelope: cloneLifecycleEnvelope(record.Envelope), ArtifactPath: staged.ArtifactPath}, nil
 }
 
-// ReportExternalAction records consumer-reported work and never performs it.
+// ReportExternalAction records consumer-reported work; it never performs that work.
 func (s *Service) ReportExternalAction(ctx context.Context, report ExternalActionReport) (LifecycleEnvelope, error) {
-	envelope, err := s.svc.ReportExternalAction(ctx, internal.ExternalActionReport{
-		ExpectedRevision: report.ExpectedRevision,
-		IdempotencyKey:   report.IdempotencyKey,
-		ConsumerID:       report.ConsumerID,
-		Action:           internal.ExternalActionKind(report.Action),
-		Status:           internal.ExternalActionStatus(report.Status),
-	})
+	ctx = normalizeContext(ctx)
+	if err := contextError(ctx); err != nil {
+		return LifecycleEnvelope{}, err
+	}
+	if err := validateExternalActionReport(report); err != nil {
+		return LifecycleEnvelope{}, err
+	}
+	s.workflowMu.Lock()
+	defer s.workflowMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	record, _, err := s.lifecycleRecordLocked(now)
 	if err != nil {
 		return LifecycleEnvelope{}, err
 	}
-	return fromInternalLifecycleEnvelope(envelope), nil
+	fingerprint := lifecycleFingerprint("external-action", report.ConsumerID, string(report.Action), string(report.Status))
+	if duplicate, err := lifecycleDuplicate(record, report.IdempotencyKey, fingerprint); err != nil {
+		return LifecycleEnvelope{}, err
+	} else if duplicate {
+		return cloneLifecycleEnvelope(record.Envelope), nil
+	}
+	if report.ExpectedRevision != record.Envelope.Revision {
+		return LifecycleEnvelope{}, ErrLifecycleRevisionStale
+	}
+	if record.Envelope.Phase != LifecyclePhaseHandoffRecorded && record.Envelope.Phase != LifecyclePhaseExternalActionReported {
+		return LifecycleEnvelope{}, ErrLifecycleTransition
+	}
+	if report.ConsumerID != record.Envelope.Route.ConsumerID {
+		return LifecycleEnvelope{}, ErrInvalidLifecycleRequest
+	}
+
+	at := lifecycleTimestamp(now)
+	record.Envelope.Revision++
+	record.Envelope.Phase = LifecyclePhaseExternalActionReported
+	record.Envelope.Steps.ExternalAction = LifecycleStep{Status: LifecycleStepReported, At: at}
+	record.Envelope.UpdatedAt = at
+	appendLifecycleHistory(&record.Envelope, ActionHistoryEntry{
+		Revision: record.Envelope.Revision, Event: LifecycleEventExternalAction, Action: report.Action,
+		Status: string(report.Status), At: at, ConsumerID: report.ConsumerID,
+	})
+	rememberLifecycleIdempotency(&record, report.IdempotencyKey, fingerprint)
+	if err := s.store.writeLifecycle(record); err != nil {
+		return LifecycleEnvelope{}, err
+	}
+	return cloneLifecycleEnvelope(record.Envelope), nil
 }
 
 // ReportExternalCompletion records a consumer-owned final outcome.
 func (s *Service) ReportExternalCompletion(ctx context.Context, report ExternalCompletionReport) (LifecycleEnvelope, error) {
-	envelope, err := s.svc.ReportExternalCompletion(ctx, internal.ExternalCompletionReport{
-		ExpectedRevision: report.ExpectedRevision,
-		IdempotencyKey:   report.IdempotencyKey,
-		ConsumerID:       report.ConsumerID,
-		Outcome:          internal.CompletionOutcome(report.Outcome),
-	})
+	ctx = normalizeContext(ctx)
+	if err := contextError(ctx); err != nil {
+		return LifecycleEnvelope{}, err
+	}
+	if err := validateExternalCompletionReport(report); err != nil {
+		return LifecycleEnvelope{}, err
+	}
+	s.workflowMu.Lock()
+	defer s.workflowMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	record, _, err := s.lifecycleRecordLocked(now)
 	if err != nil {
 		return LifecycleEnvelope{}, err
 	}
-	return fromInternalLifecycleEnvelope(envelope), nil
+	fingerprint := lifecycleFingerprint("completion", report.ConsumerID, string(report.Outcome))
+	if duplicate, err := lifecycleDuplicate(record, report.IdempotencyKey, fingerprint); err != nil {
+		return LifecycleEnvelope{}, err
+	} else if duplicate {
+		return cloneLifecycleEnvelope(record.Envelope), nil
+	}
+	if report.ExpectedRevision != record.Envelope.Revision {
+		return LifecycleEnvelope{}, ErrLifecycleRevisionStale
+	}
+	if record.Envelope.Phase != LifecyclePhaseExternalActionReported {
+		return LifecycleEnvelope{}, ErrLifecycleTransition
+	}
+	if report.ConsumerID != record.Envelope.Route.ConsumerID {
+		return LifecycleEnvelope{}, ErrInvalidLifecycleRequest
+	}
+
+	at := lifecycleTimestamp(now)
+	record.Envelope.Revision++
+	record.Envelope.Phase = LifecyclePhaseCompleted
+	record.Envelope.Steps.Completion = LifecycleStep{Status: completionStepStatus(report.Outcome), At: at}
+	record.Envelope.UpdatedAt = at
+	appendLifecycleHistory(&record.Envelope, ActionHistoryEntry{
+		Revision: record.Envelope.Revision, Event: LifecycleEventCompletion,
+		Status: string(report.Outcome), At: at, ConsumerID: report.ConsumerID,
+	})
+	rememberLifecycleIdempotency(&record, report.IdempotencyKey, fingerprint)
+	if err := s.store.writeLifecycle(record); err != nil {
+		return LifecycleEnvelope{}, err
+	}
+	return cloneLifecycleEnvelope(record.Envelope), nil
 }
 
-func fromInternalLifecycleEnvelope(envelope internal.LifecycleEnvelope) LifecycleEnvelope {
-	history := make([]ActionHistoryEntry, 0, len(envelope.History))
-	for _, entry := range envelope.History {
-		history = append(history, ActionHistoryEntry{
-			Revision: entry.Revision, Event: LifecycleEvent(entry.Event), Action: ExternalActionKind(entry.Action),
-			Status: entry.Status, At: entry.At, ConsumerID: entry.ConsumerID,
-		})
+func (s *Service) lifecycleRecordLocked(now time.Time) (lifecycleRecord, StagedUpdate, error) {
+	stagedRecord, err := s.store.readStaged()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return lifecycleRecord{}, StagedUpdate{}, ErrStagedUpdateNotFound
+		}
+		return lifecycleRecord{}, StagedUpdate{}, ErrStorageUnavailable
 	}
-	return LifecycleEnvelope{
-		LifecycleID: envelope.LifecycleID,
-		Revision:    envelope.Revision,
-		Phase:       LifecyclePhase(envelope.Phase),
+	if err := validateStagedUpdateReadyFor(s.cfg, s.store, stagedRecord, now); err != nil {
+		return lifecycleRecord{}, StagedUpdate{}, err
+	}
+	staged := stagedRecord.StagedUpdate
+	info, err := os.Lstat(staged.ArtifactPath)
+	if err != nil || info.Size() != staged.Size {
+		return lifecycleRecord{}, StagedUpdate{}, ErrVerificationFailed
+	}
+
+	record, err := s.store.readLifecycle()
+	if errors.Is(err, os.ErrNotExist) {
+		record = newLifecycleRecord(staged, now)
+		if err := s.store.writeLifecycle(record); err != nil {
+			return lifecycleRecord{}, StagedUpdate{}, err
+		}
+		return record, staged, nil
+	}
+	if err != nil || validateLifecycleRecord(record, staged) != nil {
+		return lifecycleRecord{}, StagedUpdate{}, ErrStorageUnavailable
+	}
+	return record, staged, nil
+}
+
+func (s *Service) checkLifecycleBeforeRestage(cfg AppConfig, st *store, candidate stagedUpdateRecord, now time.Time) (StageResult, bool, error) {
+	record, err := st.readLifecycle()
+	if errors.Is(err, os.ErrNotExist) {
+		return StageResult{}, false, nil
+	}
+	if err != nil {
+		return StageResult{}, false, ErrStorageUnavailable
+	}
+	existing, err := st.readStaged()
+	if err != nil || validateLifecycleRecord(record, existing.StagedUpdate) != nil {
+		return StageResult{}, false, ErrStorageUnavailable
+	}
+	if record.Envelope.Phase != LifecyclePhaseStaged || !sameStagedPackage(existing, candidate) {
+		return StageResult{}, false, ErrLifecycleRestageConflict
+	}
+	if err := validateStagedUpdateReadyFor(cfg, st, existing, now); err != nil {
+		return StageResult{}, false, err
+	}
+	return StageResult{
+		Version: existing.Version, ArtifactName: existing.ArtifactName, Staged: true,
+		Message: "update already staged",
+	}, true, nil
+}
+
+func sameStagedPackage(left, right stagedUpdateRecord) bool {
+	l, r := left.StagedUpdate, right.StagedUpdate
+	return l.Source == r.Source && left.SourceKey == right.SourceKey && left.PolicyKey == right.PolicyKey &&
+		l.AppID == r.AppID && l.Version == r.Version && l.Channel == r.Channel &&
+		l.Platform == r.Platform && l.Architecture == r.Architecture &&
+		l.ArtifactName == r.ArtifactName && strings.EqualFold(l.SHA256, r.SHA256) &&
+		l.Size == r.Size && l.RequiredRestart == r.RequiredRestart &&
+		l.ApplyBehavior == r.ApplyBehavior
+}
+
+func newLifecycleRecord(staged StagedUpdate, now time.Time) lifecycleRecord {
+	stagedAt := lifecycleTimestamp(staged.StagedAt)
+	validatedAt := lifecycleTimestamp(now)
+	packageID := lifecyclePackageID(staged)
+	envelope := LifecycleEnvelope{
+		LifecycleID: lifecycleID(packageID, stagedAt),
+		Revision:    1,
+		Phase:       LifecyclePhaseStaged,
 		Package: PackageSummary{
-			ID: envelope.Package.ID, Source: fromInternalSourceSummary(envelope.Package.Source), AppID: envelope.Package.AppID,
-			Version: envelope.Package.Version, Channel: Channel(envelope.Package.Channel), Platform: envelope.Package.Platform,
-			Architecture: envelope.Package.Architecture, ArtifactName: envelope.Package.ArtifactName,
-			SHA256: envelope.Package.SHA256, Size: envelope.Package.Size, StagedAt: envelope.Package.StagedAt,
-			RequiresRestart: envelope.Package.RequiresRestart,
+			ID: packageID, Source: staged.Source, AppID: staged.AppID, Version: staged.Version,
+			Channel: staged.Channel, Platform: staged.Platform, Architecture: staged.Architecture,
+			ArtifactName: staged.ArtifactName, SHA256: strings.ToLower(staged.SHA256), Size: staged.Size,
+			StagedAt: stagedAt, RequiresRestart: staged.RequiredRestart,
 		},
-		Route: RouteSummary{
-			Mode: envelope.Route.Mode, Owner: envelope.Route.Owner,
-			ArtifactAccess: envelope.Route.ArtifactAccess, ConsumerID: envelope.Route.ConsumerID,
-		},
-		Validation: ValidationSummary{
-			SHA256Verified: envelope.Validation.SHA256Verified, SizeVerified: envelope.Validation.SizeVerified,
-			ValidatedAt: envelope.Validation.ValidatedAt, RehashedAtHandoff: envelope.Validation.RehashedAtHandoff,
-			HandoffRehashedAt: envelope.Validation.HandoffRehashedAt,
-		},
-		Capabilities: ExecutionCapabilities{
-			CanRevealVerifiedPackage: envelope.Capabilities.CanRevealVerifiedPackage,
-			CanRecordExternalReports: envelope.Capabilities.CanRecordExternalReports,
-			CanExecuteInstaller:      envelope.Capabilities.CanExecuteInstaller,
-			CanExtractPackage:        envelope.Capabilities.CanExtractPackage,
-			CanRestartApplication:    envelope.Capabilities.CanRestartApplication,
-			CanRollbackApplication:   envelope.Capabilities.CanRollbackApplication,
-		},
+		Route:        RouteSummary{Mode: "record_only", Owner: "consumer", ArtifactAccess: "explicit_verified_handoff"},
+		Validation:   ValidationSummary{SHA256Verified: true, SizeVerified: true, ValidatedAt: validatedAt},
+		Capabilities: recordOnlyCapabilities(),
 		Steps: LifecycleSteps{
-			Staged:         fromInternalLifecycleStep(envelope.Steps.Staged),
-			Validated:      fromInternalLifecycleStep(envelope.Steps.Validated),
-			Handoff:        fromInternalLifecycleStep(envelope.Steps.Handoff),
-			ExternalAction: fromInternalLifecycleStep(envelope.Steps.ExternalAction),
-			Completion:     fromInternalLifecycleStep(envelope.Steps.Completion),
+			Staged:         LifecycleStep{Status: LifecycleStepCompleted, At: stagedAt},
+			Validated:      LifecycleStep{Status: LifecycleStepCompleted, At: validatedAt},
+			Handoff:        LifecycleStep{Status: LifecycleStepPending},
+			ExternalAction: LifecycleStep{Status: LifecycleStepPending},
+			Completion:     LifecycleStep{Status: LifecycleStepPending},
 		},
-		History: history, UpdatedAt: envelope.UpdatedAt,
+		UpdatedAt: validatedAt,
 	}
-}
-
-func fromInternalLifecycleStep(step internal.LifecycleStep) LifecycleStep {
-	return LifecycleStep{Status: LifecycleStepStatus(step.Status), At: step.At}
+	envelope.History = []ActionHistoryEntry{
+		{Revision: 1, Event: LifecycleEventStaged, Status: string(LifecycleStepCompleted), At: stagedAt},
+		{Revision: 1, Event: LifecycleEventValidated, Status: string(LifecycleStepCompleted), At: validatedAt},
+	}
+	return lifecycleRecord{SchemaVersion: lifecycleSchemaVersion, Envelope: envelope}
 }

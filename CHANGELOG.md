@@ -4,6 +4,17 @@ All notable changes to Aegis Core are recorded here. The repository remains expe
 
 ## Unreleased
 
+### Module organization
+
+- Consolidated Auth, Device Link, Profile Mesh, Setup State and Updates under
+  their public domain owners, removing duplicate internal contract trees while
+  retaining private storage records and the existing public API paths.
+- Divided large service implementations into responsibility files; retained
+  state-owning structs, injected host ports and focused private Identity Gate
+  and Secret Store implementations.
+- Added the architecture and ownership map. This structural pass leaves the
+  September audit's correctness findings for separately tested repairs.
+
 ### Security and correctness
 
 - Added an optional host-owned protected secret-store contract and strict Auth mode for OAuth tokens and pending PKCE sessions, including revisioned compare-and-swap consumption, all-record migration preflight/read-back, retry-safe rollback, and no plaintext fallback.

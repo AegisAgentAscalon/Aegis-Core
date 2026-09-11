@@ -49,11 +49,11 @@ type EmergencyPolicyRequest struct {
 }
 
 type EmergencyPolicyDecision struct {
-	AllowSafetyAction      bool
+	AllowSafetyAction        bool
 	AllowProtectedDisclosure bool
-	AuditRequired         bool
-	ReviewRequired        bool
-	DenyReason            string
+	AuditRequired            bool
+	ReviewRequired           bool
+	DenyReason               string
 }
 
 func EvaluateEmergencyPolicy(req EmergencyPolicyRequest) EmergencyPolicyDecision {

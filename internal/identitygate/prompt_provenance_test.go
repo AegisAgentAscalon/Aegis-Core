@@ -10,9 +10,9 @@ func TestPromptSourceAuthorityTable(t *testing.T) {
 	s, _ := svc(t)
 
 	cases := []struct {
-		source PromptSourceClass
+		source          PromptSourceClass
 		wantInstruction bool
-		wantData bool
+		wantData        bool
 	}{
 		{SourceSystemPolicy, true, true},
 		{SourceDeveloperPolicy, true, true},

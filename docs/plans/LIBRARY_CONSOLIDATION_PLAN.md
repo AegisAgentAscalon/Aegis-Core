@@ -1,6 +1,30 @@
 # Aegis Core Library Consolidation Plan
 
-Status: planned after the current hardening campaign
+Status: structural consolidation implemented in the September 2026 local
+candidate; correctness repairs and broader persistence/performance work remain
+open. [ARCHITECTURE.md](../ARCHITECTURE.md) is the current ownership map.
+
+## September 2026 execution update
+
+The refreshed audit baseline (`2006392`) contains 35,897 Go lines: 20,605
+library production lines, 14,135 test lines and 1,157 example lines. Counts include
+comments and blank lines. The subsequent test cleanup (`85720d7`) removes 140
+test lines while retaining distinct checks; production code is unchanged.
+
+The user then requested the complete module reorganization before the originally
+proposed correctness-repair sequence. This compatibility-preserving structural
+pass consolidates the five duplicated public/internal owners and partitions
+oversized implementations by responsibility. It retains the public package paths,
+existing state-owning structs, private durable formats and host interfaces.
+Identity Gate's focused private engine and Secret Store's development adapter
+remain intentional. No consumer API removal is part of this pass.
+
+The audit's 22 reproduced correctness findings remain open. Structural completion
+does not satisfy their repair gates. Historical counts and targets below describe
+the earlier plan; the refreshed baseline above supersedes them. A 2,000–3,000
+production-line reduction is a planning estimate, not a deletion quota. Shared
+persistence, lock-scope changes, deprecation removals and example consolidation
+remain follow-on work requiring their own evidence.
 
 ## Purpose
 
@@ -179,8 +203,9 @@ The following changes require a separately approved major-version campaign:
 
 Measure production and test code separately after every campaign.
 
-- At least 15 percent fewer non-test Go lines than the post-hardening baseline,
-  without deleting security tests or public documentation.
+- Measured reduction against the refreshed September baseline, with production,
+  tests and examples counted separately; no forced percentage or removal of
+  security tests to satisfy a target.
 - No production Go file above 1,000 lines; target below 700 lines per owner file.
 - One bounded atomic JSON persistence implementation.
 - No mirrored public/internal DTO tree for a migrated owner.

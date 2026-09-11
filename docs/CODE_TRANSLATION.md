@@ -7,24 +7,24 @@ This document explains Aegis Core for human readers who want to understand the c
 Aegis Core is organized around one rule:
 
 ```text
-consumer app -> pkg/* public contracts -> internal/* implementation where needed
+consumer app -> pkg/* domain contracts and state-owning objects -> private helpers / host ports
 ```
 
-The `pkg/` packages are what an external app should import. The `internal/` packages are private implementation details used by public wrappers. Examples must import only `pkg/` packages.
+The `pkg/` packages are what an external app should import. Most implementations now live with their contracts, using unexported helpers and storage records. The remaining `internal/` packages contain Identity Gate's focused engine and the Secret Store development adapter. Examples must import only `pkg/` packages. See [ARCHITECTURE.md](ARCHITECTURE.md) for ownership and dependency rules.
 
 ## Read This First
 
 Start with these files:
 
 - `README.md`: public project posture and non-goals.
-- `pkg/appbridge/appbridge.go`: the broadest app-facing overview surface.
-- `pkg/setupstate/setupstate.go`: read-only setup capability summary vocabulary.
-- `pkg/updates/updates.go`: update discovery, verification, and staging wrapper.
+- `pkg/appbridge/bridge.go` and `contracts.go`: the broadest app-facing overview surface.
+- `pkg/setupstate/contracts.go` and `overview.go`: read-only capability summaries and aggregation.
+- `pkg/updates/updates.go`: update contracts; responsibility files implement the service.
 - `pkg/updates/lifecycle.go`: record-only handoff and external-result lifecycle.
 - `pkg/identitygate/identitygate.go`: current-operator verification receipts and scope policy.
 - `pkg/secretstore/secretstore.go`: host-owned protected-storage contract.
-- `pkg/profilesync/profilesync.go`: metadata-only profile sync orchestration.
-- `pkg/relay/relay.go`: relay/rendezvous contracts and validation rules.
+- `pkg/profilesync/manager.go` and `exchange.go`: metadata-only profile sync orchestration.
+- `pkg/relay/contracts.go` and `validation.go`: relay/rendezvous contracts and validation rules.
 - `examples/generic-consumer-smoke/main.go`: a compact consumer example.
 
 ## Package Responsibilities
@@ -37,7 +37,7 @@ It must not expose raw access tokens, refresh tokens, PKCE verifiers, auth codes
 
 When callback `PortHint` is zero, the implementation discovers a free loopback port and releases it after constructing the redirect URL. The consuming app owns the actual callback listener and should handle bind retries if that port is no longer available.
 
-Stateful implementation lives in `internal/auth`.
+Stateful implementation lives in `pkg/auth`, split into owner, sign-in, OAuth, status, session, storage and migration files.
 
 `NewStrictService` and `WithStrictProtectedStorage` keep OAuth tokens and pending
 PKCE sessions in a host-supplied protected store. Strict pending-session storage
@@ -67,7 +67,7 @@ execute rollback, or decide that a provider is final trust authority. The older
 `ApplyStrategy` callback surface remains deprecated compatibility behavior and
 is not part of the strict non-execution contract.
 
-Stateful implementation lives in `internal/updates`.
+Stateful implementation lives in `pkg/updates`, with separate source, transfer, selection, staging, lifecycle and storage files.
 
 Important safety notes:
 
@@ -89,7 +89,7 @@ separate states; neither one grants application membership or payload authority.
 
 It must not implement NAT traversal, automatic discovery, managed relay behavior, OAuth authority, profile truth, runtime routing, or cross-module control flow.
 
-Stateful implementation lives in `internal/devicelink`.
+Stateful implementation and private registry codecs live in `pkg/devicelink`.
 
 ### `pkg/profilemesh`
 
@@ -97,7 +97,7 @@ Owns profile-centered metadata: profile identity, trusted device records, profil
 
 It must not store private profile data, choose profile truth automatically, perform merges, or become a cloud authority.
 
-Stateful implementation lives in `internal/profilemesh`.
+Stateful implementation and private persistence live in `pkg/profilemesh`.
 
 ### `pkg/profilesync`
 
@@ -129,7 +129,7 @@ Owns read-only capability summaries. It aggregates safe status cards and issues 
 
 It must not mutate OAuth, update, relay, sync, or device state.
 
-Stateful implementation lives in `internal/setupstate`.
+Read-only aggregation lives in `pkg/setupstate/overview.go`; it does not need a stateful service object.
 
 ### `pkg/appbridge`
 

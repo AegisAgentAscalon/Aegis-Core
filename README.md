@@ -6,6 +6,12 @@ This repository is intended to be readable, inspectable infrastructure code. It 
 
 ## Status
 
+The September 2026 local module reorganization preserves public package paths
+and removes duplicate owner implementations. The
+[current audit status](docs/audits/2026-09-11-module-reorganization.md) lists open
+correctness findings and validation limits; the historical hardening passes
+below do not close those findings.
+
 Aegis Core is public and experimental. It completed an internal engineering audit and hardening pass on 2026-07-11, followed by a consumer-driven contract and security pass on 2026-07-16. See [`docs/audits/2026-07-11-internal-hardening.md`](docs/audits/2026-07-11-internal-hardening.md) and [`docs/audits/2026-07-16-consumer-driven-hardening.md`](docs/audits/2026-07-16-consumer-driven-hardening.md).
 
 That work is not an independent professional security audit, penetration test, or certification. Treat the repository as reference-quality infrastructure that still requires consumer-specific review before production use.
@@ -14,7 +20,7 @@ That work is not an independent professional security audit, penetration test, o
 
 - A Go module for reusable setup infrastructure.
 - A set of public packages under `pkg/` with app-facing DTOs and narrow service contracts.
-- Private implementation packages under `internal/` where stateful implementation details live.
+- State-owning structs and private helpers within each domain package, with focused `internal/` engines and development adapters where needed.
 - Local/dev implementations for metadata stores, relay transport, update staging, and OAuth setup flows.
 - Examples showing generic consumer usage through public packages only.
 
@@ -47,7 +53,7 @@ go get github.com/AegisAgentAscalon/aegis-core
 
 | Package | Purpose |
 | --- | --- |
-| `pkg/auth` | Public Google OAuth setup facade, safe status DTOs, and optional strict host-protected token/session storage. |
+| `pkg/auth` | Google OAuth setup service, safe status DTOs, and optional strict host-protected token/session storage. |
 | `pkg/secretstore` | Opaque host-owned protected-storage contract; Core provides no production platform adapter. |
 | `pkg/updates` | App-owned update check/download/verify/stage plus record-only handoff and external-result lifecycle contracts. |
 | `pkg/devicelink` | Device identity, trust registry, resources, side-effect-free bootstrap inspection, and durable signed-proof evidence. |
@@ -59,7 +65,7 @@ go get github.com/AegisAgentAscalon/aegis-core
 | `pkg/appbridge` | Generic app-facing setup overview facade built over the public packages. |
 | `pkg/securityposture` | Read-only DTO vocabulary, redaction helpers, and trust-boundary classification helpers. |
 
-See [docs/CODE_TRANSLATION.md](docs/CODE_TRANSLATION.md) for a human-oriented walkthrough of how the code is shaped. Public/private update-source configuration is documented in [docs/UPDATE_SOURCES.md](docs/UPDATE_SOURCES.md).
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module ownership and compatibility rules, and [docs/CODE_TRANSLATION.md](docs/CODE_TRANSLATION.md) for a walkthrough of the code. Public/private update-source configuration is documented in [docs/UPDATE_SOURCES.md](docs/UPDATE_SOURCES.md).
 
 The current Core-side priorities and consumer/Core ownership boundary are tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 

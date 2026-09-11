@@ -7,29 +7,36 @@
 package auth
 
 import (
-	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"net"
+	"net/url"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
-
-	internal "github.com/AegisAgentAscalon/aegis-core/internal/auth"
-	"github.com/AegisAgentAscalon/aegis-core/pkg/secretstore"
 )
 
+var safeNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
+
 var (
-	ErrNotConfigured           = internal.ErrNotConfigured
-	ErrNotSignedIn             = internal.ErrNotSignedIn
+	ErrNotConfigured           = errors.New("auth is not configured")
+	ErrNotSignedIn             = errors.New("not signed in")
 	ErrProfileNotFound         = errors.New("profile is not available; sign in first")
-	ErrSessionNotFound         = internal.ErrSessionNotFound
-	ErrSessionExpired          = internal.ErrSessionExpired
-	ErrSessionConsumed         = internal.ErrSessionConsumed
-	ErrStateMismatch           = internal.ErrStateMismatch
-	ErrTokenExchangeFailed     = internal.ErrTokenExchangeFailed
-	ErrProviderUnavailable     = internal.ErrProviderUnavailable
-	ErrInvalidProviderResponse = internal.ErrInvalidProviderResponse
-	ErrStorageUnavailable      = internal.ErrStorageUnavailable
-	ErrProtectedStorageCorrupt = internal.ErrProtectedStorageCorrupt
-	ErrAuthCanceled            = internal.ErrAuthCanceled
-	ErrSignOutIncomplete       = internal.ErrSignOutIncomplete
+	ErrSessionNotFound         = errors.New("pending OAuth session not found")
+	ErrSessionExpired          = errors.New("pending OAuth session expired")
+	ErrSessionConsumed         = errors.New("pending OAuth session already consumed")
+	ErrStateMismatch           = errors.New("oauth state mismatch")
+	ErrTokenExchangeFailed     = errors.New("token exchange failed")
+	ErrProviderUnavailable     = errors.New("auth provider unavailable")
+	ErrInvalidProviderResponse = errors.New("auth provider returned an invalid response")
+	ErrStorageUnavailable      = errors.New("auth storage is unavailable; check app permissions")
+	ErrProtectedStorageCorrupt = errors.New("protected auth storage is invalid")
+	ErrAuthCanceled            = errors.New("auth request canceled")
+	ErrSignOutIncomplete       = errors.New("sign-out cleanup incomplete")
+
+	errProfileFetchFailed = errors.New("profile fetch failed")
 )
 
 // AppConfig identifies one consuming app's auth boundary.
@@ -67,12 +74,20 @@ type TokenStoreConfig struct {
 }
 
 // CallbackConfig controls desktop loopback callback URL construction. When
-// PortHint is zero the service discovers a callback URL port, but the
-// caller-owned callback listener must still handle bind retries.
+// PortHint is zero the service discovers an available port for URL construction
+// only; the caller-owned callback listener must still handle bind retries.
 type CallbackConfig struct {
 	Host     string
 	Path     string
 	PortHint int
+}
+
+// ProfileSummary is safe profile information for app setup surfaces.
+type ProfileSummary struct {
+	Email       string `json:"email,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	Subject     string `json:"subject,omitempty"`
+	PictureURL  string `json:"picture_url,omitempty"`
 }
 
 // AuthStatus is safe for UI-facing setup surfaces.
@@ -93,14 +108,6 @@ type AuthStatus struct {
 	TokenNamespace      string         `json:"token_namespace"`
 	Profile             ProfileSummary `json:"profile"`
 	LastError           string         `json:"last_error,omitempty"`
-}
-
-// ProfileSummary is safe profile information for app setup surfaces.
-type ProfileSummary struct {
-	Email       string `json:"email,omitempty"`
-	DisplayName string `json:"display_name,omitempty"`
-	Subject     string `json:"subject,omitempty"`
-	PictureURL  string `json:"picture_url,omitempty"`
 }
 
 // SignInStartResult contains safe browser-flow startup information.
@@ -124,180 +131,184 @@ type CompleteSignInResult struct {
 	Profile ProfileSummary `json:"profile"`
 }
 
-// Service wraps private auth implementation behind a stable public boundary.
-type Service struct {
-	svc *internal.Service
+type token struct {
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	TokenType    string    `json:"token_type"`
+	Expiry       time.Time `json:"expiry"`
+	IDToken      string    `json:"id_token,omitempty"`
 }
 
-// Option configures explicit Auth service behavior.
-type Option func(*serviceOptions) error
-
-type serviceOptions struct {
-	protectedStore secretstore.Store
+type profileFile struct {
+	Email       string `json:"email,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	Subject     string `json:"subject,omitempty"`
+	PictureURL  string `json:"picture_url,omitempty"`
 }
 
-// WithStrictProtectedStorage requires OAuth tokens and pending PKCE sessions
-// to use the supplied host-owned protected store without plaintext fallback.
-func WithStrictProtectedStorage(store secretstore.Store) Option {
-	return func(options *serviceOptions) error {
-		if store == nil {
-			return ErrStorageUnavailable
-		}
-		options.protectedStore = store
-		return nil
-	}
+type pendingSession struct {
+	SessionID   string    `json:"session_id"`
+	State       string    `json:"state"`
+	Verifier    string    `json:"verifier"`
+	RedirectURI string    `json:"redirect_uri"`
+	Scopes      []string  `json:"scopes"`
+	CreatedAt   time.Time `json:"created_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	Consumed    bool      `json:"consumed"`
 }
 
 // DefaultGoogleScopes returns conservative profile scopes.
 func DefaultGoogleScopes() []string {
-	return internal.DefaultGoogleScopes()
+	return []string{"openid", "email", "profile"}
 }
 
-// NewService creates an app-scoped auth service and initializes its namespaced
-// local store. It does not start OAuth.
-func NewService(config AppConfig) (*Service, error) {
-	svc, err := internal.NewService(toInternalConfig(config))
-	if err != nil {
-		return nil, err
+// normalizeConfig trims and defaults an app config without touching files.
+func normalizeConfig(cfg AppConfig) AppConfig {
+	cfg.AppID = strings.TrimSpace(cfg.AppID)
+	cfg.DisplayName = strings.TrimSpace(cfg.DisplayName)
+	cfg.ConfigPath = strings.TrimSpace(cfg.ConfigPath)
+	cfg.OAuth.ClientID = strings.TrimSpace(cfg.OAuth.ClientID)
+	cfg.OAuth.ClientSecret = strings.TrimSpace(cfg.OAuth.ClientSecret)
+	cfg.OAuth.Scopes = compactScopes(cfg.OAuth.Scopes)
+	cfg.OAuth.Endpoints.AuthorizationURL = strings.TrimSpace(cfg.OAuth.Endpoints.AuthorizationURL)
+	if cfg.OAuth.Endpoints.AuthorizationURL == "" {
+		cfg.OAuth.Endpoints.AuthorizationURL = "https://accounts.google.com/o/oauth2/v2/auth"
 	}
-	return &Service{svc: svc}, nil
-}
-
-// NewServiceWithOptions creates an app-scoped auth service using explicit
-// options. WithStrictProtectedStorage disables plaintext fallback for token and
-// pending-session records.
-func NewServiceWithOptions(config AppConfig, options ...Option) (*Service, error) {
-	resolved := serviceOptions{}
-	for _, option := range options {
-		if option == nil {
-			return nil, ErrStorageUnavailable
+	cfg.OAuth.Endpoints.TokenURL = strings.TrimSpace(cfg.OAuth.Endpoints.TokenURL)
+	if cfg.OAuth.Endpoints.TokenURL == "" {
+		cfg.OAuth.Endpoints.TokenURL = "https://oauth2.googleapis.com/token"
+	}
+	cfg.OAuth.Endpoints.UserInfoURL = strings.TrimSpace(cfg.OAuth.Endpoints.UserInfoURL)
+	if cfg.OAuth.Endpoints.UserInfoURL == "" {
+		cfg.OAuth.Endpoints.UserInfoURL = "https://www.googleapis.com/oauth2/v2/userinfo"
+	}
+	cfg.DefaultScopes = compactScopes(cfg.DefaultScopes)
+	if len(cfg.OAuth.Scopes) == 0 {
+		if len(cfg.DefaultScopes) > 0 {
+			cfg.OAuth.Scopes = append([]string{}, cfg.DefaultScopes...)
+		} else {
+			cfg.OAuth.Scopes = DefaultGoogleScopes()
 		}
-		if err := option(&resolved); err != nil {
-			return nil, err
+	}
+	cfg.TokenStore.Namespace = strings.TrimSpace(cfg.TokenStore.Namespace)
+	cfg.Callback.Host = strings.TrimSpace(cfg.Callback.Host)
+	if cfg.Callback.Host == "" {
+		cfg.Callback.Host = "127.0.0.1"
+	}
+	cfg.Callback.Path = "/" + strings.Trim(strings.TrimSpace(cfg.Callback.Path), "/")
+	if cfg.Callback.Path == "/" {
+		cfg.Callback.Path = "/callback"
+	}
+	return cfg
+}
+
+// validateConfig validates app identity, OAuth identity, callback, and namespace.
+func validateConfig(cfg AppConfig) error {
+	cfg = normalizeConfig(cfg)
+	switch {
+	case cfg.AppID == "":
+		return errors.New("app id is required")
+	case !validSafeName(cfg.AppID):
+		return errors.New("app id must use only letters, numbers, dot, underscore, or hyphen")
+	case cfg.DisplayName == "":
+		return errors.New("display name is required")
+	case cfg.ConfigPath == "":
+		return errors.New("config path is required")
+	case cfg.OAuth.ClientID == "":
+		return errors.New("google OAuth client id is required")
+	case !strings.HasSuffix(cfg.OAuth.ClientID, ".apps.googleusercontent.com"):
+		return errors.New("google OAuth client id should end with .apps.googleusercontent.com")
+	case cfg.OAuth.UseClientSecret && cfg.OAuth.ClientSecret == "":
+		return errors.New("use_client_secret=true but client secret is empty")
+	case len(cfg.OAuth.Scopes) == 0:
+		return errors.New("at least one OAuth scope is required")
+	case !validHTTPSOrHTTPTestURL(cfg.OAuth.Endpoints.AuthorizationURL):
+		return errors.New("authorization endpoint URL is invalid")
+	case !validHTTPSOrHTTPTestURL(cfg.OAuth.Endpoints.TokenURL):
+		return errors.New("token endpoint URL is invalid")
+	case !validHTTPSOrHTTPTestURL(cfg.OAuth.Endpoints.UserInfoURL):
+		return errors.New("userinfo endpoint URL is invalid")
+	case cfg.TokenStore.Namespace == "":
+		return errors.New("token namespace is required")
+	case !validSafeName(cfg.TokenStore.Namespace):
+		return errors.New("token namespace must use only letters, numbers, dot, underscore, or hyphen")
+	case cfg.Callback.Host == "":
+		return errors.New("callback host is required")
+	case !isLoopbackHost(cfg.Callback.Host):
+		return errors.New("callback host must be loopback for desktop OAuth")
+	case cfg.Callback.Path == "":
+		return errors.New("callback path is required")
+	case cfg.Callback.PortHint < 0 || cfg.Callback.PortHint > 65535:
+		return errors.New("callback port hint must be between 0 and 65535")
+	}
+	return nil
+}
+
+// fingerprint returns a short non-secret fingerprint for diagnostics.
+func fingerprint(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func compactScopes(scopes []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, scope := range scopes {
+		scope = strings.TrimSpace(scope)
+		if scope == "" || seen[scope] {
+			continue
 		}
+		seen[scope] = true
+		out = append(out, scope)
 	}
-	if resolved.protectedStore == nil {
-		return NewService(config)
+	return out
+}
+
+func safePathPart(s string) string {
+	return strings.TrimSpace(s)
+}
+
+func namespacedStoreDir(baseDir, appID, namespace string) string {
+	return filepath.Join(baseDir, safePathPart(appID), safePathPart(namespace))
+}
+
+func validHTTPSOrHTTPTestURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
 	}
-	return NewStrictService(config, resolved.protectedStore)
+	return u.Scheme == "https" || (u.Scheme == "http" && isLoopbackHost(u.Hostname()))
 }
 
-// NewStrictService creates an app-scoped auth service that requires the host's
-// protected store for OAuth tokens and pending PKCE sessions. Existing valid
-// legacy records are migrated before the service is returned.
-func NewStrictService(config AppConfig, store secretstore.Store) (*Service, error) {
-	svc, err := internal.NewStrictService(toInternalConfig(config), store)
-	if err != nil {
-		return nil, err
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if host == "localhost" {
+		return true
 	}
-	return &Service{svc: svc}, nil
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
-// ValidateConfig validates app identity, OAuth identity, callback settings, and
-// token namespace.
-func (s *Service) ValidateConfig() error {
-	return s.svc.ValidateConfig()
-}
-
-// Status returns safe auth/profile status without exposing tokens or secrets.
-func (s *Service) Status(ctx context.Context) (AuthStatus, error) {
-	st, err := s.svc.Status(ctx)
-	if err != nil {
-		return AuthStatus{}, err
+func validSafeName(s string) bool {
+	s = strings.TrimSpace(s)
+	if !safeNamePattern.MatchString(s) {
+		return false
 	}
-	return fromInternalStatus(st), nil
-}
-
-// StartSignIn prepares a safe Google OAuth authorization URL and private
-// pending session.
-func (s *Service) StartSignIn(ctx context.Context) (SignInStartResult, error) {
-	res, err := s.svc.StartSignIn(ctx)
-	if err != nil {
-		return SignInStartResult{}, err
+	if strings.Contains(s, "..") || strings.ContainsAny(s, `/\`) {
+		return false
 	}
-	return fromInternalStartResult(res), nil
-}
-
-// CompleteSignIn validates callback state, exchanges the code using the private
-// PKCE verifier, stores private tokens, and returns safe status/profile data.
-func (s *Service) CompleteSignIn(ctx context.Context, req CompleteSignInRequest) (CompleteSignInResult, error) {
-	res, err := s.svc.CompleteSignIn(ctx, internal.CompleteSignInRequest{State: req.State, Code: req.Code})
-	if err != nil {
-		return CompleteSignInResult{}, err
+	upper := strings.ToUpper(s)
+	if i := strings.IndexByte(upper, '.'); i >= 0 {
+		upper = upper[:i]
 	}
-	return CompleteSignInResult{Status: fromInternalStatus(res.Status), Profile: fromInternalProfile(res.Profile)}, nil
-}
-
-// SignOut clears only this app's namespaced local auth state.
-func (s *Service) SignOut(ctx context.Context) error {
-	return s.svc.SignOut(ctx)
-}
-
-// Profile returns the safe stored profile summary for this app namespace.
-func (s *Service) Profile(ctx context.Context) (ProfileSummary, error) {
-	profile, err := s.svc.Profile(ctx)
-	if err != nil {
-		if errors.Is(err, internal.ErrProfileNotFound) {
-			return ProfileSummary{}, ErrProfileNotFound
-		}
-		return ProfileSummary{}, err
+	reserved := map[string]bool{
+		"CON": true, "PRN": true, "AUX": true, "NUL": true,
+		"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
+		"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
 	}
-	return fromInternalProfile(profile), nil
-}
-
-func toInternalConfig(cfg AppConfig) internal.AppConfig {
-	return internal.AppConfig{
-		AppID:       cfg.AppID,
-		DisplayName: cfg.DisplayName,
-		ConfigPath:  cfg.ConfigPath,
-		OAuth: internal.OAuthClientConfig{
-			ClientID:        cfg.OAuth.ClientID,
-			ClientSecret:    cfg.OAuth.ClientSecret,
-			UseClientSecret: cfg.OAuth.UseClientSecret,
-			Scopes:          append([]string{}, cfg.OAuth.Scopes...),
-			Endpoints: internal.OAuthEndpointConfig{
-				AuthorizationURL: cfg.OAuth.Endpoints.AuthorizationURL,
-				TokenURL:         cfg.OAuth.Endpoints.TokenURL,
-				UserInfoURL:      cfg.OAuth.Endpoints.UserInfoURL,
-			},
-		},
-		TokenStore:    internal.TokenStoreConfig{BaseDir: cfg.TokenStore.BaseDir, Namespace: cfg.TokenStore.Namespace},
-		Callback:      internal.CallbackConfig{Host: cfg.Callback.Host, Path: cfg.Callback.Path, PortHint: cfg.Callback.PortHint},
-		DefaultScopes: append([]string{}, cfg.DefaultScopes...),
-	}
-}
-
-func fromInternalStatus(st internal.AuthStatus) AuthStatus {
-	return AuthStatus{
-		AppID:               st.AppID,
-		DisplayName:         st.DisplayName,
-		Configured:          st.Configured,
-		SignedIn:            st.SignedIn,
-		NeedsReconnect:      st.NeedsReconnect,
-		TokenPresent:        st.TokenPresent,
-		ProfilePresent:      st.ProfilePresent,
-		AccessTokenExpired:  st.AccessTokenExpired,
-		ClientIDPresent:     st.ClientIDPresent,
-		ClientIDShapeValid:  st.ClientIDShapeValid,
-		ClientIDFingerprint: st.ClientIDFingerprint,
-		UseClientSecret:     st.UseClientSecret,
-		Scopes:              append([]string{}, st.Scopes...),
-		TokenNamespace:      st.TokenNamespace,
-		Profile:             fromInternalProfile(st.Profile),
-		LastError:           st.LastError,
-	}
-}
-
-func fromInternalProfile(p internal.ProfileSummary) ProfileSummary {
-	return ProfileSummary{Email: p.Email, DisplayName: p.DisplayName, Subject: p.Subject, PictureURL: p.PictureURL}
-}
-
-func fromInternalStartResult(res internal.SignInStartResult) SignInStartResult {
-	return SignInStartResult{
-		AuthorizationURL: res.AuthorizationURL,
-		RedirectURI:      res.RedirectURI,
-		ExpiresAt:        res.ExpiresAt,
-		SessionID:        res.SessionID,
-		Message:          res.Message,
-	}
+	return !reserved[upper]
 }

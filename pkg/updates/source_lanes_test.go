@@ -140,7 +140,7 @@ func (a *captureApplyAdapter) ApplyUpdate(_ context.Context, _ string, release R
 
 func TestPublicApplyAdapterPreservesSourceAndChoreography(t *testing.T) {
 	adapter := &captureApplyAdapter{}
-	strategy := publicApplyAdapter{adapter: adapter}
+	strategy := applyAdapterStrategy{adapter: adapter}
 	staged := StagedUpdate{
 		Source:          SourceSummary{ID: "dev", Access: SourceAccessAppOwnedAuthenticated, Provider: ProviderHTTPManifest, Authenticated: true},
 		AppID:           "aegis-test",

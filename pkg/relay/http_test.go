@@ -341,7 +341,15 @@ func TestHTTPRelayConcurrentSendReceive(t *testing.T) {
 }
 
 func TestHTTPRelayPackageDoesNotImportForbiddenBoundaries(t *testing.T) {
-	assertRelayProductionFileClean(t, "http.go")
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") && !strings.HasSuffix(entry.Name(), "_test.go") {
+			assertRelayProductionFileClean(t, entry.Name())
+		}
+	}
 }
 
 func newHTTPRelayTestClient(t *testing.T, baseURL, bearer string) *HTTPRelayClient {
