@@ -121,7 +121,7 @@ func (s *Service) getStatusLocked() (CurrentState, error) {
 		Configured:     true,
 		Message:        "updates configured",
 	}
-	if cached, err := s.store.readSelected(); err == nil {
+	if cached, err := s.store.readSelected(context.Background()); err == nil {
 		if sourceAndPolicyMatch(s.cfg, cached.SourceKey, cached.PolicyKey) && cached.Manifest.Channel == s.cfg.Channel {
 			if err := validateSelectedUpdate(s.cfg, cached); err == nil {
 				release := releaseFromSelection(cached.Manifest, cached.Artifact, time.Time{}, sourceSummary(s.cfg.Source))
@@ -134,8 +134,8 @@ func (s *Service) getStatusLocked() (CurrentState, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		state.LastError = "stored update metadata is invalid"
 	}
-	if stagedRecord, err := s.store.readStaged(); err == nil {
-		if err := validateStagedUpdateReadyFor(s.cfg, s.store, stagedRecord, time.Now().UTC()); err == nil {
+	if stagedRecord, err := s.store.readStaged(context.Background()); err == nil {
+		if err := validateStagedUpdateReadyFor(context.Background(), s.cfg, s.store, stagedRecord, time.Now().UTC()); err == nil {
 			state.StagedVersion = stagedRecord.Version
 			state.Verified = true
 		} else {

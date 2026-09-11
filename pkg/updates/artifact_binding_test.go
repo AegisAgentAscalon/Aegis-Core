@@ -70,7 +70,7 @@ func TestDetachedArtifactFieldsMustMatchManifest(t *testing.T) {
 	for name, mutate := range changes {
 		t.Run(name, func(t *testing.T) {
 			s := signedBindingService(t)
-			selected, err := s.store.readSelected()
+			selected, err := s.store.readSelected(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -78,19 +78,19 @@ func TestDetachedArtifactFieldsMustMatchManifest(t *testing.T) {
 			if err := validateSelectedUpdate(s.cfg, selected); err == nil {
 				t.Error("altered selection accepted")
 			}
-			d, err := s.store.readDownloaded()
+			d, err := s.store.readDownloaded(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
 			mutate(&d.Artifact)
-			if err := s.store.writeDownloaded(d); err != nil {
+			if err := s.store.writeDownloaded(context.Background(), d); err != nil {
 				t.Fatal(err)
 			}
 			if result, err := s.VerifyUpdate(context.Background(), "1.2.0"); err == nil || result.OK {
 				t.Error("altered download verified")
 			}
 			// A forged verified record must not bypass the staging check.
-			if err := s.store.writeVerified(verifiedUpdate{SchemaVersion: schemaVersion, Downloaded: d, VerifiedAt: d.DownloadedAt}); err != nil {
+			if err := s.store.writeVerified(context.Background(), verifiedUpdate{SchemaVersion: schemaVersion, Downloaded: d, VerifiedAt: d.DownloadedAt}); err != nil {
 				t.Fatal(err)
 			}
 			if result, err := s.StageUpdate(context.Background(), "1.2.0"); err == nil || result.Staged {
@@ -118,7 +118,7 @@ func TestStagedRecordRetainsManifestAuthority(t *testing.T) {
 			if _, err := s.StageUpdate(context.Background(), "1.2.0"); err != nil {
 				t.Fatal(err)
 			}
-			r, err := s.store.readStaged()
+			r, err := s.store.readStaged(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -138,7 +138,7 @@ func TestStagedRecordRetainsManifestAuthority(t *testing.T) {
 				}
 				r.ArtifactPath = renamed
 			}
-			if err := s.store.writeStaged(r); err != nil {
+			if err := s.store.writeStaged(context.Background(), r); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := s.BuildApplyPlan(context.Background()); err == nil {
@@ -195,7 +195,7 @@ func TestLegacyStagedAuthorityRecoveryAndIndependentStagedCache(t *testing.T) {
 	if _, err := s.StageUpdate(ctx, "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
-	r, err := s.store.readStaged()
+	r, err := s.store.readStaged(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestLegacyStagedAuthorityRecoveryAndIndependentStagedCache(t *testing.T) {
 	}
 	legacy := r
 	legacy.Manifest = nil
-	if err := s.store.writeStaged(legacy); err != nil {
+	if err := s.store.writeStaged(context.Background(), legacy); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.BuildApplyPlan(ctx); err != nil {
@@ -216,7 +216,7 @@ func TestLegacyStagedAuthorityRecoveryAndIndependentStagedCache(t *testing.T) {
 	if _, err := s.BuildApplyPlan(ctx); !errors.Is(err, ErrVerificationFailed) {
 		t.Fatalf("legacy record without authority must require restaging: %v", err)
 	}
-	if err := s.store.writeStaged(r); err != nil {
+	if err := s.store.writeStaged(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(s.store.downloadedPath()); err != nil {
@@ -241,7 +241,7 @@ func TestDetachedArtifactCannotBypassSignedManifest(t *testing.T) {
 	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
-	downloaded, err := svc.store.readDownloaded()
+	downloaded, err := svc.store.readDownloaded(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestDetachedArtifactCannotBypassSignedManifest(t *testing.T) {
 	if err := os.WriteFile(downloaded.ArtifactPath, replacement, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.store.writeDownloaded(downloaded); err != nil {
+	if err := svc.store.writeDownloaded(context.Background(), downloaded); err != nil {
 		t.Fatal(err)
 	}
 	if err := verifyManifestSignature(cfg.Policy, downloaded.Manifest); err != nil {

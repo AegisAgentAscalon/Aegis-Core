@@ -110,7 +110,7 @@ func TestStageUpdateRejectsDifferentPackageWhileLifecycleIsActive(t *testing.T) 
 	if _, err := svc.StageUpdate(ctx, "1.3.0"); !errors.Is(err, ErrLifecycleRestageConflict) {
 		t.Fatalf("different-package restage error = %v, want conflict", err)
 	}
-	preserved, err := svc.store.readStaged()
+	preserved, err := svc.store.readStaged(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

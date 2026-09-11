@@ -205,7 +205,7 @@ func (s *Service) GetLifecycleEnvelope(ctx context.Context) (LifecycleEnvelope, 
 	defer s.workflowMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record, _, err := s.lifecycleRecordLocked(time.Now().UTC())
+	record, _, err := s.lifecycleRecordLocked(ctx, time.Now().UTC())
 	if err != nil {
 		return LifecycleEnvelope{}, err
 	}
@@ -228,7 +228,7 @@ func (s *Service) RecordPackageHandoff(ctx context.Context, request PackageHando
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
-	record, staged, err := s.lifecycleRecordLocked(now)
+	record, staged, err := s.lifecycleRecordLocked(ctx, now)
 	if err != nil {
 		return PackageHandoff{}, err
 	}
@@ -258,7 +258,7 @@ func (s *Service) RecordPackageHandoff(ctx context.Context, request PackageHando
 		Status: string(LifecycleStepCompleted), At: at, ConsumerID: request.ConsumerID,
 	})
 	rememberLifecycleIdempotency(&record, request.IdempotencyKey, fingerprint)
-	if err := s.store.writeLifecycle(record); err != nil {
+	if err := s.store.writeLifecycle(ctx, record); err != nil {
 		return PackageHandoff{}, err
 	}
 	return PackageHandoff{Envelope: cloneLifecycleEnvelope(record.Envelope), ArtifactPath: staged.ArtifactPath}, nil
@@ -279,7 +279,7 @@ func (s *Service) ReportExternalAction(ctx context.Context, report ExternalActio
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
-	record, _, err := s.lifecycleRecordLocked(now)
+	record, _, err := s.lifecycleRecordLocked(ctx, now)
 	if err != nil {
 		return LifecycleEnvelope{}, err
 	}
@@ -309,7 +309,7 @@ func (s *Service) ReportExternalAction(ctx context.Context, report ExternalActio
 		Status: string(report.Status), At: at, ConsumerID: report.ConsumerID,
 	})
 	rememberLifecycleIdempotency(&record, report.IdempotencyKey, fingerprint)
-	if err := s.store.writeLifecycle(record); err != nil {
+	if err := s.store.writeLifecycle(ctx, record); err != nil {
 		return LifecycleEnvelope{}, err
 	}
 	return cloneLifecycleEnvelope(record.Envelope), nil
@@ -330,7 +330,7 @@ func (s *Service) ReportExternalCompletion(ctx context.Context, report ExternalC
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC()
-	record, _, err := s.lifecycleRecordLocked(now)
+	record, _, err := s.lifecycleRecordLocked(ctx, now)
 	if err != nil {
 		return LifecycleEnvelope{}, err
 	}
@@ -360,21 +360,21 @@ func (s *Service) ReportExternalCompletion(ctx context.Context, report ExternalC
 		Status: string(report.Outcome), At: at, ConsumerID: report.ConsumerID,
 	})
 	rememberLifecycleIdempotency(&record, report.IdempotencyKey, fingerprint)
-	if err := s.store.writeLifecycle(record); err != nil {
+	if err := s.store.writeLifecycle(ctx, record); err != nil {
 		return LifecycleEnvelope{}, err
 	}
 	return cloneLifecycleEnvelope(record.Envelope), nil
 }
 
-func (s *Service) lifecycleRecordLocked(now time.Time) (lifecycleRecord, StagedUpdate, error) {
-	stagedRecord, err := s.store.readStaged()
+func (s *Service) lifecycleRecordLocked(ctx context.Context, now time.Time) (lifecycleRecord, StagedUpdate, error) {
+	stagedRecord, err := s.store.readStaged(ctx)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return lifecycleRecord{}, StagedUpdate{}, ErrStagedUpdateNotFound
 		}
 		return lifecycleRecord{}, StagedUpdate{}, ErrStorageUnavailable
 	}
-	if err := validateStagedUpdateReadyFor(s.cfg, s.store, stagedRecord, now); err != nil {
+	if err := validateStagedUpdateReadyFor(ctx, s.cfg, s.store, stagedRecord, now); err != nil {
 		return lifecycleRecord{}, StagedUpdate{}, err
 	}
 	staged := stagedRecord.StagedUpdate
@@ -383,10 +383,10 @@ func (s *Service) lifecycleRecordLocked(now time.Time) (lifecycleRecord, StagedU
 		return lifecycleRecord{}, StagedUpdate{}, ErrVerificationFailed
 	}
 
-	record, err := s.store.readLifecycle()
+	record, err := s.store.readLifecycle(ctx)
 	if errors.Is(err, os.ErrNotExist) {
 		record = newLifecycleRecord(staged, now)
-		if err := s.store.writeLifecycle(record); err != nil {
+		if err := s.store.writeLifecycle(ctx, record); err != nil {
 			return lifecycleRecord{}, StagedUpdate{}, err
 		}
 		return record, staged, nil
@@ -397,22 +397,22 @@ func (s *Service) lifecycleRecordLocked(now time.Time) (lifecycleRecord, StagedU
 	return record, staged, nil
 }
 
-func (s *Service) checkLifecycleBeforeRestage(cfg AppConfig, st *store, candidate stagedUpdateRecord, now time.Time) (StageResult, bool, error) {
-	record, err := st.readLifecycle()
+func (s *Service) checkLifecycleBeforeRestage(ctx context.Context, cfg AppConfig, st *store, candidate stagedUpdateRecord, now time.Time) (StageResult, bool, error) {
+	record, err := st.readLifecycle(ctx)
 	if errors.Is(err, os.ErrNotExist) {
 		return StageResult{}, false, nil
 	}
 	if err != nil {
 		return StageResult{}, false, ErrStorageUnavailable
 	}
-	existing, err := st.readStaged()
+	existing, err := st.readStaged(ctx)
 	if err != nil || validateLifecycleRecord(record, existing.StagedUpdate) != nil {
 		return StageResult{}, false, ErrStorageUnavailable
 	}
 	if record.Envelope.Phase != LifecyclePhaseStaged || !sameStagedPackage(existing, candidate) {
 		return StageResult{}, false, ErrLifecycleRestageConflict
 	}
-	if err := validateStagedUpdateReadyFor(cfg, st, existing, now); err != nil {
+	if err := validateStagedUpdateReadyFor(ctx, cfg, st, existing, now); err != nil {
 		return StageResult{}, false, err
 	}
 	return StageResult{

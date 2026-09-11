@@ -1,6 +1,7 @@
 package updates
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -468,10 +469,10 @@ func validateDownloadedUpdateFor(cfg AppConfig, st *store, downloaded downloaded
 }
 
 func (s *Service) validateStagedUpdateReady(staged stagedUpdateRecord, now time.Time) error {
-	return validateStagedUpdateReadyFor(s.cfg, s.store, staged, now)
+	return validateStagedUpdateReadyFor(context.Background(), s.cfg, s.store, staged, now)
 }
 
-func validateStagedUpdateReadyFor(cfg AppConfig, st *store, record stagedUpdateRecord, now time.Time) error {
+func validateStagedUpdateReadyFor(ctx context.Context, cfg AppConfig, st *store, record stagedUpdateRecord, now time.Time) error {
 	staged := record.StagedUpdate
 	if err := validateStagedUpdate(cfg, record); err != nil {
 		return err
@@ -480,7 +481,7 @@ func validateStagedUpdateReadyFor(cfg AppConfig, st *store, record stagedUpdateR
 	if manifest == nil {
 		// Older staged records can recover their authority from the verified
 		// cache. Without that evidence the caller must clear and restage.
-		verified, err := st.readVerified()
+		verified, err := st.readVerified(ctx)
 		if err != nil || verified.SchemaVersion != schemaVersion || verified.VerifiedAt.IsZero() || !sourceAndPolicyMatch(cfg, verified.Downloaded.SourceKey, verified.Downloaded.PolicyKey) {
 			return ErrVerificationFailed
 		}

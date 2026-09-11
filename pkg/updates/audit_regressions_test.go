@@ -1,8 +1,7 @@
-//go:build auditregression
-
 package updates
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,7 +13,7 @@ func TestAuditReplaceMissingSourceDeletesDestination(t *testing.T) {
 	if err := os.WriteFile(dst, []byte(`{"valid":true}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	err := replaceFile(filepath.Join(dir, "missing.tmp"), dst)
+	err := replaceFile(context.Background(), filepath.Join(dir, "missing.tmp"), dst)
 	if err == nil {
 		t.Fatal("expected missing-source failure")
 	}

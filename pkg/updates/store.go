@@ -1,12 +1,15 @@
 package updates
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
+
+	"github.com/AegisAgentAscalon/aegis-core/internal/filepersist"
 )
 
 type store struct {
@@ -69,42 +72,42 @@ func (s *store) lifecyclePath() string {
 func (s *store) downloadsDir() string { return filepath.Join(s.dir, "downloads") }
 func (s *store) stagedDir() string    { return filepath.Join(s.dir, "staged") }
 
-func (s *store) readSelected() (selectedUpdate, error) {
+func (s *store) readSelected(ctx context.Context) (selectedUpdate, error) {
 	var out selectedUpdate
-	err := readJSON(s.selectedPath(), &out)
+	err := readJSON(ctx, s.selectedPath(), &out)
 	return out, err
 }
 
-func (s *store) writeSelected(v selectedUpdate) error {
+func (s *store) writeSelected(ctx context.Context, v selectedUpdate) error {
 	v.SchemaVersion = schemaVersion
-	return writeJSON(s.selectedPath(), v)
+	return writeJSON(ctx, s.selectedPath(), v)
 }
 
-func (s *store) readDownloaded() (downloadedUpdate, error) {
+func (s *store) readDownloaded(ctx context.Context) (downloadedUpdate, error) {
 	var out downloadedUpdate
-	err := readJSON(s.downloadedPath(), &out)
+	err := readJSON(ctx, s.downloadedPath(), &out)
 	return out, err
 }
 
-func (s *store) writeDownloaded(v downloadedUpdate) error {
+func (s *store) writeDownloaded(ctx context.Context, v downloadedUpdate) error {
 	v.SchemaVersion = schemaVersion
-	return writeJSON(s.downloadedPath(), v)
+	return writeJSON(ctx, s.downloadedPath(), v)
 }
 
-func (s *store) readVerified() (verifiedUpdate, error) {
+func (s *store) readVerified(ctx context.Context) (verifiedUpdate, error) {
 	var out verifiedUpdate
-	err := readJSON(s.verifiedPath(), &out)
+	err := readJSON(ctx, s.verifiedPath(), &out)
 	return out, err
 }
 
-func (s *store) writeVerified(v verifiedUpdate) error {
+func (s *store) writeVerified(ctx context.Context, v verifiedUpdate) error {
 	v.SchemaVersion = schemaVersion
-	return writeJSON(s.verifiedPath(), v)
+	return writeJSON(ctx, s.verifiedPath(), v)
 }
 
-func (s *store) readStaged() (stagedUpdateRecord, error) {
+func (s *store) readStaged(ctx context.Context) (stagedUpdateRecord, error) {
 	var record stagedUpdateRecord
-	err := readJSON(s.stagedMetaPath(), &record)
+	err := readJSON(ctx, s.stagedMetaPath(), &record)
 	if err != nil {
 		return stagedUpdateRecord{}, err
 	}
@@ -116,19 +119,19 @@ func (s *store) readStaged() (stagedUpdateRecord, error) {
 	return record, nil
 }
 
-func (s *store) writeStaged(v stagedUpdateRecord) error {
-	return writeJSON(s.stagedMetaPath(), v)
+func (s *store) writeStaged(ctx context.Context, v stagedUpdateRecord) error {
+	return writeJSON(ctx, s.stagedMetaPath(), v)
 }
 
-func (s *store) readLifecycle() (lifecycleRecord, error) {
+func (s *store) readLifecycle(ctx context.Context) (lifecycleRecord, error) {
 	var out lifecycleRecord
-	err := readJSON(s.lifecyclePath(), &out)
+	err := readJSON(ctx, s.lifecyclePath(), &out)
 	return out, err
 }
 
-func (s *store) writeLifecycle(v lifecycleRecord) error {
+func (s *store) writeLifecycle(ctx context.Context, v lifecycleRecord) error {
 	v.SchemaVersion = lifecycleSchemaVersion
-	return writeJSON(s.lifecyclePath(), v)
+	return writeJSON(ctx, s.lifecyclePath(), v)
 }
 
 func (s *store) clearCandidateState() error {
@@ -160,105 +163,39 @@ func removeFiles(paths ...string) error {
 	return nil
 }
 
-func readJSON(path string, out any) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		return ErrStorageUnavailable
+// Bound metadata reads with headroom for indented 4 MiB manifests and envelopes.
+const maxMetadataBytes = 64 << 20
+
+func readJSON(ctx context.Context, path string, out any) error {
+	err := filepersist.ReadJSON(ctx, path, maxMetadataBytes, out)
+	if errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	if err := json.Unmarshal(b, out); err != nil {
-		return ErrStorageUnavailable
-	}
-	return nil
+	return persistenceError(err)
 }
 
-func writeJSON(path string, v any) error {
+func writeJSON(ctx context.Context, path string, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return ErrStorageUnavailable
 	}
-	return writeFileAtomic(path, b, 0o600)
+	return writeFileAtomic(ctx, path, b, 0600)
 }
 
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := secureMkdirAll(dir); err != nil {
-		return ErrStorageUnavailable
-	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return ErrStorageUnavailable
-	}
-	name := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(name)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return ErrStorageUnavailable
-	}
-	if err := tmp.Close(); err != nil {
-		return ErrStorageUnavailable
-	}
-	if err := os.Chmod(name, perm); err != nil {
-		return ErrStorageUnavailable
-	}
-	if err := replaceFile(name, path); err != nil {
-		return ErrStorageUnavailable
-	}
-	cleanup = false
-	return nil
+func writeFileAtomic(ctx context.Context, path string, data []byte, perm os.FileMode) error {
+	return persistenceError(filepersist.Write(ctx, path, perm, maxMetadataBytes, func(w io.Writer) error { _, err := w.Write(data); return err }))
 }
 
 func secureMkdirAll(dir string) error {
-	absolute, err := filepath.Abs(dir)
-	if err != nil {
-		return ErrStorageUnavailable
+	return persistenceError(filepersist.EnsureDir(context.Background(), dir))
+}
+
+func persistenceError(err error) error {
+	if err == nil {
+		return nil
 	}
-	volume := filepath.VolumeName(absolute)
-	rest := strings.TrimPrefix(absolute, volume)
-	parts := strings.FieldsFunc(rest, func(r rune) bool { return r == '/' || r == '\\' })
-	current := volume + string(filepath.Separator)
-	if volume == "" {
-		current = string(filepath.Separator)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return ErrContextCanceled
 	}
-	firstMissing := len(parts)
-	for index, part := range parts {
-		current = filepath.Join(current, part)
-		info, statErr := os.Lstat(current)
-		if errors.Is(statErr, os.ErrNotExist) {
-			firstMissing = index
-			break
-		}
-		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return ErrStorageUnavailable
-		}
-	}
-	if err := os.MkdirAll(absolute, 0o700); err != nil {
-		return ErrStorageUnavailable
-	}
-	current = volume + string(filepath.Separator)
-	if volume == "" {
-		current = string(filepath.Separator)
-	}
-	for index, part := range parts {
-		current = filepath.Join(current, part)
-		info, statErr := os.Lstat(current)
-		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return ErrStorageUnavailable
-		}
-		// Repair only package-created directories (and the requested final
-		// directory), never caller-owned ancestors such as /tmp or a home dir.
-		if index >= firstMissing || index == len(parts)-1 {
-			if err := os.Chmod(current, 0o700); err != nil {
-				return ErrStorageUnavailable
-			}
-		}
-	}
-	return nil
+	return ErrStorageUnavailable
 }

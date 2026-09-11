@@ -21,12 +21,12 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 	if err != nil {
 		return StageResult{}, err
 	}
-	verified, err := snapshot.store.readVerified()
+	verified, err := snapshot.store.readVerified(ctx)
 	if err != nil {
 		if _, verifyErr := s.verifyUpdateSnapshot(snapshot, version); verifyErr != nil {
 			return StageResult{}, verifyErr
 		}
-		verified, err = snapshot.store.readVerified()
+		verified, err = snapshot.store.readVerified(ctx)
 	}
 	if err != nil {
 		return StageResult{}, err
@@ -58,7 +58,7 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 		Manifest:  &verified.Downloaded.Manifest,
 		SourceKey: sourceKey(snapshot.cfg.Source), PolicyKey: policyKey(snapshot.cfg.Policy),
 	}
-	if existing, handled, err := s.checkLifecycleBeforeRestage(snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
+	if existing, handled, err := s.checkLifecycleBeforeRestage(ctx, snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
 		return StageResult{}, err
 	} else if handled {
 		return existing, nil
@@ -75,7 +75,6 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 	if err := pendingFile.Close(); err != nil {
 		return StageResult{}, ErrStorageUnavailable
 	}
-	_ = os.Remove(pending)
 	if err := copyFileAtomic(ctx, verified.Downloaded.ArtifactPath, pending); err != nil {
 		return StageResult{}, err
 	}
@@ -90,22 +89,22 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 	if err := contextError(ctx); err != nil {
 		return StageResult{}, err
 	}
-	if existing, handled, err := s.checkLifecycleBeforeRestage(snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
+	if existing, handled, err := s.checkLifecycleBeforeRestage(ctx, snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
 		return StageResult{}, err
 	} else if handled {
 		return existing, nil
 	}
-	if err := replaceFile(pending, target); err != nil {
-		return StageResult{}, ErrStorageUnavailable
+	if err := replaceFile(ctx, pending, target); err != nil {
+		return StageResult{}, err
 	}
-	if err := validateStagedUpdateReadyFor(snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
+	if err := validateStagedUpdateReadyFor(ctx, snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
 		_ = os.Remove(target)
 		return StageResult{}, err
 	}
-	if err := snapshot.store.writeStaged(staged); err != nil {
+	if err := snapshot.store.writeStaged(ctx, staged); err != nil {
 		return StageResult{}, err
 	}
-	if err := snapshot.store.writeLifecycle(newLifecycleRecord(staged.StagedUpdate, time.Now().UTC())); err != nil {
+	if err := snapshot.store.writeLifecycle(ctx, newLifecycleRecord(staged.StagedUpdate, time.Now().UTC())); err != nil {
 		return StageResult{}, err
 	}
 	return StageResult{Version: staged.Version, ArtifactName: staged.ArtifactName, Staged: true, Message: "update staged"}, nil
@@ -118,14 +117,14 @@ func (s *Service) DescribeStagedUpdate(ctx context.Context) (StagedUpdateSummary
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stagedRecord, err := s.store.readStaged()
+	stagedRecord, err := s.store.readStaged(ctx)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return StagedUpdateSummary{}, ErrStagedUpdateNotFound
 		}
 		return StagedUpdateSummary{}, ErrStorageUnavailable
 	}
-	if err := validateStagedUpdateReadyFor(s.cfg, s.store, stagedRecord, time.Now().UTC()); err != nil {
+	if err := validateStagedUpdateReadyFor(ctx, s.cfg, s.store, stagedRecord, time.Now().UTC()); err != nil {
 		return StagedUpdateSummary{}, err
 	}
 	return stagedSummaryFrom(stagedRecord.StagedUpdate), nil
@@ -138,14 +137,14 @@ func (s *Service) BuildApplyPlan(ctx context.Context) (ApplyPlan, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	stagedRecord, err := s.store.readStaged()
+	stagedRecord, err := s.store.readStaged(ctx)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ApplyPlan{}, ErrStagedUpdateNotFound
 		}
 		return ApplyPlan{}, ErrStorageUnavailable
 	}
-	if err := validateStagedUpdateReadyFor(s.cfg, s.store, stagedRecord, time.Now().UTC()); err != nil {
+	if err := validateStagedUpdateReadyFor(ctx, s.cfg, s.store, stagedRecord, time.Now().UTC()); err != nil {
 		return ApplyPlan{}, err
 	}
 	staged := stagedRecord.StagedUpdate
@@ -183,7 +182,7 @@ func (s *Service) applyExpectedVersion(ctx context.Context, version string) (App
 		s.workflowMu.Unlock()
 		return ApplyResult{}, ErrApplyInProgress
 	}
-	stagedRecord, err := s.store.readStaged()
+	stagedRecord, err := s.store.readStaged(ctx)
 	if err != nil {
 		s.mu.Unlock()
 		s.workflowMu.Unlock()
@@ -198,7 +197,7 @@ func (s *Service) applyExpectedVersion(ctx context.Context, version string) (App
 		s.workflowMu.Unlock()
 		return ApplyResult{}, ErrNoUpdateAvailable
 	}
-	if err := validateStagedUpdateReadyFor(s.cfg, s.store, stagedRecord, time.Now().UTC()); err != nil {
+	if err := validateStagedUpdateReadyFor(ctx, s.cfg, s.store, stagedRecord, time.Now().UTC()); err != nil {
 		s.mu.Unlock()
 		s.workflowMu.Unlock()
 		return ApplyResult{}, err

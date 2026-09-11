@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/AegisAgentAscalon/aegis-core/internal/filepersist"
 )
 
 func validSafeName(s string) bool {
@@ -256,41 +258,33 @@ func contextError(ctx context.Context) error {
 }
 
 func writeStreamToFile(ctx context.Context, r io.Reader, path string, max int64) (int64, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return 0, ErrStorageUnavailable
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return 0, ErrStorageUnavailable
-	}
-	defer f.Close()
-	buf := make([]byte, 32*1024)
 	var written int64
-	for {
-		if err := contextError(ctx); err != nil {
-			return 0, err
-		}
-		n, readErr := r.Read(buf)
-		if n > 0 {
-			written += int64(n)
-			if max > 0 && written > max {
-				return 0, ErrDownloadFailed
-			}
-			if _, err := f.Write(buf[:n]); err != nil {
-				return 0, ErrStorageUnavailable
-			}
-		}
-		if errors.Is(readErr, io.EOF) {
-			break
-		}
-		if readErr != nil {
-			return 0, ErrDownloadFailed
-		}
+	limit := max
+	if limit <= 0 {
+		limit = -1
 	}
-	if err := f.Close(); err != nil {
-		return 0, ErrStorageUnavailable
+	err := filepersist.Write(ctx, path, 0600, limit, func(w io.Writer) error {
+		var err error
+		written, err = io.Copy(w, downloadReader{r})
+		return err
+	})
+	if errors.Is(err, filepersist.ErrTooLarge) || errors.Is(err, ErrDownloadFailed) {
+		return 0, ErrDownloadFailed
+	}
+	if err != nil {
+		return 0, persistenceError(err)
 	}
 	return written, nil
+}
+
+type downloadReader struct{ io.Reader }
+
+func (r downloadReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		err = ErrDownloadFailed
+	}
+	return n, err
 }
 
 func fileSHA256(path string) (string, error) {
@@ -307,38 +301,20 @@ func fileSHA256(path string) (string, error) {
 }
 
 func copyFileAtomic(ctx context.Context, src, dst string) error {
-	in, err := os.Open(src)
+	in, err := filepersist.OpenRegular(ctx, src)
 	if err != nil {
+		if contextError(ctx) != nil {
+			return ErrContextCanceled
+		}
 		return ErrVerificationFailed
 	}
 	defer in.Close()
-	tmp := dst + ".tmp"
-	if _, err := writeStreamToFile(ctx, in, tmp, 0); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := replaceFile(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
-		return ErrStorageUnavailable
-	}
-	return nil
+	_, err = writeStreamToFile(ctx, in, dst, 0)
+	return err
 }
 
-func replaceFile(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	}
-	info, err := os.Lstat(dst)
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return ErrStorageUnavailable
-	}
-	if err := os.Remove(dst); err != nil {
-		return err
-	}
-	return os.Rename(src, dst)
+func replaceFile(ctx context.Context, src, dst string) error {
+	return persistenceError(filepersist.Replace(ctx, src, dst))
 }
 
 func sortedArtifacts(in []Artifact) []Artifact {

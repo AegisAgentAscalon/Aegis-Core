@@ -774,7 +774,7 @@ func TestVerifyStageAndApplyFailures(t *testing.T) {
 	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
-	downloaded, err := svc.store.readDownloaded()
+	downloaded, err := svc.store.readDownloaded(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -832,7 +832,7 @@ func TestStagedUpdateArtifactRevalidationFailures(t *testing.T) {
 			mutate: func(t *testing.T, svc *Service, staged StagedUpdate) {
 				t.Helper()
 				staged.AppID = "other-app"
-				if err := svc.store.writeStaged(stagedRecordForService(svc, staged)); err != nil {
+				if err := svc.store.writeStaged(context.Background(), stagedRecordForService(svc, staged)); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -845,7 +845,7 @@ func TestStagedUpdateArtifactRevalidationFailures(t *testing.T) {
 				t.Helper()
 				svc.cfg.Policy.MaximumStagedAge = time.Hour
 				staged.StagedAt = time.Now().UTC().Add(-2 * time.Hour)
-				if err := svc.store.writeStaged(stagedRecordForService(svc, staged)); err != nil {
+				if err := svc.store.writeStaged(context.Background(), stagedRecordForService(svc, staged)); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -901,7 +901,7 @@ func TestStageUpdateRevalidatesDownloadedArtifactBeforeCopy(t *testing.T) {
 	if _, err := svc.VerifyUpdate(ctx, "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
-	verified, err := svc.store.readVerified()
+	verified, err := svc.store.readVerified(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1123,7 +1123,7 @@ func TestDownloadedMetadataCannotRedirectVerificationPath(t *testing.T) {
 	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
-	downloaded, err := svc.store.readDownloaded()
+	downloaded, err := svc.store.readDownloaded(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1136,7 +1136,7 @@ func TestDownloadedMetadataCannotRedirectVerificationPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	downloaded.ArtifactPath = redirected
-	if err := svc.store.writeDownloaded(downloaded); err != nil {
+	if err := svc.store.writeDownloaded(context.Background(), downloaded); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.VerifyUpdate(ctx, "1.2.0"); !errors.Is(err, ErrStorageUnavailable) {
@@ -1249,7 +1249,7 @@ func stageTestService(t *testing.T, svc *Service, version string) StagedUpdate {
 	if _, err := svc.StageUpdate(ctx, version); err != nil {
 		t.Fatal(err)
 	}
-	staged, err := svc.store.readStaged()
+	staged, err := svc.store.readStaged(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

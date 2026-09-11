@@ -72,7 +72,7 @@ func (s *Service) checkForUpdatesSnapshot(ctx context.Context, snapshot serviceS
 		SourceKey:     sourceKey(snapshot.cfg.Source), PolicyKey: policyKey(snapshot.cfg.Policy),
 		Manifest: manifest, Artifact: artifact, UpdatedAt: time.Now().UTC(),
 	}
-	if previous, readErr := snapshot.store.readSelected(); readErr == nil {
+	if previous, readErr := snapshot.store.readSelected(ctx); readErr == nil {
 		if !sameSelectedUpdate(previous, selected) {
 			if err := snapshot.store.clearDownloadedState(); err != nil {
 				return CheckResult{}, err
@@ -83,7 +83,7 @@ func (s *Service) checkForUpdatesSnapshot(ctx context.Context, snapshot serviceS
 			return CheckResult{}, err
 		}
 	}
-	if err := snapshot.store.writeSelected(selected); err != nil {
+	if err := snapshot.store.writeSelected(ctx, selected); err != nil {
 		return CheckResult{}, err
 	}
 	return CheckResult{UpdateAvailable: true, LatestRelease: &release, Message: "update available"}, nil
@@ -91,14 +91,14 @@ func (s *Service) checkForUpdatesSnapshot(ctx context.Context, snapshot serviceS
 
 func (s *Service) selectionForSnapshot(ctx context.Context, snapshot serviceSnapshot, version string) (selectedUpdate, error) {
 	version = strings.TrimSpace(version)
-	selected, err := snapshot.store.readSelected()
+	selected, err := snapshot.store.readSelected(ctx)
 	if err == nil && (version == "" || selected.Manifest.Version == version) && validateSelectedUpdate(snapshot.cfg, selected) == nil {
 		return selected, nil
 	}
 	if _, err := s.checkForUpdatesSnapshot(ctx, snapshot); err != nil {
 		return selectedUpdate{}, err
 	}
-	selected, err = snapshot.store.readSelected()
+	selected, err = snapshot.store.readSelected(ctx)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return selectedUpdate{}, ErrNoUpdateAvailable
@@ -136,7 +136,15 @@ func (s *Service) DownloadUpdate(ctx context.Context, version string) (DownloadR
 	if err := secureMkdirAll(snapshot.store.downloadsDir()); err != nil {
 		return DownloadResult{}, ErrStorageUnavailable
 	}
-	tmpPath := filepath.Join(snapshot.store.downloadsDir(), artifact.Filename+".tmp")
+	temp, err := os.CreateTemp(snapshot.store.downloadsDir(), ".download-*")
+	if err != nil {
+		return DownloadResult{}, ErrStorageUnavailable
+	}
+	tmpPath := temp.Name()
+	defer os.Remove(tmpPath)
+	if err := temp.Close(); err != nil {
+		return DownloadResult{}, ErrStorageUnavailable
+	}
 	finalPath := filepath.Join(snapshot.store.downloadsDir(), artifact.Filename)
 	n, err := downloadArtifactFor(ctx, snapshot.cfg, snapshot.client, artifact, tmpPath)
 	if err != nil {
@@ -157,16 +165,16 @@ func (s *Service) DownloadUpdate(ctx context.Context, version string) (DownloadR
 		_ = os.Remove(tmpPath)
 		return DownloadResult{}, ErrUpdateStateChanged
 	}
-	if err := replaceFile(tmpPath, finalPath); err != nil {
+	if err := replaceFile(ctx, tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return DownloadResult{}, ErrStorageUnavailable
+		return DownloadResult{}, err
 	}
 	meta := downloadedUpdate{
 		SchemaVersion: schemaVersion, SourceKey: selected.SourceKey, PolicyKey: selected.PolicyKey,
 		Manifest: selected.Manifest, Artifact: artifact, ArtifactPath: finalPath,
 		BytesWritten: n, DownloadedAt: time.Now().UTC(),
 	}
-	if err := snapshot.store.writeDownloaded(meta); err != nil {
+	if err := snapshot.store.writeDownloaded(ctx, meta); err != nil {
 		return DownloadResult{}, err
 	}
 	return DownloadResult{Version: selected.Manifest.Version, ArtifactName: artifact.Filename, BytesWritten: n, Message: "update downloaded"}, nil
@@ -187,7 +195,7 @@ func (s *Service) VerifyUpdate(ctx context.Context, version string) (VerifyResul
 }
 
 func (s *Service) verifyUpdateSnapshot(snapshot serviceSnapshot, version string) (VerifyResult, error) {
-	downloaded, err := snapshot.store.readDownloaded()
+	downloaded, err := snapshot.store.readDownloaded(context.Background())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return VerifyResult{}, ErrVerificationFailed
@@ -213,7 +221,7 @@ func (s *Service) verifyUpdateSnapshot(snapshot serviceSnapshot, version string)
 		return VerifyResult{}, ErrUpdateStateChanged
 	}
 	verified := verifiedUpdate{SchemaVersion: schemaVersion, Downloaded: downloaded, VerifiedAt: time.Now().UTC()}
-	if err := snapshot.store.writeVerified(verified); err != nil {
+	if err := snapshot.store.writeVerified(context.Background(), verified); err != nil {
 		return VerifyResult{}, err
 	}
 	return VerifyResult{Version: downloaded.Manifest.Version, ArtifactName: downloaded.Artifact.Filename, OK: true, Message: "update verified"}, nil
