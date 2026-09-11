@@ -30,7 +30,7 @@ Physical production lines (including imports, comments and blank lines):
 | Library (`pkg` + `internal`, excluding tests) | 20,201 | 20,199 | -2 |
 
 Recalibration: the original 20,605-line audit predates the already completed
-2,228-line structural reduction to 18,377. Subsequent reliability work and W09
+2,368-line structural reduction to 18,237. Subsequent reliability work and W09
 bring the library to 20,199: 406 fewer lines than the audit, or about 2.0%.
 The original 2,000–3,000-line hypothesis is retired as a future saving target.
 Remaining packages must measure concrete residual duplication from their current
