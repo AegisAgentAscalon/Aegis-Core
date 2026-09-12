@@ -1,5 +1,7 @@
 # September module reorganization and audit status
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 The local structural candidate starts at test-cleanup commit `85720d7`, whose
 production source matches audit candidate `2006392`. It consolidates Auth,
 Device Link, Profile Mesh, Setup State and Updates into their public package

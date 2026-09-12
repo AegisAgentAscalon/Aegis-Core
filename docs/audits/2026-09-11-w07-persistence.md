@@ -1,5 +1,7 @@
 # W07 - Destination-preserving persistence
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Baseline: W06 c8bbdedcba91d0f93340282530bea71b292e5c57.
 See ../plans/W07_PERSISTENCE_DESIGN.md for the contract and platform limits.
 

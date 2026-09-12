@@ -70,8 +70,11 @@ HTTP policy, selection, transfer, staging and lifecycle responsibilities within
 the existing public package. Legacy constructors/adapters/callback execution live
 in `legacy_apply.go`, with public aliases in `compatibility_aliases.go`. Public
 redaction views and private persisted records remain intentionally distinct.
-See the [W13 record](audits/2026-09-12-w13-updates.md); generation-format migration
-is a separate W14 design and implementation step.
+The [W13 record](audits/2026-09-12-w13-updates.md) describes that partition.
+W14 implemented committed generations for Updates and Profile Mesh; see
+[State persistence](STATE_PERSISTENCE.md) for the current migration and ownership
+rules. W15 retains those rules while reusing the reliable receiver's private
+revision inventory and reducing selected Updates hashes and Cloud allocations.
 
 W10 makes Profile Mesh's remaining boundaries explicit: public domain models in
 `types.go`, configuration and shared syntax in `config.go`, schema-specific
@@ -81,11 +84,12 @@ snapshot encoding in `snapshot_codec.go`, and private registry envelopes in
 [W10 record](audits/2026-09-11-w10-profilemesh.md) for compatibility limits.
 
 Identity Gate already has a focused private state machine and mostly aliases
-its contract types. Its private engine remains deliberate: changing the type
-identity and engine at the same time as its open correctness repairs would add
-unnecessary migration risk. Secret Store's contract/development-adapter split is
+its contract types. That private engine remains deliberate; its retained contract
+identity does not require a duplicate public implementation. Secret Store's contract/development-adapter split is
 also intentional. Examples remain independent consumer programs under
-`examples/`; CI stays under `.github/workflows/`; tests live beside the owner
+`examples/`, sharing synthetic setup under `examples/internal/exampledata` while
+calling public Core APIs. Import tests inspect that helper too and reject private
+Core dependencies. CI stays under `.github/workflows/`; tests live beside the owner
 they exercise. There is no new shared `models`, `utils`, or generic manager package.
 
 ## Dependency direction

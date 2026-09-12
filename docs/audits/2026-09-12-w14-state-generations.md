@@ -1,5 +1,7 @@
 # W14: coherent persisted state
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 W14 starts from reviewed W13 `d6b5cca5`. Profile Mesh and Updates now publish one
 authoritative metadata generation per existing storage scope. Public imports,
 method signatures, signed manifest payloads and lifecycle schema remain stable.

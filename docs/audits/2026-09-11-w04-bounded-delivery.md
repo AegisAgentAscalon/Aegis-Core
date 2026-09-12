@@ -1,5 +1,7 @@
 # W04a — bounded legacy delivery and clock corrections
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Implements the pre-W07 portion of W04. Legacy LocalDevProvider receive is bounded
 at 64 items and 1 MiB encoded JSON; later pages remain queued. Single unpageable
 items are rejected before acceptance. HTTP client and handler share those receive

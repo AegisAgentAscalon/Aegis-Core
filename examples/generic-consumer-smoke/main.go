@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AegisAgentAscalon/aegis-core/examples/internal/exampledata"
 	"github.com/AegisAgentAscalon/aegis-core/pkg/appbridge"
 	"github.com/AegisAgentAscalon/aegis-core/pkg/profilemesh"
 	"github.com/AegisAgentAscalon/aegis-core/pkg/profilesync"
@@ -259,7 +260,7 @@ func smokeUpdates(ctx context.Context, workDir string, now time.Time) (UpdateSmo
 			SHA256:       hex.EncodeToString(sum[:]),
 		}},
 	}
-	if err := writeJSON(manifestPath, manifest); err != nil {
+	if err := exampledata.WriteJSON(manifestPath, manifest); err != nil {
 		return UpdateSmoke{}, err
 	}
 
@@ -485,70 +486,11 @@ func smokeCloudSync(ctx context.Context, workDir string, now time.Time) (CloudSy
 }
 
 func validSmokeSnapshot(snapshotID, parentID string, now time.Time) profilemesh.SignedProfileSnapshot {
-	return profilemesh.SignedProfileSnapshot{
-		Metadata: profilemesh.ProfileSnapshotMetadata{
-			SchemaVersion:       1,
-			ProfileNamespace:    smokeNamespace,
-			ProfileID:           "profile-smoke",
-			SnapshotID:          snapshotID,
-			SnapshotFingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			ParentSnapshotID:    parentID,
-			SourceDeviceID:      smokeDeviceA,
-			HostingMode:         profilemesh.HostingSingleProfileDevice,
-			CreatedAt:           now.Add(-time.Minute),
-			UpdatedAt:           now,
-			ExpiresAt:           now.Add(time.Hour),
-			MetadataVersion:     1,
-		},
-		Signature: profilemesh.SnapshotSignatureSummary{
-			SignerDeviceID:       smokeDeviceA,
-			SignerKeyFingerprint: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-			SignatureFingerprint: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-			Algorithm:            "generic-ed25519-summary",
-			SignedAt:             now,
-		},
-	}
-}
-
-func writeJSON(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	encodeErr := json.NewEncoder(file).Encode(value)
-	closeErr := file.Close()
-	if encodeErr != nil {
-		return encodeErr
-	}
-	return closeErr
+	return exampledata.Snapshot(smokeNamespace, "profile-smoke", snapshotID, parentID, smokeDeviceA, now)
 }
 
 func smokeOutputSafe(value any, extraForbidden string) bool {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return false
-	}
-	text := strings.ToLower(string(raw))
-	for _, forbidden := range []string{
-		`:\`,
-		"/users/",
-		"/home/",
-		"appdata",
-		"generic update artifact",
-		"generic relay smoke payload",
-		"raw payload",
-	} {
-		if strings.Contains(text, forbidden) {
-			return false
-		}
-	}
-	if strings.TrimSpace(extraForbidden) != "" && strings.Contains(text, strings.ToLower(extraForbidden)) {
-		return false
-	}
-	return true
+	return exampledata.OutputSafe(value, extraForbidden, "generic update artifact", "generic relay smoke payload")
 }
 
 type smokeClock struct {

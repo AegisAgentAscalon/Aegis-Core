@@ -1,5 +1,7 @@
 # W11: Auth operation ownership and cancellation
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Auth already owns its public types and implementation after the module
 reorganization. This pass removes the unused error-writing wrapper and addresses
 operation lifetime; it does not count the earlier facade removal again.

@@ -1,5 +1,7 @@
 # W03 — cloud storage identity and namespace comparison
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 SD-01: new namespace directories and object filenames use domain-separated
 SHA-256 hashes of JSON tuples under `.aegis-cloud-v2`. Tuple encoding preserves
 component boundaries; lowercase hex paths keep case-only identities separate

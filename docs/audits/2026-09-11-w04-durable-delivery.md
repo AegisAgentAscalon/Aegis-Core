@@ -1,5 +1,7 @@
 # W04b local reliable delivery candidate
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Based on W07 correction a272031: canceled update checks preserve selected,
 downloaded and verified records and artifact bytes. The review regression failed
 before correction and passes afterward. Its separate worktree has an 18-check

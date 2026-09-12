@@ -67,10 +67,7 @@ func TestStartAndCompleteSignInAcceptNilContext(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
 	cfg.OAuth.Endpoints.UserInfoURL = userInfoServer.URL
-	svc, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestAuthService(t, cfg)
 	start, err := svc.StartSignIn(nil)
 	if err != nil {
 		t.Fatalf("StartSignIn(nil) returned error: %v", err)
@@ -93,10 +90,7 @@ func TestAuthStoreRepairsPrivateDirectoryPermissions(t *testing.T) {
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestAuthService(t, cfg)
 	info, err := os.Stat(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -172,10 +166,7 @@ func TestNewServiceUsesNamespacedStore(t *testing.T) {
 
 func TestStatusRedactsTokensAndSecrets(t *testing.T) {
 	cfg := testConfig(t)
-	svc, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestAuthService(t, cfg)
 	if err := svc.store.writeToken(context.Background(), token{
 		AccessToken:  "access-secret",
 		RefreshToken: "refresh-secret",
@@ -260,10 +251,7 @@ func TestProfileReturnsActionableMissingProfileError(t *testing.T) {
 func TestStartSignInReturnsSafeURLShape(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.OAuth.UseClientSecret = true
-	svc, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestAuthService(t, cfg)
 	result, err := svc.StartSignIn(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -301,10 +289,7 @@ func TestStartSignInClearsPreviousPendingSessions(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
 	cfg.OAuth.Endpoints.UserInfoURL = userInfoServer.URL
-	svc, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestAuthService(t, cfg)
 	first, err := svc.StartSignIn(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -449,10 +434,7 @@ func TestCompleteSignInUsesVerifierStoresTokenAndReturnsSafeProfile(t *testing.T
 	cfg := testConfig(t)
 	cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
 	cfg.OAuth.Endpoints.UserInfoURL = userInfoServer.URL
-	svc, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestAuthService(t, cfg)
 	start, err := svc.StartSignIn(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -521,10 +503,7 @@ func TestCompleteSignInTokenExchangeFailureIsActionable(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
 	cfg.OAuth.Endpoints.UserInfoURL = tokenServer.URL
-	svc, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestAuthService(t, cfg)
 	start, err := svc.StartSignIn(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -559,10 +538,7 @@ func TestCompleteSignInProfileHTTPFailureStoresSafeLastError(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
 	cfg.OAuth.Endpoints.UserInfoURL = failingUserInfo.URL
-	svc, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestAuthService(t, cfg)
 	start, err := svc.StartSignIn(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -619,10 +595,7 @@ func TestProviderTimeoutCancelUnavailableAndMalformedResponses(t *testing.T) {
 		cfg := testConfig(t)
 		cfg.OAuth.Endpoints.TokenURL = slow.URL
 		cfg.OAuth.Endpoints.UserInfoURL = slow.URL
-		svc, err := NewService(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestAuthService(t, cfg)
 		start, err := svc.StartSignIn(context.Background())
 		if err != nil {
 			t.Fatal(err)
@@ -649,10 +622,7 @@ func TestProviderTimeoutCancelUnavailableAndMalformedResponses(t *testing.T) {
 	t.Run("provider unavailable", func(t *testing.T) {
 		cfg := testConfig(t)
 		cfg.OAuth.Endpoints.TokenURL = "http://127.0.0.1:1/token"
-		svc, err := NewService(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestAuthService(t, cfg)
 		start, _ := svc.StartSignIn(context.Background())
 		if _, err := svc.CompleteSignIn(context.Background(), CompleteSignInRequest{State: mustState(t, start.AuthorizationURL), Code: "code"}); !errors.Is(err, ErrProviderUnavailable) {
 			t.Fatalf("expected provider unavailable, got %v", err)
@@ -666,10 +636,7 @@ func TestProviderTimeoutCancelUnavailableAndMalformedResponses(t *testing.T) {
 		defer tokenServer.Close()
 		cfg := testConfig(t)
 		cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
-		svc, err := NewService(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestAuthService(t, cfg)
 		start, _ := svc.StartSignIn(context.Background())
 		if _, err := svc.CompleteSignIn(context.Background(), CompleteSignInRequest{State: mustState(t, start.AuthorizationURL), Code: "code"}); !errors.Is(err, ErrInvalidProviderResponse) {
 			t.Fatalf("expected invalid token response, got %v", err)
@@ -683,10 +650,7 @@ func TestProviderTimeoutCancelUnavailableAndMalformedResponses(t *testing.T) {
 		defer tokenServer.Close()
 		cfg := testConfig(t)
 		cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
-		svc, err := NewService(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestAuthService(t, cfg)
 		start, _ := svc.StartSignIn(context.Background())
 		if _, err := svc.CompleteSignIn(context.Background(), CompleteSignInRequest{State: mustState(t, start.AuthorizationURL), Code: "code"}); !errors.Is(err, ErrInvalidProviderResponse) {
 			t.Fatalf("expected invalid missing token response, got %v", err)
@@ -704,10 +668,7 @@ func TestProviderTimeoutCancelUnavailableAndMalformedResponses(t *testing.T) {
 		cfg := testConfig(t)
 		cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
 		cfg.OAuth.Endpoints.UserInfoURL = badUserInfo.URL
-		svc, err := NewService(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestAuthService(t, cfg)
 		start, _ := svc.StartSignIn(context.Background())
 		if _, err := svc.CompleteSignIn(context.Background(), CompleteSignInRequest{State: mustState(t, start.AuthorizationURL), Code: "code"}); !errors.Is(err, ErrInvalidProviderResponse) {
 			t.Fatalf("expected invalid userinfo response, got %v", err)
@@ -728,10 +689,7 @@ func TestUserInfoMissingSubjectFailsButOptionalFieldsMayBeEmpty(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
 	cfg.OAuth.Endpoints.UserInfoURL = noSubject.URL
-	svc, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestAuthService(t, cfg)
 	start, _ := svc.StartSignIn(context.Background())
 	if _, err := svc.CompleteSignIn(context.Background(), CompleteSignInRequest{State: mustState(t, start.AuthorizationURL), Code: "code"}); !errors.Is(err, ErrInvalidProviderResponse) {
 		t.Fatalf("expected missing subject to fail, got %v", err)
@@ -747,7 +705,7 @@ func TestUserInfoMissingSubjectFailsButOptionalFieldsMayBeEmpty(t *testing.T) {
 	cfg = testConfig(t)
 	cfg.OAuth.Endpoints.TokenURL = tokenServer.URL
 	cfg.OAuth.Endpoints.UserInfoURL = optionalEmpty.URL
-	svc, err = NewService(cfg)
+	svc, err := NewService(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

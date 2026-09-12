@@ -100,10 +100,7 @@ func TestStrictServiceKeepsTokenAndPKCESessionOutOfPlaintextStore(t *testing.T) 
 
 func TestStrictServiceMigratesLegacySecretsAndProtectedRecordsStayAuthoritative(t *testing.T) {
 	cfg := testConfig(t)
-	legacy, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	legacy := newTestAuthService(t, cfg)
 	wantToken := token{AccessToken: "legacy-access", RefreshToken: "legacy-refresh", Expiry: time.Now().UTC().Add(time.Hour)}
 	wantSession := migrationSession("legacy-session", "legacy-state")
 	if err := legacy.store.writeToken(context.Background(), wantToken); err != nil {
@@ -151,16 +148,13 @@ func TestStrictServiceMigratesLegacySecretsAndProtectedRecordsStayAuthoritative(
 func TestStrictMigrationReadBackMismatchPreservesLegacy(t *testing.T) {
 	t.Run("token", func(t *testing.T) {
 		cfg := testConfig(t)
-		legacy, err := NewService(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
+		legacy := newTestAuthService(t, cfg)
 		if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
 		faults := newFaultStore()
 		faults.corruptPut[protectedKey(cfg, "oauth-token")] = true
-		_, err = NewStrictService(cfg, faults)
+		_, err := NewStrictService(cfg, faults)
 		if !errors.Is(err, ErrStorageUnavailable) {
 			t.Fatalf("migration error = %v, want ErrStorageUnavailable", err)
 		}
@@ -171,16 +165,13 @@ func TestStrictMigrationReadBackMismatchPreservesLegacy(t *testing.T) {
 
 	t.Run("pending sessions", func(t *testing.T) {
 		cfg := testConfig(t)
-		legacy, err := NewService(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
+		legacy := newTestAuthService(t, cfg)
 		if err := legacy.store.writeSession(context.Background(), migrationSession("legacy-session", "legacy-state")); err != nil {
 			t.Fatal(err)
 		}
 		faults := newFaultStore()
 		faults.corruptPut[protectedKey(cfg, "pending-sessions")] = true
-		_, err = NewStrictService(cfg, faults)
+		_, err := NewStrictService(cfg, faults)
 		if !errors.Is(err, ErrStorageUnavailable) {
 			t.Fatalf("migration error = %v, want ErrStorageUnavailable", err)
 		}
@@ -207,15 +198,12 @@ func TestStrictStoreAcceptsBase64URLSessionIDPrefixes(t *testing.T) {
 func TestStrictMigrationRejectsInvalidLegacyWithoutDeletingIt(t *testing.T) {
 	t.Run("token", func(t *testing.T) {
 		cfg := testConfig(t)
-		legacy, err := NewService(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
+		legacy := newTestAuthService(t, cfg)
 		if err := os.WriteFile(legacy.store.tokenPath(), []byte(`{"access_token":"legacy-secret"`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		protected := devsecretstore.NewMemoryStore()
-		_, err = NewStrictService(cfg, protected)
+		_, err := NewStrictService(cfg, protected)
 		if !errors.Is(err, ErrStorageUnavailable) {
 			t.Fatalf("invalid legacy token error = %v, want ErrStorageUnavailable", err)
 		}
@@ -229,10 +217,7 @@ func TestStrictMigrationRejectsInvalidLegacyWithoutDeletingIt(t *testing.T) {
 
 	t.Run("pending sessions", func(t *testing.T) {
 		cfg := testConfig(t)
-		legacy, err := NewService(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
+		legacy := newTestAuthService(t, cfg)
 		if err := os.MkdirAll(legacy.store.sessionsDir(), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -240,7 +225,7 @@ func TestStrictMigrationRejectsInvalidLegacyWithoutDeletingIt(t *testing.T) {
 			t.Fatal(err)
 		}
 		protected := devsecretstore.NewMemoryStore()
-		_, err = NewStrictService(cfg, protected)
+		_, err := NewStrictService(cfg, protected)
 		if !errors.Is(err, ErrStorageUnavailable) {
 			t.Fatalf("invalid legacy session error = %v, want ErrStorageUnavailable", err)
 		}
@@ -255,10 +240,7 @@ func TestStrictMigrationRejectsInvalidLegacyWithoutDeletingIt(t *testing.T) {
 
 func TestStrictMigrationPreflightsEveryLegacyRecordBeforeProtectedWrites(t *testing.T) {
 	cfg := testConfig(t)
-	legacy, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	legacy := newTestAuthService(t, cfg)
 	if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
@@ -279,10 +261,7 @@ func TestStrictMigrationPreflightsEveryLegacyRecordBeforeProtectedWrites(t *test
 
 func TestStrictProtectedCorruptionIsAuthoritativeAndFailsClosed(t *testing.T) {
 	cfg := testConfig(t)
-	legacy, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	legacy := newTestAuthService(t, cfg)
 	if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +269,7 @@ func TestStrictProtectedCorruptionIsAuthoritativeAndFailsClosed(t *testing.T) {
 	if err := protected.Put(context.Background(), protectedKey(cfg, "oauth-token"), []byte(`{"access_token":"protected-secret"`)); err != nil {
 		t.Fatal(err)
 	}
-	_, err = NewStrictService(cfg, protected)
+	_, err := NewStrictService(cfg, protected)
 	if !errors.Is(err, ErrProtectedStorageCorrupt) {
 		t.Fatalf("strict constructor error = %v, want ErrProtectedStorageCorrupt", err)
 	}
@@ -304,10 +283,7 @@ func TestStrictProtectedCorruptionIsAuthoritativeAndFailsClosed(t *testing.T) {
 
 func TestStrictProtectedSessionCorruptionIsAuthoritativeAndFailsClosed(t *testing.T) {
 	cfg := testConfig(t)
-	legacy, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	legacy := newTestAuthService(t, cfg)
 	if err := legacy.store.writeSession(context.Background(), migrationSession("legacy-session", "legacy-state")); err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +291,7 @@ func TestStrictProtectedSessionCorruptionIsAuthoritativeAndFailsClosed(t *testin
 	if err := protected.Put(context.Background(), protectedKey(cfg, "pending-sessions"), []byte(`{"version":1,"sessions":[{"verifier":"protected-secret"}]}`)); err != nil {
 		t.Fatal(err)
 	}
-	_, err = NewStrictService(cfg, protected)
+	_, err := NewStrictService(cfg, protected)
 	if !errors.Is(err, ErrProtectedStorageCorrupt) {
 		t.Fatalf("strict constructor error = %v, want ErrProtectedStorageCorrupt", err)
 	}
@@ -338,16 +314,13 @@ func TestStrictProtectedStoreFailuresAndSignOutAreRedacted(t *testing.T) {
 
 	t.Run("migration put", func(t *testing.T) {
 		cfg := testConfig(t)
-		legacy, err := NewService(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
+		legacy := newTestAuthService(t, cfg)
 		if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
 		faults := newFaultStore()
 		faults.failPut[protectedKey(cfg, "oauth-token")] = errors.New("backend rejected refresh-secret at C:\\secrets")
-		_, err = NewStrictService(cfg, faults)
+		_, err := NewStrictService(cfg, faults)
 		assertSafeStorageError(t, err, ErrStorageUnavailable)
 		if _, statErr := os.Stat(legacy.store.tokenPath()); statErr != nil {
 			t.Fatalf("failed protected put deleted legacy token: %v", statErr)
@@ -489,10 +462,7 @@ func TestStrictMigrationFailuresPreserveAllLegacySourcesAndRetryCleanly(t *testi
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := testConfig(t)
-			legacy, err := NewService(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
+			legacy := newTestAuthService(t, cfg)
 			if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", RefreshToken: "legacy-refresh", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 				t.Fatal(err)
 			}
@@ -715,10 +685,7 @@ func migrationSession(id, state string) pendingSession {
 func legacyStoreWithTokenAndSession(t *testing.T) (AppConfig, *Service) {
 	t.Helper()
 	cfg := testConfig(t)
-	legacy, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	legacy := newTestAuthService(t, cfg)
 	if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", RefreshToken: "legacy-refresh", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}

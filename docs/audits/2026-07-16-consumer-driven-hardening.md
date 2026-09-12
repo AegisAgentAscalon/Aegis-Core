@@ -1,5 +1,7 @@
 # 2026-07-16 Consumer-Driven Hardening
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Status: internal engineering implementation and review
 
 ## Scope

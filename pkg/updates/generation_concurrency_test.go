@@ -76,14 +76,8 @@ func TestGenerationSeparateOwnerRejectsStaleDownload(t *testing.T) {
 	cfg, _, _ := testUpdateFiles(t, "1.2.0")
 	manifest := testManifest(cfg, "1.2.0", server.URL, stateDigest(body))
 	writeManifest(t, cfg.Source.ManifestPath, manifest)
-	first, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	first := newTestUpdateService(t, cfg)
+	second := newTestUpdateService(t, cfg)
 	if _, err := first.CheckForUpdates(ctx); err != nil {
 		t.Fatal(err)
 	}

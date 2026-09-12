@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AegisAgentAscalon/aegis-core/examples/internal/exampledata"
 	"github.com/AegisAgentAscalon/aegis-core/pkg/appbridge"
 	"github.com/AegisAgentAscalon/aegis-core/pkg/profilemesh"
 	"github.com/AegisAgentAscalon/aegis-core/pkg/profilesync"
@@ -439,29 +440,7 @@ func provePartialFailure(ctx context.Context, workDir string, now time.Time) (Pa
 }
 
 func validSnapshot(snapshotID, parentID, sourceDeviceID string, now time.Time) profilemesh.SignedProfileSnapshot {
-	return profilemesh.SignedProfileSnapshot{
-		Metadata: profilemesh.ProfileSnapshotMetadata{
-			SchemaVersion:       1,
-			ProfileNamespace:    proofNamespace,
-			ProfileID:           "profile-alpha",
-			SnapshotID:          snapshotID,
-			SnapshotFingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			ParentSnapshotID:    parentID,
-			SourceDeviceID:      sourceDeviceID,
-			HostingMode:         profilemesh.HostingSingleProfileDevice,
-			CreatedAt:           now.Add(-time.Minute),
-			UpdatedAt:           now,
-			ExpiresAt:           now.Add(time.Hour),
-			MetadataVersion:     1,
-		},
-		Signature: profilemesh.SnapshotSignatureSummary{
-			SignerDeviceID:       sourceDeviceID,
-			SignerKeyFingerprint: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-			SignatureFingerprint: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-			Algorithm:            "generic-ed25519-summary",
-			SignedAt:             now,
-		},
-	}
+	return exampledata.Snapshot(proofNamespace, "profile-alpha", snapshotID, parentID, sourceDeviceID, now)
 }
 
 func validProposal(proposalID, baseSnapshotID, proposedSnapshotID string, now time.Time) profilemesh.ProfileChangeProposal {
@@ -505,27 +484,7 @@ func safeValue(value any) bool {
 }
 
 func proofOutputSafe(value any, extraForbidden string) bool {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return false
-	}
-	text := strings.ToLower(string(raw))
-	for _, forbidden := range []string{
-		`:\`,
-		"/users/",
-		"/home/",
-		"appdata",
-		"generic metadata proof payload",
-		"raw payload",
-	} {
-		if strings.Contains(text, forbidden) {
-			return false
-		}
-	}
-	if strings.TrimSpace(extraForbidden) != "" && strings.Contains(text, strings.ToLower(extraForbidden)) {
-		return false
-	}
-	return true
+	return exampledata.OutputSafe(value, extraForbidden, "generic metadata proof payload")
 }
 
 type fixedClock struct {

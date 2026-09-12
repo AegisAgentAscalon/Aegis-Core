@@ -47,6 +47,12 @@ func TestExampleImportsPublicPackagesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob go files: %v", err)
 	}
+	// Inspect the shared fixture too: it may use public Core APIs, never private owners.
+	fixtureFiles, err := filepath.Glob(filepath.Join("..", "internal", "exampledata", "*.go"))
+	if err != nil || len(fixtureFiles) == 0 {
+		t.Fatalf("example fixture sources unavailable: %v", err)
+	}
+	files = append(files, fixtureFiles...)
 	modulePrefix := "github.com/AegisAgentAscalon/aegis-core/"
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
@@ -59,6 +65,9 @@ func TestExampleImportsPublicPackagesOnly(t *testing.T) {
 		}
 		for _, spec := range parsed.Imports {
 			path := strings.Trim(spec.Path.Value, `"`)
+			if filepath.Dir(file) == "." && path == modulePrefix+"examples/internal/exampledata" {
+				continue // Sole example-only fixture dependency; inspected above.
+			}
 			if strings.Contains(path, "/internal/") || strings.Contains(path, "/examples/") {
 				t.Fatalf("%s imports forbidden path %q", file, path)
 			}
@@ -70,7 +79,7 @@ func TestExampleImportsPublicPackagesOnly(t *testing.T) {
 }
 
 func TestExampleHasNoNamedConsumerReferences(t *testing.T) {
-	for _, file := range []string{"main.go", "README.md"} {
+	for _, file := range []string{"main.go", "README.md", filepath.Join("..", "internal", "exampledata", "exampledata.go")} {
 		raw, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)

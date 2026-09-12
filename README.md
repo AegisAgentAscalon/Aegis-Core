@@ -8,7 +8,7 @@ This repository is intended to be readable, inspectable infrastructure code. It 
 
 The September 2026 local module reorganization preserves public package paths
 and removes duplicate owner implementations. The
-[current audit status](docs/audits/2026-09-11-module-reorganization.md) lists open
+[current engineering status](docs/STATUS.md) lists open
 correctness findings and validation limits; the historical hardening passes
 below do not close those findings.
 
@@ -22,7 +22,7 @@ That work is not an independent professional security audit, penetration test, o
 - A set of public packages under `pkg/` with app-facing DTOs and narrow service contracts.
 - State-owning structs and private helpers within each domain package, with focused `internal/` engines and development adapters where needed.
 - Local/dev implementations for metadata stores, relay transport, update staging, and OAuth setup flows.
-- Examples showing generic consumer usage through public packages only.
+- Examples using public Core APIs, with synthetic fixture helpers under `examples/internal/`.
 
 ## What This Is Not
 

@@ -1,5 +1,7 @@
 # W06 - Immutable status and ordered callbacks
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Baseline: W05 `622f412834c627c511476a84ec1edfb947024a6f`.
 Scope: AR-01 through AR-04, SD-08, IG-03 through IG-05.
 

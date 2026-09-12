@@ -1,5 +1,7 @@
 # W08: Profile Mesh resource invariants and explicit hint rejection
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Historical initial pass. The subsequent [review corrections](2026-09-11-w08-review-corrections.md)
 refine allowlist normalization and separate alternative-host permission from liveness.
 

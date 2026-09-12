@@ -1,5 +1,7 @@
 # W15: measured compatible computation and I/O work
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 This pass follows reviewed W14 `84c4fa00`. Public imports/APIs and native storage
 schemas remain compatible. No deployment, consumer migration or GitHub update is
 part of this local pass. The user ended the autonomous campaign at W15; W16-W18

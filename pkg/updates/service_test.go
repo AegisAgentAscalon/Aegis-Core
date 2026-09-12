@@ -52,10 +52,7 @@ func TestFileManifestFullFlow(t *testing.T) {
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
 	manifest := testManifest(cfg, "1.2.0", artifactPath, artifactHash)
 	writeManifest(t, cfg.Source.ManifestPath, manifest)
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	check, err := svc.CheckForUpdates(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -187,11 +184,8 @@ func TestManifestFailureModes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			writeManifest(t, cfg.Source.ManifestPath, tt.manifest)
-			svc, err := NewService(cfg, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = svc.CheckForUpdates(context.Background())
+			svc := newTestUpdateService(t, cfg)
+			_, err := svc.CheckForUpdates(context.Background())
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("expected %v, got %v", tt.want, err)
 			}
@@ -233,10 +227,7 @@ func TestManifestProviderRejectsSuspiciousBodies(t *testing.T) {
 			if err := os.WriteFile(cfg.Source.ManifestPath, tt.body, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			svc, err := NewService(cfg, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			svc := newTestUpdateService(t, cfg)
 			if _, err := svc.CheckForUpdates(context.Background()); !errors.Is(err, ErrInvalidManifest) {
 				t.Fatalf("expected invalid manifest, got %v", err)
 			} else {
@@ -272,10 +263,7 @@ func TestManifestSignatureVerification(t *testing.T) {
 	unsigned := testManifest(cfg, "1.2.0", artifactPath, artifactHash)
 	signed := signer(unsigned)
 	writeManifest(t, cfg.Source.ManifestPath, signed)
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	check, err := svc.CheckForUpdates(context.Background())
 	if err != nil || !check.UpdateAvailable {
 		t.Fatalf("expected signed manifest update, got %+v %v", check, err)
@@ -380,10 +368,7 @@ func TestUnsignedManifestRemainsShaOnlyWhenSignatureNotRequired(t *testing.T) {
 	cfg.Policy.RequireManifestSignature = false
 	cfg.Policy.ManifestVerificationKeys = nil
 	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	check, err := svc.CheckForUpdates(context.Background())
 	if err != nil || !check.UpdateAvailable {
 		t.Fatalf("expected unsigned reference manifest to remain usable when signature is not required, got %+v %v", check, err)
@@ -395,10 +380,7 @@ func TestUpdateSecurityVersionPolicy(t *testing.T) {
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.1.0")
 	cfg.Policy.MinimumVersion = "1.2.0"
 	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.1.0", artifactPath, artifactHash))
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	result, err := svc.CheckForUpdates(context.Background())
 	if !errors.Is(err, ErrNoUpdateAvailable) {
 		t.Fatalf("below-floor update error = %v, result = %+v", err, result)
@@ -440,10 +422,7 @@ func TestRollbackFreezePolicyClassification(t *testing.T) {
 		cfg, artifactPath, artifactHash := testUpdateFiles(t, "0.9.0")
 		cfg.Policy.RejectRollbackCandidates = true
 		writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "0.9.0", artifactPath, artifactHash))
-		svc, err := NewService(cfg, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestUpdateService(t, cfg)
 		if _, err := svc.CheckForUpdates(context.Background()); !errors.Is(err, ErrRollbackRisk) {
 			t.Fatalf("expected rollback-risk classification, got %v", err)
 		} else {
@@ -455,10 +434,7 @@ func TestRollbackFreezePolicyClassification(t *testing.T) {
 		cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.0.0")
 		cfg.Policy.RejectRollbackCandidates = true
 		writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.0.0", artifactPath, artifactHash))
-		svc, err := NewService(cfg, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestUpdateService(t, cfg)
 		result, err := svc.CheckForUpdates(context.Background())
 		if err != nil || result.UpdateAvailable {
 			t.Fatalf("expected equal candidate to be no update, got %+v %v", result, err)
@@ -471,10 +447,7 @@ func TestRollbackFreezePolicyClassification(t *testing.T) {
 		manifest := testManifest(cfg, "1.2.0", artifactPath, artifactHash)
 		manifest.MinimumSupportedVersion = cfg.CurrentVersion
 		writeManifest(t, cfg.Source.ManifestPath, manifest)
-		svc, err := NewService(cfg, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestUpdateService(t, cfg)
 		result, err := svc.CheckForUpdates(context.Background())
 		if err != nil || !result.UpdateAvailable {
 			t.Fatalf("expected equal minimum-supported version to be accepted, got %+v %v", result, err)
@@ -486,10 +459,7 @@ func TestRollbackFreezePolicyClassification(t *testing.T) {
 		cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
 		cfg.Policy.FreezeUpdates = true
 		writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
-		svc, err := NewService(cfg, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestUpdateService(t, cfg)
 		if _, err := svc.CheckForUpdates(context.Background()); !errors.Is(err, ErrUpdateBlocked) {
 			t.Fatalf("expected update blocked, got %v", err)
 		} else {
@@ -503,10 +473,7 @@ func TestRollbackFreezePolicyClassification(t *testing.T) {
 		manifest := testManifest(cfg, "1.2.0", artifactPath, artifactHash)
 		manifest.PublishedAt = time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
 		writeManifest(t, cfg.Source.ManifestPath, manifest)
-		svc, err := NewService(cfg, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestUpdateService(t, cfg)
 		if _, err := svc.CheckForUpdates(context.Background()); !errors.Is(err, ErrManifestStale) {
 			t.Fatalf("expected stale manifest, got %v", err)
 		} else {
@@ -520,10 +487,7 @@ func TestRollbackFreezePolicyClassification(t *testing.T) {
 		manifest := testManifest(cfg, "1.2.0", artifactPath, artifactHash)
 		manifest.PublishedAt = time.Now().UTC().Add(48 * time.Hour).Format(time.RFC3339)
 		writeManifest(t, cfg.Source.ManifestPath, manifest)
-		svc, err := NewService(cfg, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestUpdateService(t, cfg)
 		if _, err := svc.CheckForUpdates(context.Background()); !errors.Is(err, ErrManifestFutureDated) {
 			t.Fatalf("expected future-dated manifest, got %v", err)
 		} else {
@@ -537,10 +501,7 @@ func TestRollbackFreezePolicyClassification(t *testing.T) {
 		manifest := testManifest(cfg, "1.2.0", artifactPath, artifactHash)
 		manifest.PublishedAt = "not-a-time"
 		writeManifest(t, cfg.Source.ManifestPath, manifest)
-		svc, err := NewService(cfg, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		svc := newTestUpdateService(t, cfg)
 		if _, err := svc.CheckForUpdates(context.Background()); !errors.Is(err, ErrInvalidManifest) {
 			t.Fatalf("expected invalid manifest for malformed published_at, got %v", err)
 		} else {
@@ -565,10 +526,7 @@ func TestSignedManifestStillObeysRollbackFreezePolicy(t *testing.T) {
 	cfg.Policy.FreezeUpdates = true
 	manifest := signer(testManifest(cfg, "1.2.0", artifactPath, artifactHash))
 	writeManifest(t, cfg.Source.ManifestPath, manifest)
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if _, err := svc.CheckForUpdates(context.Background()); !errors.Is(err, ErrUpdateBlocked) {
 		t.Fatalf("expected signed manifest to be blocked by freeze policy, got %v", err)
 	} else {
@@ -588,10 +546,7 @@ func TestCachedUpdateMetadataRevalidatedAgainstRollbackFreezePolicy(t *testing.T
 	ctx := context.Background()
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
 	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if _, err := svc.CheckForUpdates(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -656,10 +611,7 @@ func TestHTTPManifestProviderLifecycle(t *testing.T) {
 	defer server.Close()
 	manifestURL = server.URL + "/manifest.json"
 	cfg.Source = SourceConfig{Provider: ProviderHTTPManifest, ManifestURL: manifestURL}
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	check, err := svc.CheckForUpdates(ctx)
 	if err != nil || !check.UpdateAvailable {
 		t.Fatalf("expected HTTP update, got %+v %v", check, err)
@@ -692,10 +644,7 @@ func TestHTTPUpdateNilContextDoesNotPanic(t *testing.T) {
 	defer server.Close()
 	manifestURL = server.URL + "/manifest.json"
 	cfg.Source = SourceConfig{Provider: ProviderHTTPManifest, ManifestURL: manifestURL}
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if check, err := svc.CheckForUpdates(nil); err != nil || !check.UpdateAvailable {
 		t.Fatalf("CheckForUpdates(nil) = %+v, %v", check, err)
 	}
@@ -732,10 +681,7 @@ func TestProviderAndDownloadFailuresAreSafe(t *testing.T) {
 	defer server.Close()
 	cfg := testConfig(t)
 	cfg.Source = SourceConfig{Provider: ProviderHTTPManifest, ManifestURL: server.URL}
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if _, err := svc.CheckForUpdates(context.Background()); !errors.Is(err, ErrProviderUnavailable) {
 		t.Fatalf("expected provider unavailable, got %v", err)
 	} else if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "Users") {
@@ -901,10 +847,7 @@ func TestStageUpdateRevalidatesDownloadedArtifactBeforeCopy(t *testing.T) {
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
 	manifest := testManifest(cfg, "1.2.0", artifactPath, artifactHash)
 	writeManifest(t, cfg.Source.ManifestPath, manifest)
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
@@ -943,10 +886,7 @@ func TestApplyAliasRequiresMatchingVersion(t *testing.T) {
 func TestDownloadArtifactRejectsLocalPathForNonFileProvider(t *testing.T) {
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
 	cfg.Source = SourceConfig{Provider: ProviderHTTPManifest, ManifestURL: "https://example.test/manifest.json"}
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	artifact := Artifact{
 		Platform:     cfg.Platform,
 		Architecture: cfg.Architecture,
@@ -966,10 +906,7 @@ func TestDownloadArtifactRejectsLocalPathForNonFileProvider(t *testing.T) {
 
 func TestSelectArtifactUsesDeterministicFilenameOrder(t *testing.T) {
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	manifest := testManifest(cfg, "1.2.0", artifactPath, artifactHash)
 	manifest.Artifacts = []Artifact{
 		{Platform: cfg.Platform, Architecture: cfg.Architecture, Filename: "b.zip", DownloadURL: artifactPath, Size: int64(len("artifact 1.2.0")), SHA256: artifactHash},
@@ -1012,10 +949,7 @@ func TestCorruptStagedMetadataIsClassifiedSafely(t *testing.T) {
 func TestNoUpdateAvailable(t *testing.T) {
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.0.0")
 	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.0.0", artifactPath, artifactHash))
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	result, err := svc.CheckForUpdates(context.Background())
 	if err != nil || result.UpdateAvailable {
 		t.Fatalf("expected no update, got %+v %v", result, err)
@@ -1026,10 +960,7 @@ func TestWithdrawnUpdateClearsCachedCandidateState(t *testing.T) {
 	ctx := context.Background()
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
 	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if _, err := svc.CheckForUpdates(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1061,10 +992,7 @@ func TestSourceChangeCannotReusePriorSelection(t *testing.T) {
 	ctx := context.Background()
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
 	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if _, err := svc.CheckForUpdates(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1092,10 +1020,7 @@ func TestManifestVerificationKeysAreCloned(t *testing.T) {
 	cfg.Policy.RequireManifestSignature = true
 	cfg.Policy.ManifestVerificationKeys = keys
 	writeManifest(t, cfg.Source.ManifestPath, signer(testManifest(cfg, "1.2.0", artifactPath, artifactHash)))
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	keys[keyID] = "caller-mutated-invalid-key"
 	if result, err := svc.CheckForUpdates(context.Background()); err != nil || !result.UpdateAvailable {
 		t.Fatalf("caller mutation changed service trust roots: %+v, %v", result, err)
@@ -1110,10 +1035,7 @@ func TestRemoteManifestRejectsLocalArtifactReference(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg.Source = SourceConfig{Provider: ProviderHTTPManifest, ManifestURL: server.URL}
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if _, err := svc.CheckForUpdates(context.Background()); !errors.Is(err, ErrInvalidManifest) {
 		t.Fatalf("remote manifest local artifact error = %v", err)
 	}
@@ -1123,10 +1045,7 @@ func TestDownloadedMetadataCannotRedirectVerificationPath(t *testing.T) {
 	ctx := context.Background()
 	cfg, artifactPath, artifactHash := testUpdateFiles(t, "1.2.0")
 	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if _, err := svc.CheckForUpdates(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1191,10 +1110,7 @@ func TestConcurrentConfigurationAndWorkflowReads(t *testing.T) {
 	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
 	secondPath := filepath.Join(t.TempDir(), "manifest.json")
 	writeManifest(t, secondPath, testManifest(cfg, "1.2.0", artifactPath, artifactHash))
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	sources := []SourceConfig{
 		{Provider: ProviderFileManifest, ManifestPath: cfg.Source.ManifestPath},
 		{Provider: ProviderFileManifest, ManifestPath: secondPath},
@@ -1375,11 +1291,7 @@ func assertUpdateJSONSafe(t *testing.T, v any) {
 		t.Fatalf("marshal update value: %v", err)
 	}
 	text := strings.ToLower(string(raw))
-	for _, forbidden := range []string{"client_secret", "refresh_token", "access_token", "id_token", "auth_code", "private_key", "github_pat", "ghp_", "token=", "password=", "secret=", `c:\\users\\`, "appdata", "downloads", "artifact_path"} {
-		if strings.Contains(text, forbidden) {
-			t.Fatalf("unsafe update JSON detail %q in %s", forbidden, string(raw))
-		}
-	}
+	assertUpdateTextSafe(t, text)
 }
 
 func assertUpdateErrorSafe(t *testing.T, err error) {
@@ -1388,9 +1300,14 @@ func assertUpdateErrorSafe(t *testing.T, err error) {
 		t.Fatal("expected error")
 	}
 	text := strings.ToLower(err.Error())
+	assertUpdateTextSafe(t, text)
+}
+
+func assertUpdateTextSafe(t *testing.T, text string) {
+	t.Helper()
 	for _, forbidden := range []string{"client_secret", "refresh_token", "access_token", "id_token", "auth_code", "private_key", "github_pat", "ghp_", "token=", "password=", "secret=", `c:\\users\\`, "appdata", "downloads", "artifact_path"} {
 		if strings.Contains(text, forbidden) {
-			t.Fatalf("unsafe update error detail %q in %v", forbidden, err)
+			t.Fatalf("unsafe update detail %q in %s", forbidden, text)
 		}
 	}
 }

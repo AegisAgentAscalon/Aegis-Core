@@ -1,5 +1,7 @@
 # W10: Profile Mesh ownership and contract partition
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Baseline: W09 `e1b5c49`, followed by documentation-only accounting correction
 `d996491`. The existing `pkg/profilemesh` owner and public service pointer semantics
 were established in `ad354df`; W10 does not claim that move a second time.

@@ -1,5 +1,7 @@
 # W05 — Auth lifecycle and status
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 UA-03: strict session append prunes expired records inside the existing revisioned
 compare-and-swap mutation. Each conflict retry reloads and recomputes the mutation.
 Five live sessions still reject another start. Consumed records remain until

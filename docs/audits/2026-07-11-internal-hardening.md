@@ -1,5 +1,7 @@
 # 2026-07-11 Internal Audit and Live-Repository Hardening
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 ## Status
 
 This document records an **internal engineering review and hardening pass**. It is not an independent professional security audit, penetration test, certification, or production-readiness guarantee.

@@ -27,3 +27,7 @@ It is not a real app integration and not a production template.
 go test ./examples/generic-consumer-smoke
 go run ./examples/generic-consumer-smoke
 ```
+
+Synthetic snapshot setup and output checks are shared in `../internal/exampledata`.
+The example and its helper use public Core APIs; import tests reject private Core
+implementation dependencies and inspect the helper alongside the consumer.

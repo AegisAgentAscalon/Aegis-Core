@@ -318,10 +318,7 @@ func TestArtifactCannotCollideWithUpdateMetadata(t *testing.T) {
 	manifest := testManifest(cfg, "1.2.0", artifactPath, hash)
 	manifest.Artifacts[0].Filename = "staged_update.json"
 	writeManifest(t, cfg.Source.ManifestPath, manifest)
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if _, err := svc.CheckForUpdates(context.Background()); !errors.Is(err, ErrInvalidManifest) {
 		t.Fatalf("metadata filename collision error = %v", err)
 	}
@@ -347,10 +344,7 @@ func TestExplicitLanePolicyChangeDoesNotReuseState(t *testing.T) {
 	cfg, artifactPath, hash := testUpdateFiles(t, "1.2.0")
 	cfg.Source.SourceID = "stable"
 	writeManifest(t, cfg.Source.ManifestPath, testManifest(cfg, "1.2.0", artifactPath, hash))
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if _, err := svc.CheckForUpdates(context.Background()); err != nil {
 		t.Fatal(err)
 	}

@@ -20,3 +20,7 @@ go run ./examples/generic-consumer-proof
 ```
 
 The JSON printed by `go run` contains only safe booleans and counts. It intentionally omits filesystem paths, relay payload bytes, mailbox internals, and provider internals.
+
+Synthetic snapshot setup and output checks are shared in `../internal/exampledata`.
+The example and its helper use public Core APIs; import tests reject private Core
+implementation dependencies and inspect the helper alongside the consumer.

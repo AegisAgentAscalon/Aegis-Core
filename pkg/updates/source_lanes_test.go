@@ -100,10 +100,7 @@ func TestPublicSetChannelStillRejectsEmptyChannel(t *testing.T) {
 		Source: SourceConfig{Provider: ProviderFileManifest, ManifestPath: filepath.Join(t.TempDir(), "stable.json")},
 		Policy: Policy{RequireSHA256: true},
 	}
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	if _, err := svc.SetChannel(context.Background(), ""); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("empty channel error = %v", err)
 	}
@@ -116,10 +113,7 @@ func TestPublicConfigureLanePreservesPolicyWhenOmitted(t *testing.T) {
 		Source: SourceConfig{Provider: ProviderFileManifest, ManifestPath: filepath.Join(t.TempDir(), "stable.json"), SourceID: "stable"},
 		Policy: Policy{RequireSHA256: true, MinimumVersion: "1.0.0"},
 	}
-	svc, err := NewService(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	svc := newTestUpdateService(t, cfg)
 	state, err := svc.ConfigureLane(context.Background(), LaneConfig{Channel: ChannelDev, Source: SourceConfig{Provider: ProviderFileManifest, ManifestPath: filepath.Join(t.TempDir(), "dev.json"), SourceID: "dev"}})
 	if err != nil {
 		t.Fatal(err)

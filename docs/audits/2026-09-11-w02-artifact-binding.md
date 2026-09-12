@@ -1,5 +1,7 @@
 # W02 — update artifact authority and staging cleanup
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 UA-01: selection and downloaded/verified cache validation reselect the artifact
 from the policy-validated manifest for the configured platform/architecture.
 Detached artifact fields, including signature metadata, must match that

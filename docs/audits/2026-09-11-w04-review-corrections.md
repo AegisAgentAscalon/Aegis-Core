@@ -1,5 +1,7 @@
 # W04 review corrections
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Baseline: a88c8a23fceca298366b6e65a641969a6b50afe9.
 
 - ReliableEnvelopeDigest rejects invalid UTF-8 metadata before the provider

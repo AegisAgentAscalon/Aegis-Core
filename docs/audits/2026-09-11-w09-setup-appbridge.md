@@ -1,5 +1,7 @@
 # W09: Setup State and AppBridge
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Baseline: corrected W08 `348cc602e7e7d3ac74c3d63d9d6798d752a5de25`.
 
 Setup State already owns its public contracts and aggregation directly. Commit

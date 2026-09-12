@@ -1,5 +1,7 @@
 # W12: Device Link boundaries and callback safety
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Device Link already has one public implementation and one memory adapter of each
 kind. This pass counts no earlier facade deletion again. Public contracts are now
 grouped around identity/bootstrap, registry trust, presence/resources and links.

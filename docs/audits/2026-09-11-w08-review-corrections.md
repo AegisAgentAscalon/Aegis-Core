@@ -1,5 +1,7 @@
 # W08 review corrections
 
+> Historical record for the revision named below. See [current status](../STATUS.md).
+
 Baseline: 4c0b7b5fd2e4ca4c057c251ae2a960adbe72ee35.
 
 Allowlist IDs now use dedicated sorting/deduplication that preserves exact values.
