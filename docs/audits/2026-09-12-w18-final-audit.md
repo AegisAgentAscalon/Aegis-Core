@@ -46,6 +46,12 @@ results must succeed for that source. Current run receipts are available in
 The separate campaign publication receipt binds those run/job/checkout identities
 to the local seal. A different merge SHA requires its own exact-head verification.
 
+The first published candidate, `f71f120`, passed its local matrix and hosted Linux
+tests/race/export, but Windows formatting failed before tests because a default
+CRLF checkout changed Go file bytes. The correction pins Go checkout line endings
+to LF and prints affected filenames on formatting failures. Go source blobs are
+unchanged; the corrected commit must pass a fresh local and hosted matrix.
+
 Core remains experimental. SD-02/SD-03 are retained limitations of legacy exchange;
 reliable v2 needs explicit consumer adoption. Migration still requires stopping
 old writers, and native state cannot safely be opened by downgraded writers.

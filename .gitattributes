@@ -1,0 +1,2 @@
+# Keep gofmt checks independent of Windows checkout defaults.
+*.go text eol=lf

@@ -40,7 +40,12 @@ jobs:
         run: go mod verify
       - name: Formatting
         shell: bash
-        run: test -z "$(gofmt -l .)"
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
       - name: Test
         run: go test -mod=readonly -count=1 ./...
       - name: Windows file-lock semantics
@@ -126,4 +131,8 @@ jobs:
           cd "$export_dir"
           go test -mod=readonly -count=1 ./...
           go vet -mod=readonly ./...
-          test -z "$(gofmt -l .)"
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
