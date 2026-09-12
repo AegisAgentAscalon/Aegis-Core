@@ -1,6 +1,7 @@
 name: Go
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
@@ -17,7 +18,7 @@ concurrency:
 jobs:
   test:
     name: Test (${{ matrix.os }})
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -27,36 +28,58 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record exact checkout
+        run: git rev-parse HEAD
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.27.1'
       - name: Verify module cache
         run: go mod verify
+      - name: Formatting
+        shell: bash
+        run: test -z "$(gofmt -l .)"
       - name: Test
-        run: go test -mod=readonly ./...
+        run: go test -mod=readonly -count=1 ./...
+      - name: Windows file-lock semantics
+        if: runner.os == 'Windows'
+        run: go test -mod=readonly -count=1 ./internal/filelock
+      - name: Windows persistence and cooperating-process checks
+        if: runner.os == 'Windows'
+        run: go test -mod=readonly -count=1 -run '^Test(W14|Generation|SeparateProcesses|StaleWriter|ConcurrentReaders)' ./internal/filepersist ./internal/generation ./pkg/profilemesh ./pkg/updates
       - name: Vet
         run: go vet -mod=readonly ./...
 
   race:
     name: Race test (Linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record exact checkout
+        run: git rev-parse HEAD
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.27.1'
-      - name: Race test internal packages
-        run: go test -race -mod=readonly ./internal/...
-      - name: Race test public packages
-        run: go test -race -mod=readonly ./pkg/...
+      - name: Race test all packages
+        run: go test -race -mod=readonly -count=1 ./...
 
   minimum-language:
     name: Minimum language compatibility (compile only)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record exact checkout
+        run: git rev-parse HEAD
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.22.12'
@@ -67,10 +90,40 @@ jobs:
   security:
     name: Vulnerability scan (patched compiler)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record exact checkout
+        run: git rev-parse HEAD
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.27.1'
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+  committed-export:
+    name: Committed source export (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record exact checkout
+        run: git rev-parse HEAD
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.27.1'
+      - name: Recreate and validate committed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_dir=$(mktemp -d)
+          git archive --format=tar HEAD | tar -x -C "$export_dir"
+          cd "$export_dir"
+          go test -mod=readonly -count=1 ./...
+          go vet -mod=readonly ./...
+          test -z "$(gofmt -l .)"

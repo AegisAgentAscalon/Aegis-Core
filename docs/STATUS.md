@@ -24,6 +24,8 @@ unchanged. Its coverage map and validation record are in the
 | Reliable delivery protocol and legacy boundary | [Reliable delivery](RELIABLE_DELIVERY.md) |
 | Update source and signing policy | [Update sources](UPDATE_SOURCES.md) |
 | Identity Gate contracts and limits | [Identity Gate](IDENTITY_GATE.md) |
+| Release/API status and deprecation | [Release policy](RELEASE_POLICY.md) |
+| Consumer adoption and rollback | [Consumer migration](CONSUMER_MIGRATION.md) |
 | Supported compiler policy | [Compiler policy](COMPILER_POLICY.md) |
 | Remaining engineering and consumer responsibilities | [Roadmap](ROADMAP.md) |
 
@@ -35,5 +37,7 @@ exactly-once external installation guarantees are outside this evidence.
 
 Hosted Windows/Linux execution, Linux race qualification, reliable-v2 consumer
 adoption, provider qualification and production deployment remain separately
-pending. W17 integration/release readiness and W18 final review/GitHub publication
-are future passes. No publication or consumer installation follows from W16.
+pending. W17 prepares integration/release readiness and compatible release policy; its
+local matrix is recorded separately in the campaign evidence. W18 final review
+and GitHub publication remain pending. No publication, tag or consumer installation
+follows from W17. See the [W17 record](audits/2026-09-12-w17-integration.md).

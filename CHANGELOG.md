@@ -4,6 +4,29 @@ All notable changes to Aegis Core are recorded here. The repository remains expe
 
 ## Unreleased
 
+### September repair and integration campaign (W01-W17)
+
+- Repaired Identity Gate authority/expiry, Auth session ownership/cancellation,
+  callback reentry, update artifact/source binding and cloud storage identity.
+- Added opt-in reliable v2 delivery custody and inbox handling. Legacy exchange
+  retains the documented SD-02/SD-03 limitations and needs consumer migration.
+- Added W14 committed generations for Profile Mesh and Updates with bounded native
+  codecs, cooperating-process locks, explicit migration and no silent legacy
+  fallback after activation. Old writers must stop; executable downgrade against
+  migrated roots is unsupported. See [migration](docs/CONSUMER_MIGRATION.md).
+- Reduced selected repeated work while retaining fresh integrity observations:
+  private reliable-receiver inventory reuse, fewer Cloud allocations, one artifact
+  hash instead of two on the first Updates handoff, and fewer private manifest
+  digests. Timing samples are mixed; there is no universal speedup claim.
+- Consolidated 59 test setups and example helpers without removing tests. W16
+  reduced tests by 132 lines and examples by 21; library source stayed unchanged.
+- Corrected current architecture status and example import documentation. W17
+  establishes an experimental release/deprecation policy, keeps legacy public APIs,
+  documents consumer migration and prepares exact-checkout CI/export gates.
+- Local validation and hosted qualification are distinct. W18 publication and
+  exact-published-head hosted Windows/Linux/race results remain required; no tag,
+  consumer installation or production qualification is implied by this changelog.
+
 ### Module organization
 
 - Consolidated Auth, Device Link, Profile Mesh, Setup State and Updates under
@@ -12,8 +35,8 @@ All notable changes to Aegis Core are recorded here. The repository remains expe
 - Divided large service implementations into responsibility files; retained
   state-owning structs, injected host ports and focused private Identity Gate
   and Secret Store implementations.
-- Added the architecture and ownership map. This structural pass leaves the
-  September audit's correctness findings for separately tested repairs.
+- Added the architecture and ownership map. The original structural pass preceded
+  the correctness repairs recorded above; dated audit findings remain historical.
 
 ### Security and correctness
 
