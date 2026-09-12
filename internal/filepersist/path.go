@@ -133,3 +133,42 @@ func OpenRegular(ctx context.Context, path string) (*os.File, error) {
 	}
 	return f, nil
 }
+
+// OpenOrCreateRegular opens a stable read/write handle, creating a missing file
+// with mode 0600. Its validated parent must exist. Existing bytes and identity
+// are never truncated, replaced or initialized; lock sentinels may remain empty.
+func OpenOrCreateRegular(ctx context.Context, path string) (*os.File, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	abs, err := absolute(path)
+	if err != nil {
+		return nil, err
+	}
+	before, err := regular(ctx, abs, true)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(abs, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := f.Stat()
+	if err == nil && (!opened.Mode().IsRegular() || before != nil && !os.SameFile(before, opened)) {
+		err = ErrUnsafePath
+	}
+	if err == nil {
+		var after os.FileInfo
+		after, err = regular(ctx, abs, false)
+		if err == nil && !os.SameFile(opened, after) {
+			err = ErrUnsafePath
+		}
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	return f, nil
+}

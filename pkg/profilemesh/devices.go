@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func (s *Service) RegisterProfileDevice(ctx context.Context, req RegisterProfileDeviceRequest) (ProfileDeviceRecord, error) {
+func (s *Service) registerProfileDeviceDefault(ctx context.Context, req RegisterProfileDeviceRequest) (ProfileDeviceRecord, error) {
 	return s.registerProfileDevice(ctx, req, false)
 }
 
@@ -104,7 +104,7 @@ func (s *Service) registerProfileDevice(ctx context.Context, req RegisterProfile
 
 // RegisterProfileDeviceStrict requires callers to make trust and lifecycle
 // state explicit. It does not infer app membership or passphrase policy.
-func (s *Service) RegisterProfileDeviceStrict(ctx context.Context, req RegisterProfileDeviceRequest) (ProfileDeviceRecord, error) {
+func (s *Service) registerProfileDeviceStrict(ctx context.Context, req RegisterProfileDeviceRequest) (ProfileDeviceRecord, error) {
 	if err := contextError(ctx); err != nil {
 		return ProfileDeviceRecord{}, err
 	}
@@ -114,7 +114,7 @@ func (s *Service) RegisterProfileDeviceStrict(ctx context.Context, req RegisterP
 	return s.registerProfileDevice(ctx, req, true)
 }
 
-func (s *Service) ListProfileDevices(ctx context.Context) ([]ProfileDeviceRecord, error) {
+func (s *Service) listProfileDevices(ctx context.Context) ([]ProfileDeviceRecord, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
@@ -129,7 +129,7 @@ func (s *Service) ListProfileDevices(ctx context.Context) ([]ProfileDeviceRecord
 	return out, nil
 }
 
-func (s *Service) RemoveProfileDevice(ctx context.Context, deviceID string) error {
+func (s *Service) removeProfileDevice(ctx context.Context, deviceID string) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}

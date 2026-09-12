@@ -774,7 +774,7 @@ func TestVerifyStageAndApplyFailures(t *testing.T) {
 	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
-	downloaded, err := svc.store.readDownloaded(context.Background())
+	downloaded, err := readTestDownloaded(t, svc.store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -832,7 +832,7 @@ func TestStagedUpdateArtifactRevalidationFailures(t *testing.T) {
 			mutate: func(t *testing.T, svc *Service, staged StagedUpdate) {
 				t.Helper()
 				staged.AppID = "other-app"
-				if err := svc.store.writeStaged(context.Background(), stagedRecordForService(svc, staged)); err != nil {
+				if err := writeJSON(context.Background(), svc.store.stagedMetaPath(), stagedRecordForService(svc, staged)); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -845,7 +845,7 @@ func TestStagedUpdateArtifactRevalidationFailures(t *testing.T) {
 				t.Helper()
 				svc.cfg.Policy.MaximumStagedAge = time.Hour
 				staged.StagedAt = time.Now().UTC().Add(-2 * time.Hour)
-				if err := svc.store.writeStaged(context.Background(), stagedRecordForService(svc, staged)); err != nil {
+				if err := writeJSON(context.Background(), svc.store.stagedMetaPath(), stagedRecordForService(svc, staged)); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -855,6 +855,16 @@ func TestStagedUpdateArtifactRevalidationFailures(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, staged := stageInternalUpdate(t, "1.2.0", failingApply{})
+			// Detached legacy metadata remains a migration input. Native records
+			// derive these fields from manifest references (covered separately).
+			if tt.name == "metadata mismatch" || tt.name == "stale metadata" {
+				svc = legacyTestService(t, svc)
+				record, err := readTestStaged(t, svc.store)
+				if err != nil {
+					t.Fatal(err)
+				}
+				staged = record.StagedUpdate
+			}
 			tt.mutate(t, svc, staged)
 			if _, err := svc.DescribeStagedUpdate(ctx); !errors.Is(err, tt.want) {
 				t.Fatalf("DescribeStagedUpdate error = %v, want %v", err, tt.want)
@@ -901,7 +911,7 @@ func TestStageUpdateRevalidatesDownloadedArtifactBeforeCopy(t *testing.T) {
 	if _, err := svc.VerifyUpdate(ctx, "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
-	verified, err := svc.store.readVerified(context.Background())
+	verified, err := readTestVerified(t, svc.store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -977,6 +987,7 @@ func TestSelectArtifactUsesDeterministicFilenameOrder(t *testing.T) {
 func TestCorruptStagedMetadataIsClassifiedSafely(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := stageInternalUpdate(t, "1.2.0", failingApply{})
+	svc = legacyTestService(t, svc)
 	if err := os.WriteFile(svc.store.stagedMetaPath(), []byte("{not-json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1037,10 +1048,9 @@ func TestWithdrawnUpdateClearsCachedCandidateState(t *testing.T) {
 	if err != nil || check.UpdateAvailable {
 		t.Fatalf("withdrawal check = %+v, %v", check, err)
 	}
-	for _, path := range []string{svc.store.selectedPath(), svc.store.downloadedPath(), svc.store.verifiedPath()} {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("stale candidate metadata still exists at %s: %v", filepath.Base(path), err)
-		}
+	view, err := readTestView(svc.store)
+	if err != nil || view.selected.value != nil || view.downloaded.value != nil || view.verified.value != nil {
+		t.Fatalf("withdrawn candidate remains in native authority: %v", err)
 	}
 	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); !errors.Is(err, ErrNoUpdateAvailable) {
 		t.Fatalf("stale withdrawn candidate remained downloadable: %v", err)
@@ -1123,7 +1133,7 @@ func TestDownloadedMetadataCannotRedirectVerificationPath(t *testing.T) {
 	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
-	downloaded, err := svc.store.readDownloaded(context.Background())
+	downloaded, err := readTestDownloaded(t, svc.store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1136,9 +1146,15 @@ func TestDownloadedMetadataCannotRedirectVerificationPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	downloaded.ArtifactPath = redirected
-	if err := svc.store.writeDownloaded(context.Background(), downloaded); err != nil {
-		t.Fatal(err)
+	if err := validateDownloadedUpdateFor(svc.cfg, svc.store, downloaded); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("detached redirected path accepted: %v", err)
 	}
+	mutateTestGraph(t, svc.store, func(r *stateRecord) {
+		item := r.Transfers[r.Downloaded]
+		item.Blob = redirected
+		r.Transfers[r.Downloaded] = item
+		rekeyTestTransfers(t, r)
+	})
 	if _, err := svc.VerifyUpdate(ctx, "1.2.0"); !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatalf("redirected downloaded path error = %v", err)
 	}
@@ -1249,7 +1265,7 @@ func stageTestService(t *testing.T, svc *Service, version string) StagedUpdate {
 	if _, err := svc.StageUpdate(ctx, version); err != nil {
 		t.Fatal(err)
 	}
-	staged, err := svc.store.readStaged(context.Background())
+	staged, err := readTestStaged(t, svc.store)
 	if err != nil {
 		t.Fatal(err)
 	}

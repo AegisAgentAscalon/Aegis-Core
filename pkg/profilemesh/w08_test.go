@@ -28,20 +28,33 @@ func w08Service(t *testing.T) (*Service, ProfileMeshSnapshot) {
 func w08Bytes(t *testing.T, s *Service) map[string][]byte {
 	t.Helper()
 	out := map[string][]byte{}
-	for _, path := range []string{s.store.profilePath(), s.store.hostingPath(), s.store.devicesPath(), s.store.resourcesPath()} {
+	err := filepath.WalkDir(s.store.dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
 		raw, err := os.ReadFile(path)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			t.Fatal(err)
+		if err != nil {
+			return err
 		}
 		out[path] = raw
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	return out
 }
-
 func w08Unchanged(t *testing.T, s *Service, before map[string][]byte) {
 	t.Helper()
-	for path, raw := range w08Bytes(t, s) {
-		if !bytes.Equal(before[path], raw) {
+	after := w08Bytes(t, s)
+	if len(before) != len(after) {
+		t.Errorf("rejected operation changed file count: %d -> %d", len(before), len(after))
+	}
+	for path, raw := range before {
+		if !bytes.Equal(after[path], raw) {
 			t.Errorf("rejected operation changed %s", filepath.Base(path))
 		}
 	}
@@ -86,14 +99,12 @@ func TestW08ResourceValidationAcrossWriters(t *testing.T) {
 				s, snapshot := w08Service(t)
 				r := ProfileResourceRecord{ResourceID: "resource", ResourceType: ResourceTool, ProfileOwnerID: snapshot.Profile.ProfileID, CurrentHostDeviceID: "device-a", AllowedHostDeviceIDs: []string{"device-a", "device-b"}, HostingMode: ResourceHostingSingleHost, Availability: ResourceAvailable, CreatedAt: s.clock.Now(), UpdatedAt: s.clock.Now()}
 				tc.mutate(&r, snapshot.Devices)
-				if err := s.store.writeDevices(deviceRegistryFile{SchemaVersion: schemaVersion, Devices: snapshot.Devices, UpdatedAt: s.clock.Now()}); err != nil {
-					t.Fatal(err)
-				}
-				if writer == "set" {
-					if err := s.store.writeResources(resourceRegistryFile{SchemaVersion: schemaVersion, Resources: []ProfileResourceRecord{r}, UpdatedAt: s.clock.Now()}); err != nil {
-						t.Fatal(err)
+				w14SeedState(t, s, func(state *meshState) {
+					state.Devices = deviceRegistryFile{SchemaVersion: schemaVersion, Devices: snapshot.Devices, UpdatedAt: s.clock.Now()}
+					if writer == "set" {
+						state.Resources = resourceRegistryFile{SchemaVersion: schemaVersion, Resources: []ProfileResourceRecord{r}, UpdatedAt: s.clock.Now()}
 					}
-				}
+				})
 				before := w08Bytes(t, s)
 				var err error
 				switch writer {
@@ -134,7 +145,7 @@ func TestW08DefaultHostRespectsAllowlist(t *testing.T) {
 	w08Unchanged(t, s, before)
 }
 
-func TestW08HintImportRejectedBeforeWrites(t *testing.T) {
+func TestW08InvalidHintImportRejectedBeforeWrites(t *testing.T) {
 	for _, version := range []int{1, ProfileMeshSnapshotSchemaVersion} {
 		for _, relayHint := range []bool{false, true} {
 			s, snapshot := w08Service(t)
@@ -158,16 +169,18 @@ func TestW08HintImportRejectedBeforeWrites(t *testing.T) {
 	}
 }
 
-func TestW08ImportWriteFailureReportsFailure(t *testing.T) {
+func TestW08ImportEncodeFailureReportsFailure(t *testing.T) {
 	s, snapshot := w08Service(t)
-	if err := os.Mkdir(s.store.resourcesPath(), 0700); err != nil {
-		t.Fatal(err)
-	}
-	snapshot.Profile.DisplayName = "partially imported"
-	snapshot.SnapshotFingerprint = snapshotFingerprint(normalizeProfileMeshSnapshot(snapshot))
+	before := w08Bytes(t, s)
+	snapshot.SchemaVersion = 1
+	snapshot.SnapshotFingerprint = ""
+	snapshot.Profile.DisplayName = "must not partially import"
+	// Existing schema-one admission accepts this field; JSON encoding cannot.
+	snapshot.Profile.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 	if err := s.ImportProfileMeshSnapshot(context.Background(), snapshot); !errors.Is(err, ErrStorageUnavailable) {
-		t.Fatalf("partial import reported success: %v", err)
+		t.Fatalf("failed publication reported success: %v", err)
 	}
+	w08Unchanged(t, s, before)
 }
 
 func TestW08LegacyImportDoesNotRefreshPresence(t *testing.T) {
@@ -197,9 +210,7 @@ func TestW08LegacyImportDoesNotRefreshPresence(t *testing.T) {
 
 func TestW08CorruptDefaultHostingCannotBeIgnored(t *testing.T) {
 	s, _ := w08Service(t)
-	if err := os.WriteFile(s.store.hostingPath(), []byte("broken"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	w14SeedState(t, s, func(state *meshState) { state.Hosting.HostingMode = "broken" })
 	before := w08Bytes(t, s)
 	if _, err := s.RegisterProfileResource(context.Background(), RegisterProfileResourceRequest{ResourceID: "data", ResourceType: ResourceProfileData}); !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatalf("corrupt default host ignored: %v", err)

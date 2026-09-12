@@ -130,7 +130,7 @@ func validateDownloadedUpdateFor(cfg AppConfig, st *store, downloaded downloaded
 	if err := validateArtifactBinding(cfg, downloaded.Manifest, downloaded.Artifact); err != nil {
 		return err
 	}
-	expectedPath := filepath.Join(st.downloadsDir(), downloaded.Artifact.Filename)
+	expectedPath := st.downloadedPathFor(downloaded)
 	if downloaded.ArtifactPath == "" || !samePath(downloaded.ArtifactPath, expectedPath) {
 		return ErrStorageUnavailable
 	}
@@ -148,19 +148,16 @@ func validateDownloadedUpdateFor(cfg AppConfig, st *store, downloaded downloaded
 }
 
 func validateStagedUpdateReadyFor(ctx context.Context, cfg AppConfig, st *store, record stagedUpdateRecord, now time.Time) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	staged := record.StagedUpdate
 	if err := validateStagedUpdate(cfg, record); err != nil {
 		return err
 	}
 	manifest := record.Manifest
 	if manifest == nil {
-		// Older staged records can recover their authority from the verified
-		// cache. Without that evidence the caller must clear and restage.
-		verified, err := st.readVerified(ctx)
-		if err != nil || verified.SchemaVersion != schemaVersion || verified.VerifiedAt.IsZero() || !sourceAndPolicyMatch(cfg, verified.Downloaded.SourceKey, verified.Downloaded.PolicyKey) {
-			return ErrVerificationFailed
-		}
-		manifest = &verified.Downloaded.Manifest
+		return ErrVerificationFailed
 	}
 	artifact, err := selectArtifactForConfig(cfg, *manifest)
 	if err != nil {
@@ -177,7 +174,7 @@ func validateStagedUpdateReadyFor(ctx context.Context, cfg AppConfig, st *store,
 	if cfg.Policy.MaximumStagedAge > 0 && staged.StagedAt.Before(now.Add(-cfg.Policy.MaximumStagedAge)) {
 		return ErrStagedUpdateStale
 	}
-	expectedPath := filepath.Join(st.stagedDir(), staged.ArtifactName)
+	expectedPath := st.stagedPathFor(record)
 	if staged.ArtifactPath == "" || !samePath(staged.ArtifactPath, expectedPath) {
 		return ErrStorageUnavailable
 	}
@@ -192,5 +189,5 @@ func validateStagedUpdateReadyFor(ctx context.Context, cfg AppConfig, st *store,
 	if err != nil || !strings.EqualFold(got, staged.SHA256) {
 		return ErrVerificationFailed
 	}
-	return nil
+	return contextError(ctx)
 }

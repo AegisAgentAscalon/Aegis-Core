@@ -19,7 +19,7 @@ func (s *Service) CheckForUpdates(ctx context.Context) (CheckResult, error) {
 	s.workflowMu.Lock()
 	defer s.workflowMu.Unlock()
 	for attempt := 0; attempt < 4; attempt++ {
-		snapshot, err := s.operationSnapshot()
+		snapshot, err := s.beginOperation(ctx, true)
 		if err != nil {
 			return CheckResult{}, err
 		}
@@ -27,9 +27,15 @@ func (s *Service) CheckForUpdates(ctx context.Context) (CheckResult, error) {
 		if !errors.Is(err, ErrUpdateStateChanged) || snapshot.cfg.Source.SourceID != "" {
 			return result, err
 		}
+		s.mu.Lock()
+		current := s.currentLocked(snapshot)
+		s.mu.Unlock()
+		// Legacy retries follow a local configuration change only. Another
+		// owner's committed state must never be overwritten by stale work.
+		if current {
+			return result, err
+		}
 	}
-	// Legacy callers did not opt into explicit source identity. A concurrent
-	// source change supersedes the check without becoming a fatal error.
 	return CheckResult{Message: "update check superseded by source change"}, nil
 }
 
@@ -44,53 +50,44 @@ func (s *Service) checkForUpdatesSnapshot(ctx context.Context, snapshot serviceS
 	artifact, err := selectArtifactForConfig(snapshot.cfg, manifest)
 	if err != nil {
 		if errors.Is(err, ErrNoUpdateAvailable) || errors.Is(err, ErrNoCompatibleArtifact) {
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			if !s.currentLocked(snapshot) {
-				return CheckResult{}, ErrUpdateStateChanged
+			// Historical valid candidates are cleared on these selection errors.
+			// Invalid/quarantined candidates require a successful fresh result:
+			// a failed check cannot repair their fault or activate a legacy root.
+			invalid, inspectErr := snapshot.store.candidateProblem(ctx, snapshot.view)
+			if invalid || inspectErr != nil || snapshot.view.fatal != nil {
+				return CheckResult{}, err
 			}
-			if clearErr := snapshot.store.clearCandidateState(); clearErr != nil {
-				return CheckResult{}, clearErr
+			snapshot.view.clearCandidate()
+			if commitErr := s.publishOperation(ctx, snapshot); commitErr != nil {
+				return CheckResult{}, commitErr
 			}
 		}
 		return CheckResult{}, err
 	}
 	release := releaseFromSelection(manifest, artifact, time.Now().UTC(), sourceSummary(snapshot.cfg.Source))
-	available := compareVersions(manifest.Version, snapshot.cfg.CurrentVersion) > 0
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.applyInProgress {
-		return CheckResult{}, ErrApplyInProgress
-	}
-	if !s.currentLocked(snapshot) {
-		return CheckResult{}, ErrUpdateStateChanged
-	}
-	if !available {
-		if err := snapshot.store.clearCandidateState(); err != nil {
+	if compareVersions(manifest.Version, snapshot.cfg.CurrentVersion) <= 0 {
+		snapshot.view.clearCandidate()
+		if err := s.publishOperation(ctx, snapshot); err != nil {
 			return CheckResult{}, err
 		}
 		return CheckResult{UpdateAvailable: false, LatestRelease: &release, Message: "no update available"}, nil
 	}
-	selected := selectedUpdate{
-		SchemaVersion: schemaVersion,
-		SourceKey:     sourceKey(snapshot.cfg.Source), PolicyKey: policyKey(snapshot.cfg.Policy),
-		Manifest: manifest, Artifact: artifact, UpdatedAt: time.Now().UTC(),
+	selected := selectedUpdate{SchemaVersion: schemaVersion, SourceKey: sourceKey(snapshot.cfg.Source), PolicyKey: policyKey(snapshot.cfg.Policy),
+		Manifest: manifest, Artifact: artifact, UpdatedAt: time.Now().UTC()}
+	invalid, inspectErr := snapshot.store.candidateProblem(ctx, snapshot.view)
+	if inspectErr != nil {
+		return CheckResult{}, inspectErr
 	}
-	if previous, readErr := snapshot.store.readSelected(ctx); readErr == nil {
-		if !sameSelectedUpdate(previous, selected) {
-			if err := snapshot.store.clearDownloadedState(); err != nil {
-				return CheckResult{}, err
-			}
-		}
-	} else if errors.Is(readErr, ErrContextCanceled) {
-		// Cancellation says nothing about the validity of the stored candidate.
-		return CheckResult{}, readErr
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		if err := snapshot.store.clearCandidateState(); err != nil {
-			return CheckResult{}, err
-		}
+	previous, readErr := snapshot.view.selected.read()
+	if invalid || readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		snapshot.view.clearCandidate()
 	}
-	if err := snapshot.store.writeSelected(ctx, selected); err != nil {
+	if readErr == nil && !sameSelectedUpdate(previous, selected) {
+		snapshot.view.clearTransfers()
+	}
+	snapshot.view.candidateFault = false
+	snapshot.view.selected = stored(selected)
+	if err := s.publishOperation(ctx, snapshot); err != nil {
 		return CheckResult{}, err
 	}
 	return CheckResult{UpdateAvailable: true, LatestRelease: &release, Message: "update available"}, nil
@@ -98,14 +95,14 @@ func (s *Service) checkForUpdatesSnapshot(ctx context.Context, snapshot serviceS
 
 func (s *Service) selectionForSnapshot(ctx context.Context, snapshot serviceSnapshot, version string) (selectedUpdate, error) {
 	version = strings.TrimSpace(version)
-	selected, err := snapshot.store.readSelected(ctx)
-	if err == nil && (version == "" || selected.Manifest.Version == version) && validateSelectedUpdate(snapshot.cfg, selected) == nil {
+	selected, err := snapshot.view.selected.read()
+	if err == nil && !snapshot.view.candidateFault && (version == "" || selected.Manifest.Version == version) && validateSelectedUpdate(snapshot.cfg, selected) == nil {
 		return selected, nil
 	}
 	if _, err := s.checkForUpdatesSnapshot(ctx, snapshot); err != nil {
 		return selectedUpdate{}, err
 	}
-	selected, err = snapshot.store.readSelected(ctx)
+	selected, err = snapshot.view.selected.read()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return selectedUpdate{}, ErrNoUpdateAvailable

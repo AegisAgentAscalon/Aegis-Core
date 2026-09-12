@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -17,16 +16,24 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 	}
 	s.workflowMu.Lock()
 	defer s.workflowMu.Unlock()
-	snapshot, err := s.operationSnapshot()
+	snapshot, err := s.beginOperation(ctx, true)
 	if err != nil {
 		return StageResult{}, err
 	}
-	verified, err := snapshot.store.readVerified(ctx)
-	if err != nil {
-		if _, verifyErr := s.verifyUpdateSnapshot(snapshot, version); verifyErr != nil {
-			return StageResult{}, verifyErr
+	if err := candidateAdmission(ctx, snapshot); err != nil {
+		return StageResult{}, err
+	}
+	if snapshot.view.token == "" {
+		if err := snapshot.store.resolveLegacyStage(ctx, snapshot.cfg, snapshot.view); err != nil {
+			return StageResult{}, err
 		}
-		verified, err = snapshot.store.readVerified(ctx)
+	}
+	verified, err := snapshot.view.verified.read()
+	if err != nil {
+		if _, err := verifyUpdateSnapshot(ctx, snapshot, version); err != nil {
+			return StageResult{}, err
+		}
+		verified, err = snapshot.view.verified.read()
 	}
 	if err != nil {
 		return StageResult{}, err
@@ -44,107 +51,94 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 	if err != nil || !strings.EqualFold(got, verified.Downloaded.Artifact.SHA256) {
 		return StageResult{}, ErrVerificationFailed
 	}
-	target := filepath.Join(snapshot.store.stagedDir(), verified.Downloaded.Artifact.Filename)
 	staged := stagedUpdateRecord{
 		StagedUpdate: StagedUpdate{
-			Source: sourceSummary(snapshot.cfg.Source),
-			AppID:  snapshot.cfg.AppID, Version: verified.Downloaded.Manifest.Version,
+			Source: sourceSummary(snapshot.cfg.Source), AppID: snapshot.cfg.AppID, Version: verified.Downloaded.Manifest.Version,
 			Channel: verified.Downloaded.Manifest.Channel, Platform: verified.Downloaded.Artifact.Platform,
 			Architecture: verified.Downloaded.Artifact.Architecture, ArtifactName: verified.Downloaded.Artifact.Filename,
-			ArtifactPath: target, SHA256: verified.Downloaded.Artifact.SHA256, Size: verified.Downloaded.BytesWritten,
-			StagedAt: time.Now().UTC(), RequiredRestart: verified.Downloaded.Manifest.RequiredRestart,
-			ApplyBehavior: verified.Downloaded.Manifest.ApplyBehavior,
+			SHA256: verified.Downloaded.Artifact.SHA256, Size: verified.Downloaded.BytesWritten,
+			StagedAt: time.Now().UTC(), RequiredRestart: verified.Downloaded.Manifest.RequiredRestart, ApplyBehavior: verified.Downloaded.Manifest.ApplyBehavior,
 		},
-		Manifest:  &verified.Downloaded.Manifest,
-		SourceKey: sourceKey(snapshot.cfg.Source), PolicyKey: policyKey(snapshot.cfg.Policy),
+		Manifest: &verified.Downloaded.Manifest, SourceKey: sourceKey(snapshot.cfg.Source), PolicyKey: policyKey(snapshot.cfg.Policy),
 	}
-	if existing, handled, err := s.checkLifecycleBeforeRestage(ctx, snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
+	if existing, handled, err := checkLifecycleBeforeRestage(ctx, snapshot, staged, time.Now().UTC()); err != nil {
 		return StageResult{}, err
 	} else if handled {
 		return existing, nil
 	}
-	if err := secureMkdirAll(snapshot.store.stagedDir()); err != nil {
-		return StageResult{}, ErrStorageUnavailable
-	}
-	pendingFile, err := os.CreateTemp(snapshot.store.stagedDir(), ".pending-*")
+	prepared := []string{}
+	committed := false
+	defer func() {
+		if !committed {
+			snapshot.store.discardPrepared(prepared)
+		}
+	}()
+	id, blob, err := snapshot.store.copyBlob(ctx, verified.Downloaded.ArtifactPath, staged.ArtifactName, "staged", &prepared)
 	if err != nil {
-		return StageResult{}, ErrStorageUnavailable
-	}
-	pending := pendingFile.Name()
-	defer os.Remove(pending)
-	if err := pendingFile.Close(); err != nil {
-		return StageResult{}, ErrStorageUnavailable
-	}
-	if err := copyFileAtomic(ctx, verified.Downloaded.ArtifactPath, pending); err != nil {
 		return StageResult{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.applyInProgress {
-		return StageResult{}, ErrApplyInProgress
-	}
-	if !s.currentLocked(snapshot) {
-		return StageResult{}, ErrUpdateStateChanged
-	}
-	if err := contextError(ctx); err != nil {
+	staged.blobID, staged.ArtifactPath = id, snapshot.store.blobPath(id, staged.ArtifactName)
+	snapshot.view.blobs[id] = blob
+	op, err := s.lockOperation(ctx, snapshot, true)
+	if err != nil {
 		return StageResult{}, err
 	}
-	if existing, handled, err := s.checkLifecycleBeforeRestage(ctx, snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
+	defer op.close()
+	if existing, handled, err := checkLifecycleBeforeRestage(ctx, snapshot, staged, time.Now().UTC()); err != nil {
 		return StageResult{}, err
 	} else if handled {
 		return existing, nil
-	}
-	if err := replaceFile(ctx, pending, target); err != nil {
-		return StageResult{}, err
 	}
 	if err := validateStagedUpdateReadyFor(ctx, snapshot.cfg, snapshot.store, staged, time.Now().UTC()); err != nil {
-		_ = os.Remove(target)
 		return StageResult{}, err
 	}
-	if err := snapshot.store.writeStaged(ctx, staged); err != nil {
+	snapshot.view.staged = stored(staged)
+	snapshot.view.lifecycle = stored(newLifecycleRecord(staged.StagedUpdate, time.Now().UTC()))
+	if err := snapshot.store.publish(ctx, op.guard, snapshot.cfg, snapshot.view, false); err != nil {
 		return StageResult{}, err
 	}
-	if err := snapshot.store.writeLifecycle(ctx, newLifecycleRecord(staged.StagedUpdate, time.Now().UTC())); err != nil {
-		return StageResult{}, err
-	}
+	committed = true
 	return StageResult{Version: staged.Version, ArtifactName: staged.ArtifactName, Staged: true, Message: "update staged"}, nil
+}
+
+func readyStaged(ctx context.Context, snapshot serviceSnapshot, now time.Time) (stagedUpdateRecord, error) {
+	if _, err := snapshot.view.staged.read(); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return stagedUpdateRecord{}, ErrStagedUpdateNotFound
+		}
+		return stagedUpdateRecord{}, ErrStorageUnavailable
+	}
+	staged, err := snapshot.view.stagedFor(snapshot.cfg)
+	if err != nil {
+		return stagedUpdateRecord{}, err
+	}
+	if err := validateStagedUpdateReadyFor(ctx, snapshot.cfg, snapshot.store, staged, now); err != nil {
+		return stagedUpdateRecord{}, err
+	}
+	return staged, nil
 }
 
 func (s *Service) DescribeStagedUpdate(ctx context.Context) (StagedUpdateSummary, error) {
 	ctx = normalizeContext(ctx)
-	if err := contextError(ctx); err != nil {
-		return StagedUpdateSummary{}, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	stagedRecord, err := s.store.readStaged(ctx)
+	snapshot, err := s.beginOperation(ctx, false)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return StagedUpdateSummary{}, ErrStagedUpdateNotFound
-		}
-		return StagedUpdateSummary{}, ErrStorageUnavailable
-	}
-	if err := validateStagedUpdateReadyFor(ctx, s.cfg, s.store, stagedRecord, time.Now().UTC()); err != nil {
 		return StagedUpdateSummary{}, err
 	}
-	return stagedSummaryFrom(stagedRecord.StagedUpdate), nil
+	staged, err := readyStaged(ctx, snapshot, time.Now().UTC())
+	if err != nil {
+		return StagedUpdateSummary{}, err
+	}
+	return stagedSummaryFrom(staged.StagedUpdate), nil
 }
 
 func (s *Service) BuildApplyPlan(ctx context.Context) (ApplyPlan, error) {
 	ctx = normalizeContext(ctx)
-	if err := contextError(ctx); err != nil {
+	snapshot, err := s.beginOperation(ctx, false)
+	if err != nil {
 		return ApplyPlan{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	stagedRecord, err := s.store.readStaged(ctx)
+	stagedRecord, err := readyStaged(ctx, snapshot, time.Now().UTC())
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return ApplyPlan{}, ErrStagedUpdateNotFound
-		}
-		return ApplyPlan{}, ErrStorageUnavailable
-	}
-	if err := validateStagedUpdateReadyFor(ctx, s.cfg, s.store, stagedRecord, time.Now().UTC()); err != nil {
 		return ApplyPlan{}, err
 	}
 	staged := stagedRecord.StagedUpdate
@@ -163,18 +157,12 @@ func (s *Service) ClearStagedUpdate(ctx context.Context) (ClearResult, error) {
 	}
 	s.workflowMu.Lock()
 	defer s.workflowMu.Unlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.applyInProgress {
-		return ClearResult{}, ErrApplyInProgress
+	snapshot, err := s.beginOperation(ctx, true)
+	if err != nil {
+		return ClearResult{}, err
 	}
-	if err := os.RemoveAll(s.store.stagedDir()); err != nil {
-		return ClearResult{}, ErrStorageUnavailable
-	}
-	if err := secureMkdirAll(s.store.stagedDir()); err != nil {
-		return ClearResult{}, ErrStorageUnavailable
-	}
-	if err := removeFiles(s.store.verifiedPath()); err != nil {
+	snapshot.view.clearStaged()
+	if err := s.publishOperation(ctx, snapshot); err != nil {
 		return ClearResult{}, err
 	}
 	return ClearResult{Cleared: true, Message: "staged update cleared"}, nil

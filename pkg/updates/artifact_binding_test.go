@@ -7,34 +7,21 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestRestageDoesNotLeakArtifacts(t *testing.T) {
 	svc, staged := stageInternalRecordOnlyUpdate(t, "1.2.0")
+	before := testBlobInventory(t, svc.store)
 	for i := 0; i < 3; i++ {
 		if _, err := svc.StageUpdate(context.Background(), staged.Version); err != nil {
 			t.Fatal(err)
 		}
 	}
-	files, err := filepath.Glob(filepath.Join(svc.store.stagedDir(), ".pending-*"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) != 0 {
-		t.Fatalf("UA-02: restaging leaked %d pending artifacts", len(files))
-	}
-	var bytes int64
-	for _, p := range files {
-		info, err := os.Stat(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		bytes += info.Size()
-	}
-	if bytes != 0 {
-		t.Fatal("unexpected pending artifact bytes")
+	if after := testBlobInventory(t, svc.store); !reflect.DeepEqual(before, after) {
+		t.Fatalf("UA-02: restaging changed immutable blob inventory: before=%v after=%v", before, after)
 	}
 }
 
@@ -69,8 +56,8 @@ func TestDetachedArtifactFieldsMustMatchManifest(t *testing.T) {
 	}
 	for name, mutate := range changes {
 		t.Run(name, func(t *testing.T) {
-			s := signedBindingService(t)
-			selected, err := s.store.readSelected(context.Background())
+			s := legacyTestService(t, signedBindingService(t))
+			selected, err := readTestSelected(t, s.store)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -78,19 +65,19 @@ func TestDetachedArtifactFieldsMustMatchManifest(t *testing.T) {
 			if err := validateSelectedUpdate(s.cfg, selected); err == nil {
 				t.Error("altered selection accepted")
 			}
-			d, err := s.store.readDownloaded(context.Background())
+			d, err := readTestDownloaded(t, s.store)
 			if err != nil {
 				t.Fatal(err)
 			}
 			mutate(&d.Artifact)
-			if err := s.store.writeDownloaded(context.Background(), d); err != nil {
+			if err := writeJSON(context.Background(), s.store.downloadedPath(), d); err != nil {
 				t.Fatal(err)
 			}
 			if result, err := s.VerifyUpdate(context.Background(), "1.2.0"); err == nil || result.OK {
 				t.Error("altered download verified")
 			}
 			// A forged verified record must not bypass the staging check.
-			if err := s.store.writeVerified(context.Background(), verifiedUpdate{SchemaVersion: schemaVersion, Downloaded: d, VerifiedAt: d.DownloadedAt}); err != nil {
+			if err := writeJSON(context.Background(), s.store.verifiedPath(), verifiedUpdate{SchemaVersion: schemaVersion, Downloaded: d, VerifiedAt: d.DownloadedAt}); err != nil {
 				t.Fatal(err)
 			}
 			if result, err := s.StageUpdate(context.Background(), "1.2.0"); err == nil || result.Staged {
@@ -118,7 +105,8 @@ func TestStagedRecordRetainsManifestAuthority(t *testing.T) {
 			if _, err := s.StageUpdate(context.Background(), "1.2.0"); err != nil {
 				t.Fatal(err)
 			}
-			r, err := s.store.readStaged(context.Background())
+			s = legacyTestService(t, s)
+			r, err := readTestStaged(t, s.store)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -138,7 +126,7 @@ func TestStagedRecordRetainsManifestAuthority(t *testing.T) {
 				}
 				r.ArtifactPath = renamed
 			}
-			if err := s.store.writeStaged(context.Background(), r); err != nil {
+			if err := writeJSON(context.Background(), s.store.stagedMetaPath(), r); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := s.BuildApplyPlan(context.Background()); err == nil {
@@ -165,7 +153,7 @@ type cancelDuringStageCopy struct {
 }
 
 func (c cancelDuringStageCopy) Err() error {
-	files, _ := filepath.Glob(filepath.Join(c.dir, ".pending-*"))
+	files, _ := filepath.Glob(filepath.Join(c.dir, "*", ".tmp-*"))
 	for _, path := range files {
 		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
 			c.cancel()
@@ -177,15 +165,20 @@ func (c cancelDuringStageCopy) Err() error {
 
 func TestStageCancellationCleansPartialCopy(t *testing.T) {
 	s := signedBindingService(t)
+	before := testBlobInventory(t, s.store)
+	token := testNativeSnapshot(t, s.store).Token
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, err := s.StageUpdate(cancelDuringStageCopy{ctx, cancel, s.store.stagedDir()}, "1.2.0")
+	_, err := s.StageUpdate(cancelDuringStageCopy{ctx, cancel, s.store.blobDir()}, "1.2.0")
 	if !errors.Is(err, ErrContextCanceled) {
 		t.Fatalf("expected cancellation during copy: %v", err)
 	}
 	assertNoPendingArtifacts(t, s)
-	if _, err := os.Stat(s.store.stagedMetaPath()); !os.IsNotExist(err) {
+	if _, err := readTestStaged(t, s.store); !os.IsNotExist(err) {
 		t.Fatalf("canceled copy committed staged metadata: %v", err)
+	}
+	if testNativeSnapshot(t, s.store).Token != token || !reflect.DeepEqual(before, testBlobInventory(t, s.store)) {
+		t.Fatal("canceled copy changed authority or retained uncommitted blob bytes")
 	}
 }
 
@@ -195,7 +188,8 @@ func TestLegacyStagedAuthorityRecoveryAndIndependentStagedCache(t *testing.T) {
 	if _, err := s.StageUpdate(ctx, "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
-	r, err := s.store.readStaged(context.Background())
+	s = legacyTestService(t, s)
+	r, err := readTestStaged(t, s.store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +198,7 @@ func TestLegacyStagedAuthorityRecoveryAndIndependentStagedCache(t *testing.T) {
 	}
 	legacy := r
 	legacy.Manifest = nil
-	if err := s.store.writeStaged(context.Background(), legacy); err != nil {
+	if err := writeJSON(context.Background(), s.store.stagedMetaPath(), legacy); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.BuildApplyPlan(ctx); err != nil {
@@ -216,7 +210,7 @@ func TestLegacyStagedAuthorityRecoveryAndIndependentStagedCache(t *testing.T) {
 	if _, err := s.BuildApplyPlan(ctx); !errors.Is(err, ErrVerificationFailed) {
 		t.Fatalf("legacy record without authority must require restaging: %v", err)
 	}
-	if err := s.store.writeStaged(context.Background(), r); err != nil {
+	if err := writeJSON(context.Background(), s.store.stagedMetaPath(), r); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(s.store.downloadedPath()); err != nil {
@@ -241,7 +235,8 @@ func TestDetachedArtifactCannotBypassSignedManifest(t *testing.T) {
 	if _, err := svc.DownloadUpdate(ctx, "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
-	downloaded, err := svc.store.readDownloaded(context.Background())
+	svc = legacyTestService(t, svc)
+	downloaded, err := readTestDownloaded(t, svc.store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +252,7 @@ func TestDetachedArtifactCannotBypassSignedManifest(t *testing.T) {
 	if err := os.WriteFile(downloaded.ArtifactPath, replacement, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.store.writeDownloaded(context.Background(), downloaded); err != nil {
+	if err := writeJSON(context.Background(), svc.store.downloadedPath(), downloaded); err != nil {
 		t.Fatal(err)
 	}
 	if err := verifyManifestSignature(cfg.Policy, downloaded.Manifest); err != nil {

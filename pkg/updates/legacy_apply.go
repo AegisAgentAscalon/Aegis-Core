@@ -87,21 +87,20 @@ func (s *Service) applyExpectedVersion(ctx context.Context, version string) (App
 		return ApplyResult{}, ErrNoUpdateAvailable
 	}
 	s.mu.Lock()
-	legacyApplyEnabled := s.legacyApplyEnabled
+	enabled := s.legacyApplyEnabled
 	s.mu.Unlock()
-	if !legacyApplyEnabled {
+	if !enabled {
 		return ApplyResult{}, ErrLegacyExecutionDisabled
 	}
 	s.workflowMu.Lock()
-	s.mu.Lock()
-	if s.applyInProgress {
-		s.mu.Unlock()
-		s.workflowMu.Unlock()
-		return ApplyResult{}, ErrApplyInProgress
-	}
-	stagedRecord, err := s.store.readStaged(ctx)
+	op, err := s.beginLocked(ctx, true)
 	if err != nil {
-		s.mu.Unlock()
+		s.workflowMu.Unlock()
+		return ApplyResult{}, err
+	}
+	stagedRecord, err := op.snapshot.view.staged.read()
+	if err != nil {
+		op.close()
 		s.workflowMu.Unlock()
 		if errors.Is(err, os.ErrNotExist) {
 			return ApplyResult{}, ErrStagedUpdateNotFound
@@ -110,23 +109,28 @@ func (s *Service) applyExpectedVersion(ctx context.Context, version string) (App
 	}
 	staged := stagedRecord.StagedUpdate
 	if version != "" && staged.Version != version {
-		s.mu.Unlock()
+		op.close()
 		s.workflowMu.Unlock()
 		return ApplyResult{}, ErrNoUpdateAvailable
 	}
-	if err := validateStagedUpdateReadyFor(ctx, s.cfg, s.store, stagedRecord, time.Now().UTC()); err != nil {
-		s.mu.Unlock()
+	stagedRecord, err = readyStaged(ctx, op.snapshot, time.Now().UTC())
+	if err != nil {
+		op.close()
 		s.workflowMu.Unlock()
 		return ApplyResult{}, err
 	}
+	staged = stagedRecord.StagedUpdate
 	strategy := s.apply
 	s.applyInProgress = true
-	s.mu.Unlock()
+	gate := op.gate
+	op.gate = nil
+	op.close()
 	s.workflowMu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		s.applyInProgress = false
 		s.mu.Unlock()
+		_ = gate.Close()
 	}()
 	result, err := strategy.Apply(ctx, staged)
 	if err != nil {

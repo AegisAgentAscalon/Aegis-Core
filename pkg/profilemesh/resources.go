@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func (s *Service) RegisterProfileResource(ctx context.Context, req RegisterProfileResourceRequest) (ProfileResourceRecord, error) {
+func (s *Service) registerProfileResource(ctx context.Context, req RegisterProfileResourceRequest) (ProfileResourceRecord, error) {
 	if err := contextError(ctx); err != nil {
 		return ProfileResourceRecord{}, err
 	}
@@ -75,7 +75,7 @@ func (s *Service) RegisterProfileResource(ctx context.Context, req RegisterProfi
 	return cloneProfileResource(resource), nil
 }
 
-func (s *Service) ListProfileResources(ctx context.Context) ([]ProfileResourceRecord, error) {
+func (s *Service) listProfileResources(ctx context.Context) ([]ProfileResourceRecord, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
@@ -90,7 +90,7 @@ func (s *Service) ListProfileResources(ctx context.Context) ([]ProfileResourceRe
 	return out, nil
 }
 
-func (s *Service) SetResourceHost(ctx context.Context, req SetResourceHostRequest) (ProfileResourceRecord, error) {
+func (s *Service) setResourceHost(ctx context.Context, req SetResourceHostRequest) (ProfileResourceRecord, error) {
 	if err := contextError(ctx); err != nil {
 		return ProfileResourceRecord{}, err
 	}
@@ -128,7 +128,7 @@ func (s *Service) SetResourceHost(ctx context.Context, req SetResourceHostReques
 	return ProfileResourceRecord{}, ErrResourceNotFound
 }
 
-func (s *Service) GetResourceHost(ctx context.Context, resourceID string) (ProfileResourceHostStatus, error) {
+func (s *Service) getResourceHost(ctx context.Context, resourceID string) (ProfileResourceHostStatus, error) {
 	if err := contextError(ctx); err != nil {
 		return ProfileResourceHostStatus{}, err
 	}

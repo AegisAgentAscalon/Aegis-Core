@@ -2,18 +2,18 @@ package updates
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
-	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/AegisAgentAscalon/aegis-core/internal/filepersist"
+	"github.com/AegisAgentAscalon/aegis-core/internal/filelock"
+	"github.com/AegisAgentAscalon/aegis-core/internal/generation"
 )
 
 type store struct {
-	dir string
+	dir         string
+	generations *generation.Store
 }
 
 type selectedUpdate struct {
@@ -26,6 +26,7 @@ type selectedUpdate struct {
 }
 
 type downloadedUpdate struct {
+	blobID        string
 	SchemaVersion int       `json:"schema_version"`
 	SourceKey     string    `json:"source_key"`
 	PolicyKey     string    `json:"policy_key"`
@@ -45,6 +46,7 @@ type verifiedUpdate struct {
 // stagedUpdateRecord keeps lane provenance in private persisted metadata while
 // the public StagedUpdate contract remains free of storage and policy keys.
 type stagedUpdateRecord struct {
+	blobID string
 	StagedUpdate
 	Manifest  *Manifest `json:"manifest,omitempty"`
 	SourceKey string    `json:"source_key"`
@@ -64,13 +66,30 @@ type lifecycleIdempotencyRecord struct {
 
 func newStore(cfg AppConfig) (*store, error) {
 	dir := filepath.Join(cfg.StagingDir, cfg.AppID, cfg.Namespace, "updates")
-	if scope := stateScopeKey(cfg); scope != "" {
+	scope := stateScopeKey(cfg)
+	if scope != "" {
 		dir = filepath.Join(dir, scope)
 	}
-	if err := secureMkdirAll(dir); err != nil {
+	owner := strings.Join([]string{"updates", cfg.AppID, cfg.Namespace, filepath.ToSlash(scope)}, "\x00")
+	generations, err := generation.New(dir, owner)
+	if err != nil {
+		return nil, persistenceError(err)
+	}
+	dir, err = filepath.Abs(dir)
+	if err != nil {
 		return nil, ErrStorageUnavailable
 	}
-	return &store{dir: dir}, nil
+	st := &store{dir: dir, generations: generations}
+	gate, err := filelock.TryAcquire(context.Background(), st.applyPath())
+	if err != nil && !errors.Is(err, filelock.ErrBusy) {
+		return nil, persistenceError(err)
+	}
+	if gate != nil {
+		if err := gate.Close(); err != nil {
+			return nil, persistenceError(err)
+		}
+	}
+	return st, nil
 }
 
 func (s *store) selectedPath() string   { return filepath.Join(s.dir, "selected_update.json") }
@@ -82,124 +101,19 @@ func (s *store) lifecyclePath() string {
 }
 func (s *store) downloadsDir() string { return filepath.Join(s.dir, "downloads") }
 func (s *store) stagedDir() string    { return filepath.Join(s.dir, "staged") }
+func (s *store) blobDir() string      { return filepath.Join(s.dir, ".updates-blobs") }
+func (s *store) applyPath() string    { return filepath.Join(s.dir, ".apply.lock") }
 
-func (s *store) readSelected(ctx context.Context) (selectedUpdate, error) {
-	var out selectedUpdate
-	err := readJSON(ctx, s.selectedPath(), &out)
-	return out, err
-}
-
-func (s *store) writeSelected(ctx context.Context, v selectedUpdate) error {
-	v.SchemaVersion = schemaVersion
-	return writeJSON(ctx, s.selectedPath(), v)
-}
-
-func (s *store) readDownloaded(ctx context.Context) (downloadedUpdate, error) {
-	var out downloadedUpdate
-	err := readJSON(ctx, s.downloadedPath(), &out)
-	return out, err
-}
-
-func (s *store) writeDownloaded(ctx context.Context, v downloadedUpdate) error {
-	v.SchemaVersion = schemaVersion
-	return writeJSON(ctx, s.downloadedPath(), v)
-}
-
-func (s *store) readVerified(ctx context.Context) (verifiedUpdate, error) {
-	var out verifiedUpdate
-	err := readJSON(ctx, s.verifiedPath(), &out)
-	return out, err
-}
-
-func (s *store) writeVerified(ctx context.Context, v verifiedUpdate) error {
-	v.SchemaVersion = schemaVersion
-	return writeJSON(ctx, s.verifiedPath(), v)
-}
-
-func (s *store) readStaged(ctx context.Context) (stagedUpdateRecord, error) {
-	var record stagedUpdateRecord
-	err := readJSON(ctx, s.stagedMetaPath(), &record)
-	if err != nil {
-		return stagedUpdateRecord{}, err
+func (s *store) tryApply(ctx context.Context) (*filelock.Lock, error) {
+	gate, err := filelock.TryAcquire(ctx, s.applyPath())
+	if errors.Is(err, filelock.ErrBusy) {
+		return nil, ErrApplyInProgress
 	}
-	out := record.StagedUpdate
-	if out.ArtifactPath == "" && out.ArtifactName != "" {
-		out.ArtifactPath = filepath.Join(s.stagedDir(), out.ArtifactName)
-	}
-	record.StagedUpdate = out
-	return record, nil
-}
-
-func (s *store) writeStaged(ctx context.Context, v stagedUpdateRecord) error {
-	return writeJSON(ctx, s.stagedMetaPath(), v)
-}
-
-func (s *store) readLifecycle(ctx context.Context) (lifecycleRecord, error) {
-	var out lifecycleRecord
-	err := readJSON(ctx, s.lifecyclePath(), &out)
-	return out, err
-}
-
-func (s *store) writeLifecycle(ctx context.Context, v lifecycleRecord) error {
-	v.SchemaVersion = lifecycleSchemaVersion
-	return writeJSON(ctx, s.lifecyclePath(), v)
-}
-
-func (s *store) clearCandidateState() error {
-	if err := removeFiles(s.selectedPath(), s.downloadedPath(), s.verifiedPath()); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(s.downloadsDir()); err != nil {
-		return ErrStorageUnavailable
-	}
-	return nil
-}
-
-func (s *store) clearDownloadedState() error {
-	if err := removeFiles(s.downloadedPath(), s.verifiedPath()); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(s.downloadsDir()); err != nil {
-		return ErrStorageUnavailable
-	}
-	return nil
-}
-
-func removeFiles(paths ...string) error {
-	for _, path := range paths {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return ErrStorageUnavailable
-		}
-	}
-	return nil
+	return gate, persistenceError(err)
 }
 
 // Bound metadata reads with headroom for indented 4 MiB manifests and envelopes.
 const maxMetadataBytes = 64 << 20
-
-func readJSON(ctx context.Context, path string, out any) error {
-	err := filepersist.ReadJSON(ctx, path, maxMetadataBytes, out)
-	if errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return persistenceError(err)
-}
-
-func writeJSON(ctx context.Context, path string, v any) error {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return ErrStorageUnavailable
-	}
-	return writeFileAtomic(ctx, path, b, 0600)
-}
-
-func writeFileAtomic(ctx context.Context, path string, data []byte, perm os.FileMode) error {
-	return persistenceError(filepersist.Write(ctx, path, perm, maxMetadataBytes, func(w io.Writer) error { _, err := w.Write(data); return err }))
-}
-
-func secureMkdirAll(dir string) error {
-	return persistenceError(filepersist.EnsureDir(context.Background(), dir))
-}
 
 func persistenceError(err error) error {
 	if err == nil {

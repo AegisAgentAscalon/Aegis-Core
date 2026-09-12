@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-func (s *Service) BuildProfileMeshOverview(ctx context.Context) (ProfileMeshOverview, error) {
+func (s *Service) buildProfileMeshOverview(ctx context.Context) (ProfileMeshOverview, error) {
 	if err := contextError(ctx); err != nil {
 		return ProfileMeshOverview{}, err
 	}

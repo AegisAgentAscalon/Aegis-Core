@@ -29,12 +29,12 @@ func TestCanceledCheckPreservesCandidate(t *testing.T) {
 	if _, err := s.VerifyUpdate(context.Background(), "1.2.0"); err != nil {
 		t.Fatal(err)
 	}
-	downloaded, err := s.store.readDownloaded(context.Background())
+	downloaded, err := readTestDownloaded(t, s.store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	before := make(map[string][]byte)
-	for _, path := range []string{s.store.selectedPath(), s.store.downloadedPath(), s.store.verifiedPath(), downloaded.ArtifactPath} {
+	for _, path := range []string{testCurrentPath(s.store), downloaded.ArtifactPath} {
 		before[path], err = os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

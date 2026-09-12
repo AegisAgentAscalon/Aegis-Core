@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-func (s *Service) BootstrapProfile(ctx context.Context, req BootstrapProfileRequest) (ProfileIdentity, error) {
+func (s *Service) bootstrapProfile(ctx context.Context, req BootstrapProfileRequest) (ProfileIdentity, error) {
 	if err := contextError(ctx); err != nil {
 		return ProfileIdentity{}, err
 	}
@@ -52,7 +52,7 @@ func (s *Service) BootstrapProfile(ctx context.Context, req BootstrapProfileRequ
 	return profile, nil
 }
 
-func (s *Service) GetProfile(ctx context.Context) (ProfileIdentity, error) {
+func (s *Service) getProfile(ctx context.Context) (ProfileIdentity, error) {
 	if err := contextError(ctx); err != nil {
 		return ProfileIdentity{}, err
 	}
@@ -61,7 +61,7 @@ func (s *Service) GetProfile(ctx context.Context) (ProfileIdentity, error) {
 	return s.store.readProfile()
 }
 
-func (s *Service) SetProfileHostingMode(ctx context.Context, req SetProfileHostingModeRequest) (ProfileHostingConfig, error) {
+func (s *Service) setProfileHostingMode(ctx context.Context, req SetProfileHostingModeRequest) (ProfileHostingConfig, error) {
 	if err := contextError(ctx); err != nil {
 		return ProfileHostingConfig{}, err
 	}
@@ -103,7 +103,7 @@ func (s *Service) SetProfileHostingMode(ctx context.Context, req SetProfileHosti
 	return config, nil
 }
 
-func (s *Service) GetProfileHostingConfig(ctx context.Context) (ProfileHostingConfig, error) {
+func (s *Service) getProfileHostingConfig(ctx context.Context) (ProfileHostingConfig, error) {
 	if err := contextError(ctx); err != nil {
 		return ProfileHostingConfig{}, err
 	}

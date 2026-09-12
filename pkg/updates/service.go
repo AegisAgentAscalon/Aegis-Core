@@ -73,6 +73,7 @@ type serviceSnapshot struct {
 	provider Provider
 	client   *http.Client
 	revision uint64
+	view     *stateView
 }
 
 func (s *Service) snapshotLocked() serviceSnapshot {
@@ -80,15 +81,6 @@ func (s *Service) snapshotLocked() serviceSnapshot {
 		cfg: cloneConfig(s.cfg), store: s.store, provider: s.provider,
 		client: s.client, revision: s.revision,
 	}
-}
-
-func (s *Service) operationSnapshot() (serviceSnapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.applyInProgress {
-		return serviceSnapshot{}, ErrApplyInProgress
-	}
-	return s.snapshotLocked(), nil
 }
 
 func (s *Service) currentLocked(snapshot serviceSnapshot) bool {
@@ -103,33 +95,32 @@ func (s *Service) ValidateConfig() error {
 
 func (s *Service) GetStatus(ctx context.Context) (CurrentState, error) {
 	ctx = normalizeContext(ctx)
-	if err := contextError(ctx); err != nil {
+	snapshot, err := s.beginOperation(ctx, false)
+	if err != nil {
 		return CurrentState{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.getStatusLocked()
+	return statusFor(ctx, snapshot), nil
 }
 
-func (s *Service) getStatusLocked() (CurrentState, error) {
+func statusFor(ctx context.Context, snapshot serviceSnapshot) CurrentState {
 	state := CurrentState{
-		Source:         sourceSummary(s.cfg.Source),
-		AppID:          s.cfg.AppID,
-		DisplayName:    s.cfg.DisplayName,
-		CurrentVersion: s.cfg.CurrentVersion,
-		Channel:        s.cfg.Channel,
-		Platform:       s.cfg.Platform,
-		Architecture:   s.cfg.Architecture,
-		Provider:       s.cfg.Source.Provider,
+		Source:         sourceSummary(snapshot.cfg.Source),
+		AppID:          snapshot.cfg.AppID,
+		DisplayName:    snapshot.cfg.DisplayName,
+		CurrentVersion: snapshot.cfg.CurrentVersion,
+		Channel:        snapshot.cfg.Channel,
+		Platform:       snapshot.cfg.Platform,
+		Architecture:   snapshot.cfg.Architecture,
+		Provider:       snapshot.cfg.Source.Provider,
 		Configured:     true,
 		Message:        "updates configured",
 	}
-	if cached, err := s.store.readSelected(context.Background()); err == nil {
-		if sourceAndPolicyMatch(s.cfg, cached.SourceKey, cached.PolicyKey) && cached.Manifest.Channel == s.cfg.Channel {
-			if err := validateSelectedUpdate(s.cfg, cached); err == nil {
-				release := releaseFromSelection(cached.Manifest, cached.Artifact, time.Time{}, sourceSummary(s.cfg.Source))
+	if cached, err := snapshot.view.selected.read(); err == nil {
+		if sourceAndPolicyMatch(snapshot.cfg, cached.SourceKey, cached.PolicyKey) && cached.Manifest.Channel == snapshot.cfg.Channel {
+			if err := validateSelectedUpdate(snapshot.cfg, cached); err == nil {
+				release := releaseFromSelection(cached.Manifest, cached.Artifact, time.Time{}, sourceSummary(snapshot.cfg.Source))
 				state.LatestRelease = &release
-				state.UpdateAvailable = compareVersions(cached.Manifest.Version, s.cfg.CurrentVersion) > 0
+				state.UpdateAvailable = compareVersions(cached.Manifest.Version, snapshot.cfg.CurrentVersion) > 0
 			} else {
 				state.LastError = safeStatusMessage(err)
 			}
@@ -137,8 +128,8 @@ func (s *Service) getStatusLocked() (CurrentState, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		state.LastError = "stored update metadata is invalid"
 	}
-	if stagedRecord, err := s.store.readStaged(context.Background()); err == nil {
-		if err := validateStagedUpdateReadyFor(context.Background(), s.cfg, s.store, stagedRecord, time.Now().UTC()); err == nil {
+	if stagedRecord, err := snapshot.view.stagedFor(snapshot.cfg); err == nil {
+		if err := validateStagedUpdateReadyFor(ctx, snapshot.cfg, snapshot.store, stagedRecord, time.Now().UTC()); err == nil {
 			state.StagedVersion = stagedRecord.Version
 			state.Verified = true
 		} else {
@@ -147,7 +138,7 @@ func (s *Service) getStatusLocked() (CurrentState, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		state.LastError = "staged update metadata is invalid"
 	}
-	return state, nil
+	return state
 }
 
 func (s *Service) ConfigureSource(ctx context.Context, source SourceConfig) (CurrentState, error) {
@@ -167,15 +158,20 @@ func (s *Service) SetChannel(ctx context.Context, channel Channel) (CurrentState
 
 func (s *Service) ConfigureLane(ctx context.Context, lane LaneConfig) (CurrentState, error) {
 	ctx = normalizeContext(ctx)
-	if err := contextError(ctx); err != nil {
+	for {
+		state, err := s.configureLaneOnce(ctx, lane)
+		if !errors.Is(err, ErrUpdateStateChanged) {
+			return state, err
+		}
+	}
+}
+
+func (s *Service) configureLaneOnce(ctx context.Context, lane LaneConfig) (CurrentState, error) {
+	snapshot, err := s.beginOperation(ctx, true)
+	if err != nil {
 		return CurrentState{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.applyInProgress {
-		return CurrentState{}, ErrApplyInProgress
-	}
-	next := cloneConfig(s.cfg)
+	next := cloneConfig(snapshot.cfg)
 	if lane.Channel != "" {
 		next.Channel = Channel(strings.TrimSpace(string(lane.Channel)))
 	}
@@ -201,7 +197,23 @@ func (s *Service) ConfigureLane(ctx context.Context, lane LaneConfig) (CurrentSt
 	if err != nil {
 		return CurrentState{}, err
 	}
+	// Inspect the target before acquiring the old scope: never hold two roots.
+	target, err := st.generations.Lock(ctx)
+	if err != nil {
+		return CurrentState{}, persistenceError(err)
+	}
+	view, readErr := st.load(ctx, target)
+	_ = target.Close()
+	if readErr != nil {
+		return CurrentState{}, readErr
+	}
+	state := statusFor(ctx, serviceSnapshot{cfg: next, store: st, view: view})
+	op, err := s.lockOperation(ctx, snapshot, true)
+	if err != nil {
+		return CurrentState{}, err
+	}
+	defer op.close()
 	s.cfg, s.store, s.client, s.provider = next, st, client, provider
 	s.revision++
-	return s.getStatusLocked()
+	return state, nil
 }

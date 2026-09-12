@@ -14,7 +14,7 @@ import (
 
 func assertNoPendingArtifacts(t *testing.T, s *Service) {
 	t.Helper()
-	files, err := filepath.Glob(filepath.Join(s.store.stagedDir(), ".pending-*"))
+	files, err := filepath.Glob(filepath.Join(s.store.blobDir(), "*", ".tmp-*"))
 	if err != nil || len(files) != 0 {
 		t.Errorf("staging left pending artifacts: %v (%v)", files, err)
 	}
@@ -28,14 +28,8 @@ func TestStageUpdatePreservesActiveLifecycleAndIsIdempotentOnlyBeforeHandoff(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	beforeLifecycle, err := os.ReadFile(svc.store.lifecyclePath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	beforeMetadata, err := os.ReadFile(svc.store.stagedMetaPath())
-	if err != nil {
-		t.Fatal(err)
-	}
+	beforeLifecycle := testComponentBytes(t, svc.store, "lifecycle")
+	beforeMetadata := testComponentBytes(t, svc.store, "staged")
 
 	restage, err := svc.StageUpdate(ctx, staged.Version)
 	if err != nil || !restage.Staged || restage.Message != "update already staged" {
@@ -45,14 +39,8 @@ func TestStageUpdatePreservesActiveLifecycleAndIsIdempotentOnlyBeforeHandoff(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	afterLifecycle, err := os.ReadFile(svc.store.lifecyclePath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	afterMetadata, err := os.ReadFile(svc.store.stagedMetaPath())
-	if err != nil {
-		t.Fatal(err)
-	}
+	afterLifecycle := testComponentBytes(t, svc.store, "lifecycle")
+	afterMetadata := testComponentBytes(t, svc.store, "staged")
 	if afterEnvelope.LifecycleID != beforeEnvelope.LifecycleID || afterEnvelope.Revision != beforeEnvelope.Revision ||
 		!bytes.Equal(afterLifecycle, beforeLifecycle) || !bytes.Equal(afterMetadata, beforeMetadata) {
 		t.Fatalf("idempotent restage mutated lifecycle: before=%+v after=%+v", beforeEnvelope, afterEnvelope)
@@ -64,10 +52,7 @@ func TestStageUpdatePreservesActiveLifecycleAndIsIdempotentOnlyBeforeHandoff(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	handedOffLifecycle, err := os.ReadFile(svc.store.lifecyclePath())
-	if err != nil {
-		t.Fatal(err)
-	}
+	handedOffLifecycle := testComponentBytes(t, svc.store, "lifecycle")
 	if _, err := svc.StageUpdate(ctx, staged.Version); !errors.Is(err, ErrLifecycleRestageConflict) {
 		t.Fatalf("post-handoff restage error = %v, want conflict", err)
 	}
@@ -75,10 +60,7 @@ func TestStageUpdatePreservesActiveLifecycleAndIsIdempotentOnlyBeforeHandoff(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	preservedLifecycle, err := os.ReadFile(svc.store.lifecyclePath())
-	if err != nil {
-		t.Fatal(err)
-	}
+	preservedLifecycle := testComponentBytes(t, svc.store, "lifecycle")
 	if preserved.Revision != handoff.Envelope.Revision || preserved.Phase != LifecyclePhaseHandoffRecorded ||
 		!bytes.Equal(preservedLifecycle, handedOffLifecycle) {
 		t.Fatalf("post-handoff restage changed lifecycle: %+v", preserved)
@@ -110,7 +92,7 @@ func TestStageUpdateRejectsDifferentPackageWhileLifecycleIsActive(t *testing.T) 
 	if _, err := svc.StageUpdate(ctx, "1.3.0"); !errors.Is(err, ErrLifecycleRestageConflict) {
 		t.Fatalf("different-package restage error = %v, want conflict", err)
 	}
-	preserved, err := svc.store.readStaged(context.Background())
+	preserved, err := readTestStaged(t, svc.store)
 	if err != nil {
 		t.Fatal(err)
 	}

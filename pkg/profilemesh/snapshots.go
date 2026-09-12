@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-func (s *Service) ExportProfileMeshSnapshot(ctx context.Context) (ProfileMeshSnapshot, error) {
+func (s *Service) exportProfileMeshSnapshot(ctx context.Context) (ProfileMeshSnapshot, error) {
 	if err := contextError(ctx); err != nil {
 		return ProfileMeshSnapshot{}, err
 	}
@@ -40,6 +40,8 @@ func (s *Service) ExportProfileMeshSnapshot(ctx context.Context) (ProfileMeshSna
 		HostingConfig:   hosting,
 		Devices:         append([]ProfileDeviceRecord{}, devices.Devices...),
 		Resources:       append([]ProfileResourceRecord{}, resources.Resources...),
+		RelayHints:      s.store.state.RelayHints,
+		EndpointHints:   s.store.state.EndpointHints,
 		CreatedAt:       createdAt,
 		UpdatedAt:       updatedAt,
 		MetadataVersion: metadataVersion,
@@ -49,16 +51,14 @@ func (s *Service) ExportProfileMeshSnapshot(ctx context.Context) (ProfileMeshSna
 	return publicProfileMeshSnapshot(snapshot), nil
 }
 
-func (s *Service) ImportProfileMeshSnapshot(ctx context.Context, snapshot ProfileMeshSnapshot) error {
+func (s *Service) importProfileMeshSnapshot(ctx context.Context, snapshot ProfileMeshSnapshot) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// The legacy multi-file store has no durable home for these fields yet.
-	// Reject before writing anything rather than accepting and discarding them.
-	if len(snapshot.RelayHints) > 0 || len(snapshot.EndpointHints) > 0 {
-		return ErrInvalidProfileSnapshot
+	if err := validateRawHints(snapshot, s.clock.Now().UTC()); err != nil {
+		return err
 	}
 	if snapshot.AppID != s.cfg.AppID || snapshot.Namespace != s.cfg.Namespace || snapshot.Profile.ProfileID == "" || snapshot.Profile.AppID != s.cfg.AppID || snapshot.Profile.Namespace != s.cfg.Namespace {
 		return ErrInvalidProfileSnapshot
@@ -99,5 +99,7 @@ func (s *Service) ImportProfileMeshSnapshot(ctx context.Context, snapshot Profil
 	if err := s.store.writeDevices(deviceRegistryFile{SchemaVersion: schemaVersion, Devices: append([]ProfileDeviceRecord{}, normalized.Devices...), UpdatedAt: normalized.UpdatedAt}); err != nil {
 		return err
 	}
+	s.store.state.RelayHints = normalized.RelayHints
+	s.store.state.EndpointHints = normalized.EndpointHints
 	return s.store.writeResources(resourceRegistryFile{SchemaVersion: schemaVersion, Resources: append([]ProfileResourceRecord{}, normalized.Resources...), UpdatedAt: normalized.UpdatedAt})
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -83,7 +84,7 @@ func TestBootstrapProfileIdempotentAndCorruptStorage(t *testing.T) {
 	if err != nil || hosting.HostingMode != HostingSingleProfileDevice {
 		t.Fatalf("expected default single hosted mode, got %+v %v", hosting, err)
 	}
-	if err := os.WriteFile(svc.store.profilePath(), []byte(`{bad-json`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.store.dir, "state-v2", "current.json"), []byte(`{bad-json`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.GetProfile(context.Background()); !errors.Is(err, ErrStorageUnavailable) {
@@ -137,7 +138,7 @@ func TestDeviceRegistryLifecycle(t *testing.T) {
 	if err != nil || len(list) != 1 {
 		t.Fatalf("expected one device, got %+v %v", list, err)
 	}
-	if err := os.WriteFile(svc.store.devicesPath(), []byte(`{bad-json`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.store.dir, "state-v2", "current.json"), []byte(`{bad-json`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.ListProfileDevices(context.Background()); !errors.Is(err, ErrStorageUnavailable) {

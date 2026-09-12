@@ -10,6 +10,10 @@ import (
 // Apply these copies after canonical fingerprinting, which has its own shape.
 func cloneProfileDevice(device ProfileDeviceRecord) ProfileDeviceRecord {
 	device.Capabilities = append([]string{}, device.Capabilities...)
+	if device.RemovedAt != nil {
+		removedAt := *device.RemovedAt
+		device.RemovedAt = &removedAt
+	}
 	return device
 }
 

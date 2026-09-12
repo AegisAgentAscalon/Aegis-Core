@@ -77,7 +77,3 @@ func copyFileAtomic(ctx context.Context, src, dst string) error {
 	_, err = writeStreamToFile(ctx, in, dst, 0)
 	return err
 }
-
-func replaceFile(ctx context.Context, src, dst string) error {
-	return persistenceError(filepersist.Replace(ctx, src, dst))
-}

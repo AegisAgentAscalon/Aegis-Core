@@ -16,15 +16,25 @@ func (s *Service) VerifyUpdate(ctx context.Context, version string) (VerifyResul
 	}
 	s.workflowMu.Lock()
 	defer s.workflowMu.Unlock()
-	snapshot, err := s.operationSnapshot()
+	snapshot, err := s.beginOperation(ctx, true)
 	if err != nil {
 		return VerifyResult{}, err
 	}
-	return s.verifyUpdateSnapshot(snapshot, version)
+	result, err := verifyUpdateSnapshot(ctx, snapshot, version)
+	if err != nil {
+		return VerifyResult{}, err
+	}
+	if err := s.publishOperation(ctx, snapshot); err != nil {
+		return VerifyResult{}, err
+	}
+	return result, nil
 }
 
-func (s *Service) verifyUpdateSnapshot(snapshot serviceSnapshot, version string) (VerifyResult, error) {
-	downloaded, err := snapshot.store.readDownloaded(context.Background())
+func verifyUpdateSnapshot(ctx context.Context, snapshot serviceSnapshot, version string) (VerifyResult, error) {
+	if err := candidateAdmission(ctx, snapshot); err != nil {
+		return VerifyResult{}, err
+	}
+	downloaded, err := snapshot.view.downloaded.read()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return VerifyResult{}, ErrVerificationFailed
@@ -41,17 +51,25 @@ func (s *Service) verifyUpdateSnapshot(snapshot serviceSnapshot, version string)
 	if err != nil || !strings.EqualFold(got, downloaded.Artifact.SHA256) {
 		return VerifyResult{}, ErrVerificationFailed
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.applyInProgress {
-		return VerifyResult{}, ErrApplyInProgress
-	}
-	if !s.currentLocked(snapshot) {
-		return VerifyResult{}, ErrUpdateStateChanged
-	}
-	verified := verifiedUpdate{SchemaVersion: schemaVersion, Downloaded: downloaded, VerifiedAt: time.Now().UTC()}
-	if err := snapshot.store.writeVerified(context.Background(), verified); err != nil {
+	if err := contextError(ctx); err != nil {
 		return VerifyResult{}, err
 	}
+	snapshot.view.verified = stored(verifiedUpdate{SchemaVersion: schemaVersion, Downloaded: downloaded, VerifiedAt: time.Now().UTC()})
 	return VerifyResult{Version: downloaded.Manifest.Version, ArtifactName: downloaded.Artifact.Filename, OK: true, Message: "update verified"}, nil
+}
+
+func candidateAdmission(ctx context.Context, snapshot serviceSnapshot) error {
+	if snapshot.view.candidateFault {
+		return ErrStorageUnavailable
+	}
+	if snapshot.view.token == "" {
+		invalid, err := snapshot.store.candidateProblem(ctx, snapshot.view)
+		if err != nil {
+			return err
+		}
+		if invalid {
+			return ErrStorageUnavailable
+		}
+	}
+	return nil
 }
