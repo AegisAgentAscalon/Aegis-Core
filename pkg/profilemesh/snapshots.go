@@ -85,6 +85,10 @@ func (s *Service) importProfileMeshSnapshot(ctx context.Context, snapshot Profil
 	normalized.SchemaVersion = ProfileMeshSnapshotSchemaVersion
 	normalized.SnapshotFingerprint = snapshotFingerprint(normalized)
 	if normalized.SnapshotFingerprint == "" {
+		if snapshot.SchemaVersion == legacyProfileMeshSnapshotSchemaVersion {
+			// Preserve schema one's historical publication/encoding failure error.
+			return ErrStorageUnavailable
+		}
 		return ErrInvalidProfileSnapshot
 	}
 	validationTime := s.clock.Now().UTC()

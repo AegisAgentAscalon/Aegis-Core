@@ -14,7 +14,8 @@ func TestSnapshotImportRejectsUnencodableFingerprintInput(t *testing.T) {
 	for _, version := range []struct {
 		name   string
 		schema int
-	}{{"legacy", legacyProfileMeshSnapshotSchemaVersion}, {"current", ProfileMeshSnapshotSchemaVersion}} {
+		want   error
+	}{{"legacy", legacyProfileMeshSnapshotSchemaVersion, ErrStorageUnavailable}, {"current", ProfileMeshSnapshotSchemaVersion, ErrInvalidProfileSnapshot}} {
 		t.Run(version.name, func(t *testing.T) {
 			svc, snapshot := w08Service(t)
 			before := w08Bytes(t, svc)
@@ -30,7 +31,7 @@ func TestSnapshotImportRejectsUnencodableFingerprintInput(t *testing.T) {
 			if version.schema == legacyProfileMeshSnapshotSchemaVersion {
 				snapshot.SnapshotFingerprint = legacyProfileMeshSnapshotFingerprint(snapshot)
 			}
-			if err := svc.ImportProfileMeshSnapshot(context.Background(), snapshot); !errors.Is(err, ErrInvalidProfileSnapshot) {
+			if err := svc.ImportProfileMeshSnapshot(context.Background(), snapshot); !errors.Is(err, version.want) {
 				t.Fatalf("unencodable snapshot import = %v", err)
 			}
 			w08Unchanged(t, svc, before)
