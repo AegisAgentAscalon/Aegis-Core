@@ -30,7 +30,7 @@ These items should be addressed before claiming stable production security behav
 6. **Hardened relay deployment:** a reference server wrapper with TLS, read/write/idle timeouts, rate limits, replay controls, identity binding, monitoring, and abuse handling.
 7. **Profile referential integrity:** stricter import/removal validation plus repair tooling for stale resource-host and hosting references.
 8. **Context contract:** consistently normalize nil contexts or document and test a repository-wide non-nil requirement.
-9. **Release process:** define stable versus experimental packages, breaking-change policy, version tags, release notes, fresh-clone validation, and supported Go versions.
+9. **Release execution and qualification:** apply the defined [release/API policy](RELEASE_POLICY.md), [consumer migration](CONSUMER_MIGRATION.md) and [compiler policy](COMPILER_POLICY.md). Complete exact-published-head hosted CI, consumer qualification and a separately authorized tag/release decision; documented policy and local checks alone do not close these gates.
 
 ## Priority 1 — app-independent public contract candidates
 
