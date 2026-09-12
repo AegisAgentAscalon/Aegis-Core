@@ -17,12 +17,15 @@ import (
 )
 
 func (s *LocalMetadataStore) ensureInitialized(ctx context.Context) error {
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ensureInitializedLocked(ctx)
+	return s.ensureInitializedLocked(ctx, now)
 }
 
-func (s *LocalMetadataStore) ensureInitializedLocked(ctx context.Context) error {
+// Locked helpers receive an operation time sampled before taking the mutex.
+// Host clock callbacks may reenter the store; they must never run under its lock.
+func (s *LocalMetadataStore) ensureInitializedLocked(ctx context.Context, now time.Time) error {
 	if err := storeContextError(ctx); err != nil {
 		return err
 	}
@@ -38,7 +41,6 @@ func (s *LocalMetadataStore) ensureInitializedLocked(ctx context.Context) error 
 	var meta localStoreMetadataFile
 	if err := readJSONFile(ctx, metaPath, &meta); err != nil {
 		if errors.Is(err, ErrLocalStoreNotFound) {
-			now := s.now()
 			meta = localStoreMetadataFile{SchemaVersion: localMetadataStoreSchemaVersion, ProfileNamespace: s.namespace, CreatedAt: now, UpdatedAt: now}
 			return writeJSONAtomic(ctx, metaPath, meta)
 		}
@@ -50,7 +52,7 @@ func (s *LocalMetadataStore) ensureInitializedLocked(ctx context.Context) error 
 	return nil
 }
 
-func (s *LocalMetadataStore) readRemoteSnapshotLocked(ctx context.Context, path string) (RemoteSnapshotRecord, error) {
+func (s *LocalMetadataStore) readRemoteSnapshotLocked(ctx context.Context, path string, now time.Time) (RemoteSnapshotRecord, error) {
 	var file remoteSnapshotFile
 	if err := readJSONFile(ctx, path, &file); err != nil {
 		return RemoteSnapshotRecord{}, err
@@ -58,14 +60,14 @@ func (s *LocalMetadataStore) readRemoteSnapshotLocked(ctx context.Context, path 
 	if file.SchemaVersion != localMetadataStoreSchemaVersion || file.ProfileNamespace != s.namespace {
 		return RemoteSnapshotRecord{}, ErrLocalStoreCorrupt
 	}
-	record, err := validateRemoteSnapshotRecord(s.namespace, file.Record, s.now())
+	record, err := validateRemoteSnapshotRecord(s.namespace, file.Record, now)
 	if err != nil {
 		return RemoteSnapshotRecord{}, ErrLocalStoreCorrupt
 	}
 	return record, nil
 }
 
-func (s *LocalMetadataStore) readRemoteProposalLocked(ctx context.Context, path string) (RemoteProposalRecord, error) {
+func (s *LocalMetadataStore) readRemoteProposalLocked(ctx context.Context, path string, now time.Time) (RemoteProposalRecord, error) {
 	var file remoteProposalFile
 	if err := readJSONFile(ctx, path, &file); err != nil {
 		return RemoteProposalRecord{}, err
@@ -73,7 +75,7 @@ func (s *LocalMetadataStore) readRemoteProposalLocked(ctx context.Context, path 
 	if file.SchemaVersion != localMetadataStoreSchemaVersion || file.ProfileNamespace != s.namespace {
 		return RemoteProposalRecord{}, ErrLocalStoreCorrupt
 	}
-	record, err := validateRemoteProposalRecord(s.namespace, file.Record, s.now())
+	record, err := validateRemoteProposalRecord(s.namespace, file.Record, now)
 	if err != nil {
 		return RemoteProposalRecord{}, ErrLocalStoreCorrupt
 	}

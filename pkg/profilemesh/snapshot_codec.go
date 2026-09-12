@@ -24,7 +24,10 @@ func snapshotFingerprint(snapshot ProfileMeshSnapshot) string {
 	sort.Slice(canonical.EndpointHints, func(i, j int) bool {
 		return canonicalJSON(canonical.EndpointHints[i]) < canonicalJSON(canonical.EndpointHints[j])
 	})
-	raw, _ := json.Marshal(canonical)
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return ""
+	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])[:16]
 }

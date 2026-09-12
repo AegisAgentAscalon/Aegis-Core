@@ -32,6 +32,11 @@ func writeStreamToFile(ctx context.Context, r io.Reader, path string, max int64)
 		written, err = io.Copy(w, downloadReader{r})
 		return err
 	})
+	if err != nil {
+		if canceled := contextError(ctx); canceled != nil {
+			return 0, canceled
+		}
+	}
 	if errors.Is(err, filepersist.ErrTooLarge) || errors.Is(err, ErrDownloadFailed) {
 		return 0, ErrDownloadFailed
 	}

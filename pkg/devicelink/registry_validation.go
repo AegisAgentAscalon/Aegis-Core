@@ -25,7 +25,10 @@ func snapshotFingerprint(snapshot RegistrySnapshot) string {
 	// Registry snapshots have a public codec that materializes nil capability
 	// slices as [] for compatibility. Fingerprints retain the historical
 	// canonical wire shape, including private-wire nil capability handling.
-	raw, _ := json.Marshal(registrySnapshotRecordFrom(canonical, false))
+	raw, err := json.Marshal(registrySnapshotRecordFrom(canonical, false))
+	if err != nil {
+		return ""
+	}
 	sum := sha256String(string(raw))
 	return sum[:16]
 }
@@ -124,6 +127,9 @@ func validateRegistryBackupSnapshot(cfg AppConfig, snapshot RegistrySnapshot) (R
 	normalized.SchemaVersion = RegistrySnapshotSchemaVersion
 	normalized.Purpose = RegistrySnapshotLocalBackup
 	normalized.SnapshotFingerprint = snapshotFingerprint(normalized)
+	if normalized.SnapshotFingerprint == "" {
+		return RegistrySnapshot{}, ErrInvalidRegistrySnapshot
+	}
 	return normalized, nil
 }
 

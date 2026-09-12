@@ -121,15 +121,16 @@ func (s *LocalMetadataStore) SaveLocalSnapshot(ctx context.Context, snapshot pro
 	if err != nil {
 		return err
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return err
 	}
 	file := localSnapshotFile{
 		SchemaVersion:    localMetadataStoreSchemaVersion,
 		ProfileNamespace: s.namespace,
-		Record:           LocalSnapshotRecord{Snapshot: snapshot, ExportedAt: s.now()},
+		Record:           LocalSnapshotRecord{Snapshot: snapshot, ExportedAt: now},
 	}
 	return writeJSONAtomic(ctx, s.localSnapshotPath(), file)
 }
@@ -138,9 +139,10 @@ func (s *LocalMetadataStore) LoadLocalSnapshot(ctx context.Context) (profilemesh
 	if s == nil {
 		return profilemesh.SignedProfileSnapshot{}, ErrStoreUnavailable
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return profilemesh.SignedProfileSnapshot{}, err
 	}
 	var file localSnapshotFile
@@ -150,7 +152,7 @@ func (s *LocalMetadataStore) LoadLocalSnapshot(ctx context.Context) (profilemesh
 	if file.SchemaVersion != localMetadataStoreSchemaVersion || file.ProfileNamespace != s.namespace {
 		return profilemesh.SignedProfileSnapshot{}, ErrLocalStoreCorrupt
 	}
-	snapshot, err := validateStoreSnapshot(s.namespace, file.Record.Snapshot, s.now())
+	snapshot, err := validateStoreSnapshot(s.namespace, file.Record.Snapshot, now)
 	if err != nil {
 		return profilemesh.SignedProfileSnapshot{}, ErrLocalStoreCorrupt
 	}
@@ -169,9 +171,10 @@ func (s *LocalMetadataStore) SaveRemoteSnapshot(ctx context.Context, record Remo
 	if err != nil {
 		return err
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return err
 	}
 	file := remoteSnapshotFile{SchemaVersion: localMetadataStoreSchemaVersion, ProfileNamespace: s.namespace, Record: record}
@@ -186,21 +189,23 @@ func (s *LocalMetadataStore) LoadRemoteSnapshot(ctx context.Context, snapshotID 
 	if err != nil {
 		return RemoteSnapshotRecord{}, err
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return RemoteSnapshotRecord{}, err
 	}
-	return s.readRemoteSnapshotLocked(ctx, path)
+	return s.readRemoteSnapshotLocked(ctx, path, now)
 }
 
 func (s *LocalMetadataStore) ListRemoteSnapshots(ctx context.Context) ([]RemoteSnapshotRecord, error) {
 	if s == nil {
 		return nil, ErrStoreUnavailable
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(s.remoteSnapshotsDir())
@@ -215,7 +220,7 @@ func (s *LocalMetadataStore) ListRemoteSnapshots(ctx context.Context) ([]RemoteS
 		if skipStoreDataFile(entry) {
 			continue
 		}
-		record, err := s.readRemoteSnapshotLocked(ctx, filepath.Join(s.remoteSnapshotsDir(), entry.Name()))
+		record, err := s.readRemoteSnapshotLocked(ctx, filepath.Join(s.remoteSnapshotsDir(), entry.Name()), now)
 		if err != nil {
 			return nil, err
 		}
@@ -239,9 +244,10 @@ func (s *LocalMetadataStore) SaveLocalProposal(ctx context.Context, proposal pro
 	if err != nil {
 		return err
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return err
 	}
 	file := localProposalFile{SchemaVersion: localMetadataStoreSchemaVersion, ProfileNamespace: s.namespace, Proposal: proposal}
@@ -252,9 +258,10 @@ func (s *LocalMetadataStore) LoadLocalProposals(ctx context.Context) ([]profilem
 	if s == nil {
 		return nil, ErrStoreUnavailable
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(s.localProposalsDir())
@@ -276,7 +283,7 @@ func (s *LocalMetadataStore) LoadLocalProposals(ctx context.Context) ([]profilem
 		if file.SchemaVersion != localMetadataStoreSchemaVersion || file.ProfileNamespace != s.namespace {
 			return nil, ErrLocalStoreCorrupt
 		}
-		proposal, err := validateStoreProposal(s.namespace, file.Proposal, s.now())
+		proposal, err := validateStoreProposal(s.namespace, file.Proposal, now)
 		if err != nil {
 			return nil, ErrLocalStoreCorrupt
 		}
@@ -300,9 +307,10 @@ func (s *LocalMetadataStore) SaveRemoteProposal(ctx context.Context, record Remo
 	if err != nil {
 		return err
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return err
 	}
 	file := remoteProposalFile{SchemaVersion: localMetadataStoreSchemaVersion, ProfileNamespace: s.namespace, Record: record}
@@ -317,21 +325,23 @@ func (s *LocalMetadataStore) LoadRemoteProposal(ctx context.Context, proposalID 
 	if err != nil {
 		return RemoteProposalRecord{}, err
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return RemoteProposalRecord{}, err
 	}
-	return s.readRemoteProposalLocked(ctx, path)
+	return s.readRemoteProposalLocked(ctx, path, now)
 }
 
 func (s *LocalMetadataStore) ListRemoteProposals(ctx context.Context) ([]RemoteProposalRecord, error) {
 	if s == nil {
 		return nil, ErrStoreUnavailable
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(s.remoteProposalsDir())
@@ -346,7 +356,7 @@ func (s *LocalMetadataStore) ListRemoteProposals(ctx context.Context) ([]RemoteP
 		if skipStoreDataFile(entry) {
 			continue
 		}
-		record, err := s.readRemoteProposalLocked(ctx, filepath.Join(s.remoteProposalsDir(), entry.Name()))
+		record, err := s.readRemoteProposalLocked(ctx, filepath.Join(s.remoteProposalsDir(), entry.Name()), now)
 		if err != nil {
 			return nil, err
 		}
@@ -381,9 +391,10 @@ func (s *LocalMetadataStore) SaveLastExchange(ctx context.Context, result Exchan
 	for _, issue := range append(result.Issues, append(result.Push.Issues, result.Pull.Issues...)...) {
 		record.Issues = append(record.Issues, syncIssue(issue.Code, issue.Message, issue.Blocking))
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return err
 	}
 	return writeJSONAtomic(ctx, s.lastExchangePath(), record)
@@ -393,9 +404,10 @@ func (s *LocalMetadataStore) LoadLastExchange(ctx context.Context) (LocalExchang
 	if s == nil {
 		return LocalExchangeRecord{}, ErrStoreUnavailable
 	}
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureInitializedLocked(ctx); err != nil {
+	if err := s.ensureInitializedLocked(ctx, now); err != nil {
 		return LocalExchangeRecord{}, err
 	}
 	var record LocalExchangeRecord

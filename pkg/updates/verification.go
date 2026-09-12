@@ -14,8 +14,10 @@ func (s *Service) VerifyUpdate(ctx context.Context, version string) (VerifyResul
 	if err := contextError(ctx); err != nil {
 		return VerifyResult{}, err
 	}
-	s.workflowMu.Lock()
-	defer s.workflowMu.Unlock()
+	if err := s.lockWorkflow(ctx); err != nil {
+		return VerifyResult{}, err
+	}
+	defer s.unlockWorkflow()
 	snapshot, err := s.beginOperation(ctx, true)
 	if err != nil {
 		return VerifyResult{}, err

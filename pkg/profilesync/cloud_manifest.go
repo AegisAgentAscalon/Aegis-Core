@@ -56,7 +56,10 @@ func NormalizeCloudManifest(manifest CloudProfileManifest) (CloudProfileManifest
 			return CloudProfileManifest{}, err
 		}
 	}
-	expected := cloudManifestHash(manifest)
+	expected, err := cloudManifestHash(manifest)
+	if err != nil {
+		return CloudProfileManifest{}, err
+	}
 	if manifest.ManifestHash == "" {
 		manifest.ManifestHash = expected
 	}
@@ -178,11 +181,14 @@ func cloudManifestRefs(manifest CloudProfileManifest) []CloudObjectRef {
 	return refs
 }
 
-func cloudManifestHash(manifest CloudProfileManifest) string {
+func cloudManifestHash(manifest CloudProfileManifest) (string, error) {
 	copy := manifest
 	copy.ManifestHash = ""
-	raw, _ := json.Marshal(copy)
-	return cloudObjectHash(raw)
+	raw, err := json.Marshal(copy)
+	if err != nil {
+		return "", ErrInvalidCloudManifest
+	}
+	return cloudObjectHash(raw), nil
 }
 
 func validateCloudManifestCredentialBoundary(manifest CloudProfileManifest) error {

@@ -203,6 +203,9 @@ func (s *Service) ExportRegistrySnapshot(ctx context.Context) (RegistrySnapshot,
 		return RegistrySnapshot{}, ErrStorageUnavailable
 	}
 	snap.SnapshotFingerprint = snapshotFingerprint(snap)
+	if snap.SnapshotFingerprint == "" {
+		return RegistrySnapshot{}, ErrStorageUnavailable
+	}
 	return snap, nil
 }
 

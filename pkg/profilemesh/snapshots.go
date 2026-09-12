@@ -48,6 +48,9 @@ func (s *Service) exportProfileMeshSnapshot(ctx context.Context) (ProfileMeshSna
 	}
 	snapshot = normalizeProfileMeshSnapshot(snapshot)
 	snapshot.SnapshotFingerprint = snapshotFingerprint(snapshot)
+	if snapshot.SnapshotFingerprint == "" {
+		return ProfileMeshSnapshot{}, ErrStorageUnavailable
+	}
 	return publicProfileMeshSnapshot(snapshot), nil
 }
 
@@ -81,6 +84,9 @@ func (s *Service) importProfileMeshSnapshot(ctx context.Context, snapshot Profil
 	}
 	normalized.SchemaVersion = ProfileMeshSnapshotSchemaVersion
 	normalized.SnapshotFingerprint = snapshotFingerprint(normalized)
+	if normalized.SnapshotFingerprint == "" {
+		return ErrInvalidProfileSnapshot
+	}
 	validationTime := s.clock.Now().UTC()
 	// Schema 1 is a historical-state import, not a fresh presence assertion.
 	// Keep its recorded time; live host queries still use the service clock.

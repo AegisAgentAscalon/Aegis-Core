@@ -114,9 +114,10 @@ func (p *LocalDevProvider) PublishEndpointHint(ctx context.Context, hint Endpoin
 	if err := ValidateEndpointHint(hint); err != nil {
 		return err
 	}
+	cleanupAt := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.cleanupExpiredLocked(p.now())
+	p.cleanupExpiredLocked(cleanupAt)
 	p.hints[endpointHintKey(hint.Namespace, hint.DeviceID, hint.EndpointID)] = cloneEndpointHint(hint)
 	return nil
 }
@@ -135,9 +136,10 @@ func (p *LocalDevProvider) ListEndpointHints(ctx context.Context, query Endpoint
 	if now.IsZero() {
 		now = p.now()
 	}
+	cleanupAt := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.cleanupExpiredLocked(p.now())
+	p.cleanupExpiredLocked(cleanupAt)
 	out := []EndpointHint{}
 	for _, hint := range p.hints {
 		if hint.Namespace != query.Namespace || (query.DeviceID != "" && hint.DeviceID != query.DeviceID) || expiredAt(hint.ExpiresAt, now) {
@@ -174,9 +176,10 @@ func (p *LocalDevProvider) Announce(ctx context.Context, announcement Rendezvous
 	if err := ValidateRendezvousAnnouncement(announcement); err != nil {
 		return err
 	}
+	cleanupAt := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.cleanupExpiredLocked(p.now())
+	p.cleanupExpiredLocked(cleanupAt)
 	p.announcements[rendezvousKey(announcement.Namespace, announcement.DeviceID, announcement.AnnouncementID)] = cloneRendezvousAnnouncement(announcement)
 	return nil
 }
@@ -198,9 +201,10 @@ func (p *LocalDevProvider) Query(ctx context.Context, query RendezvousQuery) ([]
 	if now.IsZero() {
 		now = p.now()
 	}
+	cleanupAt := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.cleanupExpiredLocked(p.now())
+	p.cleanupExpiredLocked(cleanupAt)
 	out := []RendezvousPeerHint{}
 	for _, announcement := range p.announcements {
 		if announcement.Namespace != query.Namespace ||
@@ -351,9 +355,10 @@ func (p *LocalDevProvider) CleanupExpired(ctx context.Context) error {
 	if err := p.ready(ctx); err != nil {
 		return err
 	}
+	cleanupAt := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.cleanupExpiredLocked(p.now())
+	p.cleanupExpiredLocked(cleanupAt)
 	return nil
 }
 

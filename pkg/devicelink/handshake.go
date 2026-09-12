@@ -68,6 +68,9 @@ func (s *Service) SignHandshakeChallenge(ctx context.Context, req HandshakeChall
 	if err != nil {
 		return HandshakeChallengeResponse{}, err
 	}
+	if err := validateIdentityKeyPair(current, privateKey); err != nil {
+		return HandshakeChallengeResponse{}, err
+	}
 	payload := handshakePayload(s.cfg.AppID, s.cfg.Namespace, req.ChallengerDeviceID, current.DeviceID, req.Challenge)
 	sig := ed25519.Sign(privateKey, payload)
 	return HandshakeChallengeResponse{DeviceID: current.DeviceID, PublicKeyFingerprint: current.PublicKeyFingerprint, Signature: base64.RawStdEncoding.EncodeToString(sig)}, nil

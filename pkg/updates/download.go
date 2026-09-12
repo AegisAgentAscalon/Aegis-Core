@@ -11,8 +11,10 @@ func (s *Service) DownloadUpdate(ctx context.Context, version string) (DownloadR
 	if err := contextError(ctx); err != nil {
 		return DownloadResult{}, err
 	}
-	s.workflowMu.Lock()
-	defer s.workflowMu.Unlock()
+	if err := s.lockWorkflow(ctx); err != nil {
+		return DownloadResult{}, err
+	}
+	defer s.unlockWorkflow()
 	snapshot, err := s.beginOperation(ctx, true)
 	if err != nil {
 		return DownloadResult{}, err

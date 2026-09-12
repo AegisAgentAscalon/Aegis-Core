@@ -16,8 +16,10 @@ func (s *Service) CheckForUpdates(ctx context.Context) (CheckResult, error) {
 	if err := contextError(ctx); err != nil {
 		return CheckResult{}, err
 	}
-	s.workflowMu.Lock()
-	defer s.workflowMu.Unlock()
+	if err := s.lockWorkflow(ctx); err != nil {
+		return CheckResult{}, err
+	}
+	defer s.unlockWorkflow()
 	for attempt := 0; attempt < 4; attempt++ {
 		snapshot, err := s.beginOperation(ctx, true)
 		if err != nil {
@@ -42,6 +44,9 @@ func (s *Service) CheckForUpdates(ctx context.Context) (CheckResult, error) {
 func (s *Service) checkForUpdatesSnapshot(ctx context.Context, snapshot serviceSnapshot) (CheckResult, error) {
 	manifest, err := snapshot.provider.LoadManifest(ctx)
 	if err != nil {
+		if canceled := contextError(ctx); canceled != nil {
+			return CheckResult{}, canceled
+		}
 		return CheckResult{}, sanitizeProviderError(err)
 	}
 	if err := contextError(ctx); err != nil {

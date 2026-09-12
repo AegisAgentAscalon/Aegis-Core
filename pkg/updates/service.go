@@ -29,7 +29,7 @@ type serviceState struct {
 	legacyApplyEnabled bool
 
 	mu              sync.Mutex
-	workflowMu      sync.Mutex
+	workflowGate    chan struct{}
 	applyInProgress bool
 }
 
@@ -64,6 +64,7 @@ func newServiceWithOptions(cfg AppConfig, apply ApplyStrategy, options ServiceOp
 	return &Service{serviceState: &serviceState{
 		cfg: cfg, store: st, provider: provider, apply: apply,
 		client: client, options: options, revision: 1, legacyApplyEnabled: legacyApplyEnabled,
+		workflowGate: make(chan struct{}, 1),
 	}}, nil
 }
 

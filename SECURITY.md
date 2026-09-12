@@ -10,7 +10,10 @@ Until a formal process exists, report security concerns through the GitHub issue
 
 ## Current Review Status
 
-See [`docs/audits/2026-07-11-internal-hardening.md`](docs/audits/2026-07-11-internal-hardening.md) and [`docs/audits/2026-07-16-consumer-driven-hardening.md`](docs/audits/2026-07-16-consumer-driven-hardening.md) for scope, findings, validation, and residual release gates.
+See [current engineering status](docs/STATUS.md) and the
+[W18 audit record](docs/audits/2026-09-12-w18-final-audit.md) for current scope,
+corrections and validation boundaries. The July reports remain historical records
+under [audits](docs/audits/README.md).
 
 - Automated Go tests and `go vet` are expected to pass.
 - The code completed internal engineering hardening passes on 2026-07-11 and 2026-07-16.

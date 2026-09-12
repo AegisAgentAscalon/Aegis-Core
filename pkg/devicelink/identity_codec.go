@@ -74,6 +74,12 @@ func decodePrivateKey(encoded string) (ed25519.PrivateKey, error) {
 	if len(raw) != ed25519.PrivateKeySize {
 		return nil, ErrStorageUnavailable
 	}
+	// Go stores the seed followed by a cached public key. Public() reads that
+	// cache without deriving it, so length and identity-public-key checks alone
+	// would accept a damaged seed and report readiness for an unusable signer.
+	if !bytes.Equal(raw, ed25519.NewKeyFromSeed(raw[:ed25519.SeedSize])) {
+		return nil, ErrStorageUnavailable
+	}
 	return ed25519.PrivateKey(raw), nil
 }
 
@@ -94,7 +100,10 @@ func publicIdentityBundleFingerprint(bundle PublicIdentityBundle) string {
 	canonical.BundleFingerprint = ""
 	canonical.Capabilities = append([]string{}, bundle.Capabilities...)
 	sort.Strings(canonical.Capabilities)
-	raw, _ := json.Marshal(canonical)
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return ""
+	}
 	return sha256String(string(raw))
 }
 

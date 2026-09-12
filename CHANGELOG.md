@@ -4,7 +4,7 @@ All notable changes to Aegis Core are recorded here. The repository remains expe
 
 ## Unreleased
 
-### September repair and integration campaign (W01-W17)
+### September repair and integration campaign (W01-W18)
 
 - Repaired Identity Gate authority/expiry, Auth session ownership/cancellation,
   callback reentry, update artifact/source binding and cloud storage identity.
@@ -23,8 +23,13 @@ All notable changes to Aegis Core are recorded here. The repository remains expe
 - Corrected current architecture status and example import documentation. W17
   establishes an experimental release/deprecation policy, keeps legacy public APIs,
   documents consumer migration and prepares exact-checkout CI/export gates.
-- Local validation and hosted qualification are distinct. W18 publication and
-  exact-published-head hosted Windows/Linux/race results remain required; no tag,
+- W18 rejects cloud manifests and identity/mesh fingerprints that cannot be JSON-encoded, validates
+  Device Link private-key derivation and signer/identity binding, moves injected
+  metadata/relay clocks outside locks, honors cancellation while waiting for an
+  Updates workflow or reading failed HTTP bodies, and sanitizes AppBridge display
+  fallbacks. Existing public APIs and historical tests are retained.
+- Local validation and hosted qualification are distinct. Exact-published-head
+  hosted Windows/Linux/race results are recorded in GitHub Actions; no tag,
   consumer installation or production qualification is implied by this changelog.
 
 ### Module organization

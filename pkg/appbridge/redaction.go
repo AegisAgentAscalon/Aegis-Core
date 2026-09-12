@@ -13,8 +13,8 @@ import (
 func sanitizeAuthStatus(status auth.AuthStatus) auth.AuthStatus {
 	status.Scopes = slices.Clone(status.Scopes)
 	status.LastError = sanitizeSummary(status.LastError, "")
-	status.DisplayName = sanitizeSummary(status.DisplayName, status.AppID)
 	status.AppID = sanitizeIdentifier(status.AppID)
+	status.DisplayName = sanitizeSummary(status.DisplayName, status.AppID)
 	status.TokenNamespace = sanitizeIdentifier(status.TokenNamespace)
 	status.ClientIDFingerprint = sanitizeIdentifier(status.ClientIDFingerprint)
 	status.Profile.DisplayName = sanitizeSummary(status.Profile.DisplayName, "")

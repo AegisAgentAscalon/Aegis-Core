@@ -13,8 +13,10 @@ func (s *Service) GetLifecycleEnvelope(ctx context.Context) (LifecycleEnvelope, 
 	if err := contextError(ctx); err != nil {
 		return LifecycleEnvelope{}, err
 	}
-	s.workflowMu.Lock()
-	defer s.workflowMu.Unlock()
+	if err := s.lockWorkflow(ctx); err != nil {
+		return LifecycleEnvelope{}, err
+	}
+	defer s.unlockWorkflow()
 	op, err := s.beginLocked(ctx, false)
 	if err != nil {
 		return LifecycleEnvelope{}, err
@@ -44,8 +46,10 @@ func (s *Service) RecordPackageHandoff(ctx context.Context, request PackageHando
 	if err := validateHandoffRequest(request); err != nil {
 		return PackageHandoff{}, err
 	}
-	s.workflowMu.Lock()
-	defer s.workflowMu.Unlock()
+	if err := s.lockWorkflow(ctx); err != nil {
+		return PackageHandoff{}, err
+	}
+	defer s.unlockWorkflow()
 	op, err := s.beginLocked(ctx, false)
 	if err != nil {
 		return PackageHandoff{}, err
@@ -119,8 +123,10 @@ func (s *Service) ReportExternalAction(ctx context.Context, report ExternalActio
 	if err := validateExternalActionReport(report); err != nil {
 		return LifecycleEnvelope{}, err
 	}
-	s.workflowMu.Lock()
-	defer s.workflowMu.Unlock()
+	if err := s.lockWorkflow(ctx); err != nil {
+		return LifecycleEnvelope{}, err
+	}
+	defer s.unlockWorkflow()
 	op, err := s.beginLocked(ctx, false)
 	if err != nil {
 		return LifecycleEnvelope{}, err
@@ -175,8 +181,10 @@ func (s *Service) ReportExternalCompletion(ctx context.Context, report ExternalC
 	if err := validateExternalCompletionReport(report); err != nil {
 		return LifecycleEnvelope{}, err
 	}
-	s.workflowMu.Lock()
-	defer s.workflowMu.Unlock()
+	if err := s.lockWorkflow(ctx); err != nil {
+		return LifecycleEnvelope{}, err
+	}
+	defer s.unlockWorkflow()
 	op, err := s.beginLocked(ctx, false)
 	if err != nil {
 		return LifecycleEnvelope{}, err

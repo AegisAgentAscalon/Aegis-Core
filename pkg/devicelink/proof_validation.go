@@ -9,7 +9,10 @@ import (
 func proofReceiptFingerprint(receipt ProofReceipt) string {
 	canonical := receipt
 	canonical.ReceiptFingerprint = ""
-	raw, _ := json.Marshal(canonical)
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return ""
+	}
 	return sha256String(string(raw))
 }
 

@@ -92,16 +92,18 @@ func (s *Service) applyExpectedVersion(ctx context.Context, version string) (App
 	if !enabled {
 		return ApplyResult{}, ErrLegacyExecutionDisabled
 	}
-	s.workflowMu.Lock()
+	if err := s.lockWorkflow(ctx); err != nil {
+		return ApplyResult{}, err
+	}
 	op, err := s.beginLocked(ctx, true)
 	if err != nil {
-		s.workflowMu.Unlock()
+		s.unlockWorkflow()
 		return ApplyResult{}, err
 	}
 	stagedRecord, err := op.snapshot.view.staged.read()
 	if err != nil {
 		op.close()
-		s.workflowMu.Unlock()
+		s.unlockWorkflow()
 		if errors.Is(err, os.ErrNotExist) {
 			return ApplyResult{}, ErrStagedUpdateNotFound
 		}
@@ -110,13 +112,13 @@ func (s *Service) applyExpectedVersion(ctx context.Context, version string) (App
 	staged := stagedRecord.StagedUpdate
 	if version != "" && staged.Version != version {
 		op.close()
-		s.workflowMu.Unlock()
+		s.unlockWorkflow()
 		return ApplyResult{}, ErrNoUpdateAvailable
 	}
 	stagedRecord, err = readyStaged(ctx, op.snapshot, time.Now().UTC())
 	if err != nil {
 		op.close()
-		s.workflowMu.Unlock()
+		s.unlockWorkflow()
 		return ApplyResult{}, err
 	}
 	staged = stagedRecord.StagedUpdate
@@ -125,7 +127,7 @@ func (s *Service) applyExpectedVersion(ctx context.Context, version string) (App
 	gate := op.gate
 	op.gate = nil
 	op.close()
-	s.workflowMu.Unlock()
+	s.unlockWorkflow()
 	defer func() {
 		s.mu.Lock()
 		s.applyInProgress = false

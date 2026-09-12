@@ -35,9 +35,15 @@ roll back native state. Previously disclosed artifact paths are retained, with n
 automatic committed-blob garbage collection. Power-loss, network-filesystem and
 exactly-once external installation guarantees are outside this evidence.
 
-Hosted Windows/Linux execution, Linux race qualification, reliable-v2 consumer
-adoption, provider qualification and production deployment remain separately
-pending. W17 prepares integration/release readiness and compatible release policy; its
-local matrix is recorded separately in the campaign evidence. W18 final review
-and GitHub publication remain pending. No publication, tag or consumer installation
-follows from W17. See the [W17 record](audits/2026-09-12-w17-integration.md).
+W18 performs the cumulative source audit and corrects cloud encoding, device-key
+integrity, callback lock ownership, update cancellation and status redaction.
+See the [W18 record](audits/2026-09-12-w18-final-audit.md) for corrections and the
+publication gate. W17's earlier local readiness is recorded in the
+[W17 record](audits/2026-09-12-w17-integration.md).
+
+Exact-commit hosted Windows/Linux execution and Linux race results are published
+in [GitHub Actions](https://github.com/AegisAgentAscalon/Aegis-Core/actions/workflows/go.yml).
+Check the run's recorded checkout against the source commit being evaluated;
+this document is written before those runs and does not certify their result.
+Reliable-v2 consumer adoption, provider qualification and production deployment
+remain separate work. A repository update does not imply a tag or installation.

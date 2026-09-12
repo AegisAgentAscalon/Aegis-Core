@@ -179,7 +179,7 @@ func summarizeTrustedDevices(devices []devicelink.TrustedDevice) []TrustedDevice
 	for _, device := range devices {
 		out = append(out, TrustedDeviceSummary{
 			DeviceID:             sanitizeIdentifier(device.DeviceID),
-			DisplayName:          sanitizeSummary(device.DisplayName, device.DeviceID),
+			DisplayName:          sanitizeSummary(device.DisplayName, sanitizeIdentifier(device.DeviceID)),
 			PublicKeyFingerprint: sanitizeIdentifier(device.PublicKeyFingerprint),
 			TrustStatus:          device.TrustStatus,
 		})
@@ -193,7 +193,7 @@ func summarizeHostedResources(resources []profilemesh.ProfileResourceRecord) []H
 		out = append(out, HostedResourceSummary{
 			ResourceID:          sanitizeIdentifier(resource.ResourceID),
 			ResourceType:        resource.ResourceType,
-			DisplayName:         sanitizeSummary(resource.DisplayName, resource.ResourceID),
+			DisplayName:         sanitizeSummary(resource.DisplayName, sanitizeIdentifier(resource.ResourceID)),
 			CurrentHostDeviceID: sanitizeIdentifier(resource.CurrentHostDeviceID),
 			Availability:        resource.Availability,
 		})

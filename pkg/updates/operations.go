@@ -8,6 +8,21 @@ import (
 	"github.com/AegisAgentAscalon/aegis-core/internal/generation"
 )
 
+func (s *Service) lockWorkflow(ctx context.Context) error {
+	select {
+	case s.workflowGate <- struct{}{}:
+		if err := contextError(ctx); err != nil {
+			s.unlockWorkflow()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ErrContextCanceled
+	}
+}
+
+func (s *Service) unlockWorkflow() { <-s.workflowGate }
+
 // When combined, locks are acquired workflow -> commit -> owner. Apply's
 // execution gate is only tried, never waited on, under the commit lock.
 type operationGuard struct {
