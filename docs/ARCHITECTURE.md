@@ -129,17 +129,19 @@ records simply because their names look similar.
 
 ## Remaining engineering work
 
-This pass changes ownership and organization. It does not close the 22 reproduced
-[correctness findings from the September audit](audits/2026-09-11-module-reorganization.md)
-or establish production readiness.
-The user requested the structural pass before the audit's originally proposed
-bug-fix sequence; those repair gates remain open. The next changes should address
-the verified failures in bounded, separately tested patches: Identity Gate expiry
-and authority propagation, manifest/artifact binding, exchange delivery loss,
-storage identity collisions, then the remaining P2 cases.
+The original structural pass was followed by the W01-W15 correctness, persistence
+and concurrency repairs. Their dated reports remain historical evidence; they are
+not the current open-defect list. See [Current status](STATUS.md) and the
+[Roadmap](ROADMAP.md) for current limits and remaining work.
 
-Shared persistence mechanics and narrower lock scopes remain follow-on design
-work. Extract them only with failure, migration, concurrency and cancellation
-tests that justify the abstraction. Do not erase meaningful security regression
-tests to meet a line-count target. Fewer DTOs reduce maintenance; file movement
-alone does not prove faster execution or smaller binaries.
+The tagged audit still reproduces legacy SD-02/SD-03. Reliable v2 custody/inbox
+handling is a separate opt-in protocol, so applications using legacy exchange
+retain its delivery limitations. Hosted Windows/Linux and Linux race qualification,
+consumer adoption and production provider qualification remain separate gates.
+
+Shared persistence mechanics and narrower owner lock scopes are implemented within
+their documented boundaries. See [State persistence](STATE_PERSISTENCE.md) for
+cooperating-writer assumptions, migration, rollback and artifact retention limits.
+Auth, Device Link and generic Profile Sync still have further recovery work listed
+in the roadmap. Preserve meaningful security/recovery tests; fewer source lines
+alone do not establish faster execution or a smaller binary.

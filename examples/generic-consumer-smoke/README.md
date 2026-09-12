@@ -14,7 +14,7 @@ It is not a real app integration and not a production template.
 
 ## Boundaries
 
-- Imports public `pkg/*` packages only.
+- Calls public `pkg/*` APIs and shares synthetic setup through `examples/internal/exampledata`.
 - Uses temporary local state only.
 - Requires no credentials, no external network, and no long-running service.
 - Does not execute update apply behavior.
