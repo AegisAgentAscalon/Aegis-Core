@@ -1,4 +1,4 @@
-// Staging, app-owned handoff planning, and compatibility apply operations.
+// Staging and app-owned handoff planning.
 package updates
 
 import (
@@ -156,75 +156,6 @@ func (s *Service) BuildApplyPlan(ctx context.Context) (ApplyPlan, error) {
 	}, nil
 }
 
-func (s *Service) ApplyUpdate(ctx context.Context) (ApplyResult, error) {
-	return s.applyExpectedVersion(ctx, "")
-}
-
-func (s *Service) applyExpectedVersion(ctx context.Context, version string) (ApplyResult, error) {
-	ctx = normalizeContext(ctx)
-	if err := contextError(ctx); err != nil {
-		return ApplyResult{}, err
-	}
-	version = strings.TrimSpace(version)
-	if version != "" && !validVersion(version) {
-		return ApplyResult{}, ErrNoUpdateAvailable
-	}
-	s.mu.Lock()
-	legacyApplyEnabled := s.legacyApplyEnabled
-	s.mu.Unlock()
-	if !legacyApplyEnabled {
-		return ApplyResult{}, ErrLegacyExecutionDisabled
-	}
-	s.workflowMu.Lock()
-	s.mu.Lock()
-	if s.applyInProgress {
-		s.mu.Unlock()
-		s.workflowMu.Unlock()
-		return ApplyResult{}, ErrApplyInProgress
-	}
-	stagedRecord, err := s.store.readStaged(ctx)
-	if err != nil {
-		s.mu.Unlock()
-		s.workflowMu.Unlock()
-		if errors.Is(err, os.ErrNotExist) {
-			return ApplyResult{}, ErrStagedUpdateNotFound
-		}
-		return ApplyResult{}, err
-	}
-	staged := stagedRecord.StagedUpdate
-	if version != "" && staged.Version != version {
-		s.mu.Unlock()
-		s.workflowMu.Unlock()
-		return ApplyResult{}, ErrNoUpdateAvailable
-	}
-	if err := validateStagedUpdateReadyFor(ctx, s.cfg, s.store, stagedRecord, time.Now().UTC()); err != nil {
-		s.mu.Unlock()
-		s.workflowMu.Unlock()
-		return ApplyResult{}, err
-	}
-	strategy := s.apply
-	s.applyInProgress = true
-	s.mu.Unlock()
-	s.workflowMu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		s.applyInProgress = false
-		s.mu.Unlock()
-	}()
-	result, err := strategy.Apply(ctx, staged)
-	if err != nil {
-		if contextError(ctx) != nil {
-			return ApplyResult{}, ErrContextCanceled
-		}
-		return ApplyResult{}, ErrApplyFailed
-	}
-	result.Version = staged.Version
-	if result.Message == "" || unsafeUpdateDetail(result.Message) {
-		result.Message = "apply strategy completed"
-	}
-	return result, nil
-}
-
 func (s *Service) ClearStagedUpdate(ctx context.Context) (ClearResult, error) {
 	ctx = normalizeContext(ctx)
 	if err := contextError(ctx); err != nil {
@@ -247,23 +178,4 @@ func (s *Service) ClearStagedUpdate(ctx context.Context) (ClearResult, error) {
 		return ClearResult{}, err
 	}
 	return ClearResult{Cleared: true, Message: "staged update cleared"}, nil
-}
-
-func (s *Service) State(ctx context.Context) (CurrentState, error) { return s.GetStatus(ctx) }
-func (s *Service) Check(ctx context.Context) (CheckResult, error)  { return s.CheckForUpdates(ctx) }
-func (s *Service) Download(ctx context.Context, version string) (DownloadResult, error) {
-	return s.DownloadUpdate(ctx, version)
-}
-func (s *Service) Verify(ctx context.Context, version string) (VerifyResult, error) {
-	return s.VerifyUpdate(ctx, version)
-}
-func (s *Service) Stage(ctx context.Context, version string) (StageResult, error) {
-	return s.StageUpdate(ctx, version)
-}
-func (s *Service) Describe(ctx context.Context) (StagedUpdateSummary, error) {
-	return s.DescribeStagedUpdate(ctx)
-}
-func (s *Service) PlanApply(ctx context.Context) (ApplyPlan, error) { return s.BuildApplyPlan(ctx) }
-func (s *Service) Apply(ctx context.Context, version string) (ApplyResult, error) {
-	return s.applyExpectedVersion(ctx, version)
 }

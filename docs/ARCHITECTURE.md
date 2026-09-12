@@ -65,6 +65,14 @@ copy their payloads and synchronize connection state without locking handlers.
 See the [W12 record](audits/2026-09-12-w12-device-link.md) for preserved schemas,
 expiry/revocation checks and callback semantics.
 
+W13 divides Updates contracts/configuration, manifest/signature validation, source
+HTTP policy, selection, transfer, staging and lifecycle responsibilities within
+the existing public package. Legacy constructors/adapters/callback execution live
+in `legacy_apply.go`, with public aliases in `compatibility_aliases.go`. Public
+redaction views and private persisted records remain intentionally distinct.
+See the [W13 record](audits/2026-09-12-w13-updates.md); generation-format migration
+is a separate W14 design and implementation step.
+
 W10 makes Profile Mesh's remaining boundaries explicit: public domain models in
 `types.go`, configuration and shared syntax in `config.go`, schema-specific
 snapshot encoding in `snapshot_codec.go`, and private registry envelopes in

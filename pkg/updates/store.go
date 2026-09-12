@@ -51,6 +51,17 @@ type stagedUpdateRecord struct {
 	PolicyKey string    `json:"policy_key"`
 }
 
+type lifecycleRecord struct {
+	SchemaVersion int                          `json:"schema_version"`
+	Envelope      LifecycleEnvelope            `json:"envelope"`
+	Idempotency   []lifecycleIdempotencyRecord `json:"idempotency"`
+}
+
+type lifecycleIdempotencyRecord struct {
+	Key         string `json:"key"`
+	Fingerprint string `json:"fingerprint"`
+}
+
 func newStore(cfg AppConfig) (*store, error) {
 	dir := filepath.Join(cfg.StagingDir, cfg.AppID, cfg.Namespace, "updates")
 	if scope := stateScopeKey(cfg); scope != "" {

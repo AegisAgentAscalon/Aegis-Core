@@ -7,15 +7,30 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
-func NewService(cfg AppConfig, apply ApplyStrategy) (*Service, error) {
-	return NewServiceWithOptions(cfg, apply, ServiceOptions{})
+// Service is the public update service handle. Its private state is shared when
+// a Service value is copied, matching the historical facade's pointer-owner
+// semantics while keeping implementation details out of the public contract.
+type Service struct {
+	*serviceState
 }
 
-func NewServiceWithOptions(cfg AppConfig, apply ApplyStrategy, options ServiceOptions) (*Service, error) {
-	return newServiceWithOptions(cfg, apply, options, true)
+type serviceState struct {
+	cfg                AppConfig
+	store              *store
+	provider           Provider
+	apply              ApplyStrategy
+	client             *http.Client
+	options            ServiceOptions
+	revision           uint64
+	legacyApplyEnabled bool
+
+	mu              sync.Mutex
+	workflowMu      sync.Mutex
+	applyInProgress bool
 }
 
 func NewRecordOnlyService(cfg AppConfig) (*Service, error) {
@@ -50,18 +65,6 @@ func newServiceWithOptions(cfg AppConfig, apply ApplyStrategy, options ServiceOp
 		cfg: cfg, store: st, provider: provider, apply: apply,
 		client: client, options: options, revision: 1, legacyApplyEnabled: legacyApplyEnabled,
 	}}, nil
-}
-
-func NewServiceWithAdapter(cfg AppConfig, adapter ApplyAdapter) (*Service, error) {
-	return NewServiceWithAdapterOptions(cfg, adapter, ServiceOptions{})
-}
-
-func NewServiceWithAdapterOptions(cfg AppConfig, adapter ApplyAdapter, options ServiceOptions) (*Service, error) {
-	var strategy ApplyStrategy
-	if adapter != nil {
-		strategy = applyAdapterStrategy{adapter: adapter}
-	}
-	return NewServiceWithOptions(cfg, strategy, options)
 }
 
 type serviceSnapshot struct {

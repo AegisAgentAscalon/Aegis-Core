@@ -1,11 +1,12 @@
-// Manifest selection and artifact download orchestration.
+// Manifest selection and cached candidate orchestration.
 package updates
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -120,115 +121,40 @@ func (s *Service) selectionForSnapshot(ctx context.Context, snapshot serviceSnap
 	return selected, nil
 }
 
-func (s *Service) DownloadUpdate(ctx context.Context, version string) (DownloadResult, error) {
-	ctx = normalizeContext(ctx)
-	if err := contextError(ctx); err != nil {
-		return DownloadResult{}, err
-	}
-	s.workflowMu.Lock()
-	defer s.workflowMu.Unlock()
-	snapshot, err := s.operationSnapshot()
-	if err != nil {
-		return DownloadResult{}, err
-	}
-	selected, err := s.selectionForSnapshot(ctx, snapshot, version)
-	if err != nil {
-		return DownloadResult{}, err
-	}
-	artifact := selected.Artifact
-	if err := validateArtifact(snapshot.cfg, artifact); err != nil {
-		return DownloadResult{}, err
-	}
-	if err := secureMkdirAll(snapshot.store.downloadsDir()); err != nil {
-		return DownloadResult{}, ErrStorageUnavailable
-	}
-	temp, err := os.CreateTemp(snapshot.store.downloadsDir(), ".download-*")
-	if err != nil {
-		return DownloadResult{}, ErrStorageUnavailable
-	}
-	tmpPath := temp.Name()
-	defer os.Remove(tmpPath)
-	if err := temp.Close(); err != nil {
-		return DownloadResult{}, ErrStorageUnavailable
-	}
-	finalPath := filepath.Join(snapshot.store.downloadsDir(), artifact.Filename)
-	n, err := downloadArtifactFor(ctx, snapshot.cfg, snapshot.client, artifact, tmpPath)
-	if err != nil {
-		_ = os.Remove(tmpPath)
-		return DownloadResult{}, err
-	}
-	if (artifact.Size > 0 && n != artifact.Size) || (snapshot.cfg.Policy.MaximumArtifactSize > 0 && n > snapshot.cfg.Policy.MaximumArtifactSize) {
-		_ = os.Remove(tmpPath)
-		return DownloadResult{}, ErrDownloadFailed
-	}
+func (s *Service) selectArtifact(manifest Manifest) (Artifact, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.applyInProgress {
-		_ = os.Remove(tmpPath)
-		return DownloadResult{}, ErrApplyInProgress
-	}
-	if !s.currentLocked(snapshot) {
-		_ = os.Remove(tmpPath)
-		return DownloadResult{}, ErrUpdateStateChanged
-	}
-	if err := replaceFile(ctx, tmpPath, finalPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return DownloadResult{}, err
-	}
-	meta := downloadedUpdate{
-		SchemaVersion: schemaVersion, SourceKey: selected.SourceKey, PolicyKey: selected.PolicyKey,
-		Manifest: selected.Manifest, Artifact: artifact, ArtifactPath: finalPath,
-		BytesWritten: n, DownloadedAt: time.Now().UTC(),
-	}
-	if err := snapshot.store.writeDownloaded(ctx, meta); err != nil {
-		return DownloadResult{}, err
-	}
-	return DownloadResult{Version: selected.Manifest.Version, ArtifactName: artifact.Filename, BytesWritten: n, Message: "update downloaded"}, nil
+	cfg := cloneConfig(s.cfg)
+	s.mu.Unlock()
+	return selectArtifactForConfig(cfg, manifest)
 }
 
-func (s *Service) VerifyUpdate(ctx context.Context, version string) (VerifyResult, error) {
-	ctx = normalizeContext(ctx)
-	if err := contextError(ctx); err != nil {
-		return VerifyResult{}, err
+func selectArtifactForConfig(cfg AppConfig, manifest Manifest) (Artifact, error) {
+	if err := validateManifest(cfg, manifest); err != nil {
+		return Artifact{}, err
 	}
-	s.workflowMu.Lock()
-	defer s.workflowMu.Unlock()
-	snapshot, err := s.operationSnapshot()
-	if err != nil {
-		return VerifyResult{}, err
-	}
-	return s.verifyUpdateSnapshot(snapshot, version)
-}
-
-func (s *Service) verifyUpdateSnapshot(snapshot serviceSnapshot, version string) (VerifyResult, error) {
-	downloaded, err := snapshot.store.readDownloaded(context.Background())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return VerifyResult{}, ErrVerificationFailed
+	for _, artifact := range sortedArtifacts(manifest.Artifacts) {
+		if artifact.Platform != cfg.Platform || artifact.Architecture != cfg.Architecture {
+			continue
 		}
-		return VerifyResult{}, err
+		if err := validateArtifact(cfg, artifact); err != nil {
+			return Artifact{}, err
+		}
+		return artifact, nil
 	}
-	if version != "" && downloaded.Manifest.Version != strings.TrimSpace(version) {
-		return VerifyResult{}, ErrVerificationFailed
+	return Artifact{}, ErrNoCompatibleArtifact
+}
+
+func sameSelectedUpdate(a, b selectedUpdate) bool {
+	if a.SourceKey != b.SourceKey || a.PolicyKey != b.PolicyKey {
+		return false
 	}
-	if err := validateDownloadedUpdateFor(snapshot.cfg, snapshot.store, downloaded); err != nil {
-		return VerifyResult{}, err
-	}
-	got, err := fileSHA256(downloaded.ArtifactPath)
-	if err != nil || !strings.EqualFold(got, downloaded.Artifact.SHA256) {
-		return VerifyResult{}, ErrVerificationFailed
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.applyInProgress {
-		return VerifyResult{}, ErrApplyInProgress
-	}
-	if !s.currentLocked(snapshot) {
-		return VerifyResult{}, ErrUpdateStateChanged
-	}
-	verified := verifiedUpdate{SchemaVersion: schemaVersion, Downloaded: downloaded, VerifiedAt: time.Now().UTC()}
-	if err := snapshot.store.writeVerified(context.Background(), verified); err != nil {
-		return VerifyResult{}, err
-	}
-	return VerifyResult{Version: downloaded.Manifest.Version, ArtifactName: downloaded.Artifact.Filename, OK: true, Message: "update verified"}, nil
+	left, leftErr := json.Marshal(struct {
+		Manifest Manifest `json:"manifest"`
+		Artifact Artifact `json:"artifact"`
+	}{Manifest: a.Manifest, Artifact: a.Artifact})
+	right, rightErr := json.Marshal(struct {
+		Manifest Manifest `json:"manifest"`
+		Artifact Artifact `json:"artifact"`
+	}{Manifest: b.Manifest, Artifact: b.Artifact})
+	return leftErr == nil && rightErr == nil && bytes.Equal(left, right)
 }

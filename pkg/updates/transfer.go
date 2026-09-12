@@ -1,3 +1,4 @@
+// Artifact transfer through the configured local or HTTP source.
 package updates
 
 import (
@@ -10,13 +11,6 @@ import (
 	"strings"
 )
 
-func (s *Service) selectArtifact(manifest Manifest) (Artifact, error) {
-	s.mu.Lock()
-	cfg := cloneConfig(s.cfg)
-	s.mu.Unlock()
-	return selectArtifactForConfig(cfg, manifest)
-}
-
 func (s *Service) downloadArtifact(ctx context.Context, artifact Artifact, target string) (int64, error) {
 	s.mu.Lock()
 	cfg := cloneConfig(s.cfg)
@@ -26,22 +20,6 @@ func (s *Service) downloadArtifact(ctx context.Context, artifact Artifact, targe
 		client, _ = clientForSource(cfg, s.options)
 	}
 	return downloadArtifactFor(normalizeContext(ctx), cfg, client, artifact, target)
-}
-
-func selectArtifactForConfig(cfg AppConfig, manifest Manifest) (Artifact, error) {
-	if err := validateManifest(cfg, manifest); err != nil {
-		return Artifact{}, err
-	}
-	for _, artifact := range sortedArtifacts(manifest.Artifacts) {
-		if artifact.Platform != cfg.Platform || artifact.Architecture != cfg.Architecture {
-			continue
-		}
-		if err := validateArtifact(cfg, artifact); err != nil {
-			return Artifact{}, err
-		}
-		return artifact, nil
-	}
-	return Artifact{}, ErrNoCompatibleArtifact
 }
 
 func downloadArtifactFor(ctx context.Context, cfg AppConfig, client *http.Client, artifact Artifact, target string) (int64, error) {
@@ -101,25 +79,4 @@ func downloadArtifactFor(ctx context.Context, cfg AppConfig, client *http.Client
 	default:
 		return 0, ErrInvalidManifest
 	}
-}
-
-type applyAdapterStrategy struct {
-	adapter ApplyAdapter
-}
-
-func (s applyAdapterStrategy) Apply(ctx context.Context, staged StagedUpdate) (ApplyResult, error) {
-	release := Release{
-		Source:          staged.Source,
-		AppID:           staged.AppID,
-		Version:         staged.Version,
-		Channel:         staged.Channel,
-		Platform:        staged.Platform,
-		Architecture:    staged.Architecture,
-		RequiredRestart: staged.RequiredRestart,
-		ApplyBehavior:   staged.ApplyBehavior,
-		ArtifactName:    staged.ArtifactName,
-		ArtifactSHA256:  staged.SHA256,
-		ArtifactSize:    staged.Size,
-	}
-	return s.adapter.ApplyUpdate(ctx, staged.ArtifactPath, release)
 }
