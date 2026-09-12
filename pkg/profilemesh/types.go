@@ -1,17 +1,8 @@
-// Package profilemesh contains private implementation for profile-centered mesh metadata.
+// Package profilemesh owns profile-centered device, resource and snapshot metadata.
 package profilemesh
 
 import (
-	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"regexp"
-	"sort"
-	"strings"
 	"time"
 )
 
@@ -42,12 +33,6 @@ var (
 	ErrContextCanceled        = errors.New("profile mesh operation canceled")
 )
 
-var (
-	safeNamePattern    = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
-	safeIDPattern      = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$`)
-	fingerprintPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9:_-]{3,127}$`)
-)
-
 type AppConfig struct {
 	AppID       string
 	DisplayName string
@@ -66,8 +51,6 @@ type Clock interface {
 }
 
 type realClock struct{}
-
-func (realClock) Now() time.Time { return time.Now().UTC() }
 
 type BootstrapProfileRequest struct {
 	DisplayName string
@@ -300,205 +283,4 @@ type ProfileMeshOverview struct {
 	Issues                  []ProfileMeshIssue `json:"issues"`
 	Warnings                []ProfileMeshIssue `json:"warnings"`
 	Message                 string             `json:"message,omitempty"`
-}
-
-type deviceRegistryFile struct {
-	SchemaVersion int                   `json:"schema_version"`
-	Devices       []ProfileDeviceRecord `json:"devices"`
-	UpdatedAt     time.Time             `json:"updated_at"`
-}
-
-type resourceRegistryFile struct {
-	SchemaVersion int                     `json:"schema_version"`
-	Resources     []ProfileResourceRecord `json:"resources"`
-	UpdatedAt     time.Time               `json:"updated_at"`
-}
-
-func normalizeConfig(cfg AppConfig) AppConfig {
-	cfg.AppID = strings.TrimSpace(cfg.AppID)
-	cfg.DisplayName = strings.TrimSpace(cfg.DisplayName)
-	cfg.DataDir = strings.TrimSpace(cfg.DataDir)
-	cfg.Namespace = strings.TrimSpace(cfg.Namespace)
-	return cfg
-}
-
-func validateConfig(cfg AppConfig) error {
-	cfg = normalizeConfig(cfg)
-	switch {
-	case cfg.AppID == "":
-		return errors.New("app id is required")
-	case !validSafeName(cfg.AppID):
-		return ErrInvalidNamespace
-	case cfg.DisplayName == "":
-		return errors.New("display name is required")
-	case cfg.DataDir == "":
-		return errors.New("data dir is required")
-	case cfg.Namespace == "":
-		return errors.New("namespace is required")
-	case !validSafeName(cfg.Namespace):
-		return ErrInvalidNamespace
-	}
-	return nil
-}
-
-func defaultHostingConfig(now time.Time) ProfileHostingConfig {
-	return ProfileHostingConfig{HostingMode: HostingSingleProfileDevice, LocalCacheEnabled: true, OfflineBranchModePlanned: true, UpdatedAt: now.UTC()}
-}
-
-func validSafeName(s string) bool {
-	s = strings.TrimSpace(s)
-	if !safeNamePattern.MatchString(s) {
-		return false
-	}
-	if strings.Contains(s, "..") || strings.ContainsAny(s, `/\`) {
-		return false
-	}
-	upper := strings.ToUpper(s)
-	if i := strings.IndexByte(upper, '.'); i >= 0 {
-		upper = upper[:i]
-	}
-	reserved := map[string]bool{
-		"CON": true, "PRN": true, "AUX": true, "NUL": true,
-		"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
-		"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
-	}
-	return !reserved[upper]
-}
-
-func validID(s string) bool {
-	s = strings.TrimSpace(s)
-	return safeIDPattern.MatchString(s) && !strings.Contains(s, "..") && !strings.ContainsAny(s, `/\`)
-}
-
-func validFingerprint(s string) bool {
-	return fingerprintPattern.MatchString(strings.TrimSpace(s)) && !strings.Contains(strings.ToLower(s), "secret")
-}
-
-func randomID(prefix string, n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return prefix + base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-func contextError(ctx context.Context) error {
-	if ctx != nil && ctx.Err() != nil {
-		return ErrContextCanceled
-	}
-	return nil
-}
-
-func compactStrings(in []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, item := range in {
-		item = strings.TrimSpace(item)
-		if item == "" || strings.Contains(strings.ToLower(item), "secret") || seen[item] {
-			continue
-		}
-		seen[item] = true
-		out = append(out, item)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// Host IDs are authorization data: sorting and deduplication must not redact,
-// trim or drop entries. Validation rejects invalid references before storage.
-func uniqueHostIDs(in []string) []string {
-	seen := make(map[string]bool, len(in))
-	var out []string
-	for _, id := range in {
-		if !seen[id] {
-			seen[id] = true
-			out = append(out, id)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-func cloneMetadata(in map[string]string) map[string]string {
-	out := map[string]string{}
-	for k, v := range in {
-		k = strings.TrimSpace(k)
-		v = strings.TrimSpace(v)
-		lower := strings.ToLower(k + " " + v)
-		if k == "" || strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "private") {
-			continue
-		}
-		out[k] = v
-	}
-	return out
-}
-
-func snapshotFingerprint(snapshot ProfileMeshSnapshot) string {
-	canonical := normalizeProfileMeshSnapshot(snapshot)
-	canonical.SnapshotFingerprint = ""
-	sort.Slice(canonical.Devices, func(i, j int) bool {
-		return canonical.Devices[i].DeviceID < canonical.Devices[j].DeviceID
-	})
-	sort.Slice(canonical.Resources, func(i, j int) bool {
-		return canonical.Resources[i].ResourceID < canonical.Resources[j].ResourceID
-	})
-	sort.Slice(canonical.RelayHints, func(i, j int) bool {
-		return canonicalJSON(canonical.RelayHints[i]) < canonicalJSON(canonical.RelayHints[j])
-	})
-	sort.Slice(canonical.EndpointHints, func(i, j int) bool {
-		return canonicalJSON(canonical.EndpointHints[i]) < canonicalJSON(canonical.EndpointHints[j])
-	})
-	raw, _ := json.Marshal(canonical)
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])[:16]
-}
-
-func legacyProfileMeshSnapshotFingerprint(snapshot ProfileMeshSnapshot) string {
-	parts := []string{snapshot.AppID, snapshot.Namespace, snapshot.Profile.ProfileID}
-	for _, dev := range snapshot.Devices {
-		parts = append(parts, "d:"+dev.DeviceID+"="+dev.PublicKeyFingerprint+"="+string(dev.Status))
-	}
-	for _, resource := range snapshot.Resources {
-		parts = append(parts, "r:"+resource.ResourceID+"="+resource.ProfileOwnerID+"="+resource.CurrentHostDeviceID)
-	}
-	sort.Strings(parts)
-	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
-	return hex.EncodeToString(sum[:])[:16]
-}
-
-func normalizeProfileMeshSnapshot(snapshot ProfileMeshSnapshot) ProfileMeshSnapshot {
-	normalized := snapshot
-	normalized.Profile.ProfilePublicFingerprint = normalizeFingerprint(normalized.Profile.ProfilePublicFingerprint)
-	normalized.Devices = append([]ProfileDeviceRecord{}, snapshot.Devices...)
-	for i := range normalized.Devices {
-		normalized.Devices[i].PublicKeyFingerprint = normalizeFingerprint(normalized.Devices[i].PublicKeyFingerprint)
-		normalized.Devices[i].Capabilities = compactStrings(normalized.Devices[i].Capabilities)
-		normalized.Devices[i].MetadataSource = strings.TrimSpace(normalized.Devices[i].MetadataSource)
-	}
-	normalized.Resources = append([]ProfileResourceRecord{}, snapshot.Resources...)
-	for i := range normalized.Resources {
-		normalized.Resources[i].AllowedHostDeviceIDs = uniqueHostIDs(normalized.Resources[i].AllowedHostDeviceIDs)
-		normalized.Resources[i].Tags = compactStrings(normalized.Resources[i].Tags)
-		normalized.Resources[i].Metadata = cloneMetadata(normalized.Resources[i].Metadata)
-	}
-	normalized.RelayHints = append([]ProfileRelayHint{}, snapshot.RelayHints...)
-	for i := range normalized.RelayHints {
-		normalized.RelayHints[i].Capabilities = compactStrings(normalized.RelayHints[i].Capabilities)
-		normalized.RelayHints[i].Metadata = cloneMetadata(normalized.RelayHints[i].Metadata)
-	}
-	normalized.EndpointHints = append([]ProfileEndpointHint{}, snapshot.EndpointHints...)
-	for i := range normalized.EndpointHints {
-		normalized.EndpointHints[i].Capabilities = compactStrings(normalized.EndpointHints[i].Capabilities)
-		normalized.EndpointHints[i].Metadata = cloneMetadata(normalized.EndpointHints[i].Metadata)
-	}
-	return normalized
-}
-
-func normalizeFingerprint(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
-}
-
-func canonicalJSON(value any) string {
-	raw, _ := json.Marshal(value)
-	return string(raw)
 }

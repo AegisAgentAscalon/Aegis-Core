@@ -50,6 +50,13 @@ bodies. Auth separates sign-in orchestration, OAuth HTTP work, session CAS,
 legacy migration and file I/O. Device Link, Profile Mesh and Updates follow the
 same organization around their own responsibilities.
 
+W10 makes Profile Mesh's remaining boundaries explicit: public domain models in
+`types.go`, configuration and shared syntax in `config.go`, schema-specific
+snapshot encoding in `snapshot_codec.go`, and private registry envelopes in
+`store.go`. Sync DTOs stay in `sync_contracts.go`; their pure validation is in
+`sync_validation.go`, independent of service and storage operations. See the
+[W10 record](audits/2026-09-11-w10-profilemesh.md) for compatibility limits.
+
 Identity Gate already has a focused private state machine and mostly aliases
 its contract types. Its private engine remains deliberate: changing the type
 identity and engine at the same time as its open correctness repairs would add

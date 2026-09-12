@@ -1,7 +1,7 @@
 package profilemesh
 
 import (
-	"strings"
+	"slices"
 	"time"
 )
 
@@ -76,7 +76,7 @@ func validateResource(resource ProfileResourceRecord, profileID string, devices 
 		if err := validateHost(host, devices, now); err != nil {
 			return err
 		}
-		if len(resource.AllowedHostDeviceIDs) > 0 && !contains(resource.AllowedHostDeviceIDs, host) {
+		if len(resource.AllowedHostDeviceIDs) > 0 && !slices.Contains(resource.AllowedHostDeviceIDs, host) {
 			return ErrDeviceNotAllowed
 		}
 	}
@@ -168,19 +168,6 @@ func displayOrID(displayName, id string) string {
 		return displayName
 	}
 	return id
-}
-
-func stringsTrim(s string) string {
-	return strings.TrimSpace(s)
-}
-
-func contains(items []string, item string) bool {
-	for _, value := range items {
-		if value == item {
-			return true
-		}
-	}
-	return false
 }
 
 func isDeviceUsable(device ProfileDeviceRecord) bool {

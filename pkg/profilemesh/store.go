@@ -6,7 +6,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+type deviceRegistryFile struct {
+	SchemaVersion int                   `json:"schema_version"`
+	Devices       []ProfileDeviceRecord `json:"devices"`
+	UpdatedAt     time.Time             `json:"updated_at"`
+}
+
+type resourceRegistryFile struct {
+	SchemaVersion int                     `json:"schema_version"`
+	Resources     []ProfileResourceRecord `json:"resources"`
+	UpdatedAt     time.Time               `json:"updated_at"`
+}
 
 type store struct {
 	dir string

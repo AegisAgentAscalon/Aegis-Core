@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"sort"
+	"strings"
 )
 
 func (s *Service) RegisterProfileResource(ctx context.Context, req RegisterProfileResourceRequest) (ProfileResourceRecord, error) {
@@ -17,7 +18,7 @@ func (s *Service) RegisterProfileResource(ctx context.Context, req RegisterProfi
 	if err != nil {
 		return ProfileResourceRecord{}, err
 	}
-	req.ResourceID = stringsTrim(req.ResourceID)
+	req.ResourceID = strings.TrimSpace(req.ResourceID)
 	if req.HostingMode == "" {
 		req.HostingMode = ResourceHostingSingleHost
 	}

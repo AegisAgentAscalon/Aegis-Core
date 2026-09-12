@@ -19,7 +19,7 @@ func (s *Service) registerProfileDevice(ctx context.Context, req RegisterProfile
 	if _, err := s.store.readProfile(); err != nil {
 		return ProfileDeviceRecord{}, err
 	}
-	req.DeviceID = stringsTrim(req.DeviceID)
+	req.DeviceID = strings.TrimSpace(req.DeviceID)
 	req.PublicKeyFingerprint = normalizeFingerprint(req.PublicKeyFingerprint)
 	req.MetadataSource = strings.TrimSpace(req.MetadataSource)
 	if req.DeviceID == "" || !validID(req.DeviceID) || !validFingerprint(req.PublicKeyFingerprint) {
