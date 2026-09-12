@@ -585,10 +585,35 @@ func TestCompleteSignInProfileHTTPFailureStoresSafeLastError(t *testing.T) {
 	}
 }
 
+// providerDeadlineContext lets the test provider signal deadline expiry only
+// after HTTP begins, independent of time spent in local session I/O.
+type providerDeadlineContext struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func (ctx *providerDeadlineContext) Done() <-chan struct{} { return ctx.done }
+
+func (ctx *providerDeadlineContext) Err() error {
+	select {
+	case <-ctx.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func (ctx *providerDeadlineContext) expire() { ctx.once.Do(func() { close(ctx.done) }) }
+
 func TestProviderTimeoutCancelUnavailableAndMalformedResponses(t *testing.T) {
 	t.Run("token timeout", func(t *testing.T) {
+		ctx := &providerDeadlineContext{Context: context.Background(), done: make(chan struct{})}
+		defer ctx.expire()
 		slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			time.Sleep(200 * time.Millisecond)
+			_ = r.ParseForm() // Drain the POST body so connection cancellation is observed.
+			ctx.expire()
+			<-r.Context().Done()
 		}))
 		defer slow.Close()
 		cfg := testConfig(t)
@@ -598,11 +623,12 @@ func TestProviderTimeoutCancelUnavailableAndMalformedResponses(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		start, _ := svc.StartSignIn(context.Background())
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-		defer cancel()
+		start, err := svc.StartSignIn(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
 		_, err = svc.CompleteSignIn(ctx, CompleteSignInRequest{State: mustState(t, start.AuthorizationURL), Code: "code"})
-		if err == nil || !strings.Contains(err.Error(), "timed out") {
+		if err == nil || err.Error() != "token exchange timed out" {
 			t.Fatalf("expected timeout error, got %v", err)
 		}
 	})
