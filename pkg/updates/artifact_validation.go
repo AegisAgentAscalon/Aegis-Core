@@ -2,6 +2,7 @@ package updates
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -148,6 +149,13 @@ func validateDownloadedUpdateFor(cfg AppConfig, st *store, downloaded downloaded
 }
 
 func validateStagedUpdateReadyFor(ctx context.Context, cfg AppConfig, st *store, record stagedUpdateRecord, now time.Time) error {
+	if err := validateStagedMetadataFor(ctx, cfg, st, record, now); err != nil {
+		return err
+	}
+	return validateStagedBytes(ctx, st, record)
+}
+
+func validateStagedMetadataFor(ctx context.Context, cfg AppConfig, st *store, record stagedUpdateRecord, now time.Time) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
@@ -178,6 +186,15 @@ func validateStagedUpdateReadyFor(ctx context.Context, cfg AppConfig, st *store,
 	if staged.ArtifactPath == "" || !samePath(staged.ArtifactPath, expectedPath) {
 		return ErrStorageUnavailable
 	}
+	return contextError(ctx)
+}
+
+func validateStagedBytes(ctx context.Context, st *store, record stagedUpdateRecord) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	staged := record.StagedUpdate
+	expectedPath := st.stagedPathFor(record)
 	info, err := os.Lstat(expectedPath)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return ErrVerificationFailed
@@ -185,7 +202,10 @@ func validateStagedUpdateReadyFor(ctx context.Context, cfg AppConfig, st *store,
 	if info.Size() != staged.Size {
 		return ErrVerificationFailed
 	}
-	got, err := fileSHA256(expectedPath)
+	got, err := hashFile(ctx, expectedPath)
+	if errors.Is(err, ErrContextCanceled) {
+		return err
+	}
 	if err != nil || !strings.EqualFold(got, staged.SHA256) {
 		return ErrVerificationFailed
 	}

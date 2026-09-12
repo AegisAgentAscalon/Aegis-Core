@@ -2,6 +2,7 @@ package updates
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -111,6 +112,13 @@ func (r *stateRecord) addAuthority(m Manifest, a Artifact, source, policy string
 	if err != nil {
 		return authorityRef{}, err
 	}
+	// At most four manifests exist in this operation-owned graph. Reusing an
+	// equal value avoids repeated encoding/digests without a retained cache.
+	for id, existing := range r.Manifests {
+		if reflect.DeepEqual(existing, m) {
+			return authorityRef{Manifest: id, Artifact: index, SourceKey: source, PolicyKey: policy}, nil
+		}
+	}
 	id, err := recordDigest(m)
 	if err != nil {
 		return authorityRef{}, err
@@ -147,7 +155,10 @@ func stagedArtifact(r stagedUpdateRecord) (Artifact, error) {
 	return Artifact{}, ErrStorageUnavailable
 }
 
-func (s *store) encodeState(v *stateView) ([]byte, error) {
+func (s *store) encodeState(ctx context.Context, v *stateView) ([]byte, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	r := stateRecord{Version: 1, Manifests: map[string]Manifest{}, Transfers: map[string]transferRef{}, Blobs: map[string]blobRecord{}}
 	addBlob := func(id, filename, role string, size int64) error {
 		b, ok := v.blobs[id]
@@ -158,6 +169,9 @@ func (s *store) encodeState(v *stateView) ([]byte, error) {
 		return nil
 	}
 	addTransfer := func(d downloadedUpdate) (string, error) {
+		if err := contextError(ctx); err != nil {
+			return "", err
+		}
 		if d.SchemaVersion != schemaVersion || d.DownloadedAt.IsZero() || d.BytesWritten < 0 {
 			return "", ErrStorageUnavailable
 		}
@@ -247,7 +261,7 @@ func (s *store) encodeState(v *stateView) ([]byte, error) {
 	if len(r.Manifests) > 4 || len(r.Transfers) > 2 || len(r.Blobs) > 3 {
 		return nil, ErrStorageUnavailable
 	}
-	return encodeStateRecord(r)
+	return encodeStateRecord(ctx, r)
 }
 
 // Encode one manifest at a time, avoiding a second aggregate encoding of up to
@@ -263,9 +277,15 @@ func encodePrivateComponent(value any) ([]byte, error) {
 	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
 }
 
-func encodeStateRecord(r stateRecord) ([]byte, error) {
+func encodeStateRecord(ctx context.Context, r stateRecord) ([]byte, error) {
 	var buffer boundedStateBuffer
-	write := func(raw []byte) error { _, err := buffer.Write(raw); return err }
+	write := func(raw []byte) error {
+		if err := contextError(ctx); err != nil {
+			return err
+		}
+		_, err := buffer.Write(raw)
+		return err
+	}
 	if err := write([]byte(`{"manifests":{`)); err != nil {
 		return nil, err
 	}
@@ -336,17 +356,23 @@ func (b *boundedStateBuffer) Write(p []byte) (int, error) {
 	return b.Buffer.Write(p)
 }
 
-func (s *store) decodeState(raw []byte) (*stateView, error) {
-	if err := validateNativeStateJSON(raw); err != nil {
+func (s *store) decodeState(ctx context.Context, raw []byte) (*stateView, error) {
+	if err := validateNativeStateJSON(ctx, raw); err != nil {
 		return nil, err
 	}
 	var r stateRecord
-	d := json.NewDecoder(bytes.NewReader(raw))
+	d := json.NewDecoder(contextReader{ctx, bytes.NewReader(raw)})
 	d.DisallowUnknownFields()
 	if err := d.Decode(&r); err != nil {
+		if canceled := contextError(ctx); canceled != nil {
+			return nil, canceled
+		}
 		return nil, err
 	}
 	if err := d.Decode(new(any)); !errors.Is(err, io.EOF) {
+		if canceled := contextError(ctx); canceled != nil {
+			return nil, canceled
+		}
 		return nil, ErrStorageUnavailable
 	}
 	if r.Version != 1 || r.Manifests == nil || r.Transfers == nil || r.Blobs == nil || len(r.Manifests) > 4 || len(r.Transfers) > 2 || len(r.Blobs) > 3 ||
@@ -354,6 +380,9 @@ func (s *store) decodeState(raw []byte) (*stateView, error) {
 		return nil, ErrStorageUnavailable
 	}
 	for id, m := range r.Manifests {
+		if err := contextError(ctx); err != nil {
+			return nil, err
+		}
 		digest, err := recordDigest(m)
 		if err != nil || digest != id || !manifestShape(m) {
 			return nil, ErrStorageUnavailable
@@ -365,8 +394,13 @@ func (s *store) decodeState(raw []byte) (*stateView, error) {
 		}
 	}
 	v := &stateView{blobs: r.Blobs}
+	usedManifests, usedTransfers, usedBlobs := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	canonicalTransfers := map[string]bool{}
 	transfers := map[string]downloadedUpdate{}
 	for id, entry := range r.Transfers {
+		if err := contextError(ctx); err != nil {
+			return nil, err
+		}
 		digest, err := recordDigest(entry)
 		if err != nil || digest != id || entry.DownloadedAt.IsZero() {
 			return nil, ErrStorageUnavailable
@@ -375,10 +409,24 @@ func (s *store) decodeState(raw []byte) (*stateView, error) {
 		if err != nil {
 			return nil, err
 		}
+		// The historical reachability encoder selected the first equal artifact.
+		// Preserve its rejection of two transfers that collapse to that identity,
+		// while still accepting a lone non-first reference as before.
+		canonicalID := id
+		if index, _ := artifactIndex(m, a); index != entry.Artifact {
+			canonical := entry
+			canonical.Artifact = index
+			canonicalID, err = recordDigest(canonical)
+			if err != nil {
+				return nil, err
+			}
+		}
+		canonicalTransfers[canonicalID] = true
 		b, ok := r.Blobs[entry.Blob]
 		if !ok || b.Role != "download" || b.Filename != a.Filename || b.Size != entry.BytesWritten {
 			return nil, ErrStorageUnavailable
 		}
+		usedManifests[entry.Manifest], usedBlobs[entry.Blob] = true, true
 		transfers[id] = downloadedUpdate{blobID: entry.Blob, SchemaVersion: schemaVersion, SourceKey: entry.SourceKey, PolicyKey: entry.PolicyKey,
 			Manifest: m, Artifact: a, ArtifactPath: s.blobPath(entry.Blob, a.Filename), BytesWritten: entry.BytesWritten, DownloadedAt: entry.DownloadedAt}
 	}
@@ -393,9 +441,11 @@ func (s *store) decodeState(raw []byte) (*stateView, error) {
 			if err != nil || item.UpdatedAt.IsZero() {
 				return nil, ErrStorageUnavailable
 			}
+			usedManifests[item.Manifest] = true
 			v.selected = stored(selectedUpdate{SchemaVersion: schemaVersion, SourceKey: item.SourceKey, PolicyKey: item.PolicyKey, Manifest: m, Artifact: a, UpdatedAt: item.UpdatedAt})
 		}
 		if r.Downloaded != "" {
+			usedTransfers[r.Downloaded] = true
 			item, ok := transfers[r.Downloaded]
 			if !ok {
 				return nil, ErrStorageUnavailable
@@ -403,6 +453,7 @@ func (s *store) decodeState(raw []byte) (*stateView, error) {
 			v.downloaded = stored(item)
 		}
 		if r.Verified != nil {
+			usedTransfers[r.Verified.Transfer] = true
 			item, ok := transfers[r.Verified.Transfer]
 			if !ok || r.Verified.VerifiedAt.IsZero() {
 				return nil, ErrStorageUnavailable
@@ -419,6 +470,7 @@ func (s *store) decodeState(raw []byte) (*stateView, error) {
 		if !ok || b.Role != "staged" || b.Filename != a.Filename || b.Size != item.Size || (a.Size > 0 && item.Size != a.Size) {
 			return nil, ErrStorageUnavailable
 		}
+		usedManifests[item.Manifest], usedBlobs[item.Blob] = true, true
 		hash := a.SHA256
 		if item.SHA256 != "" {
 			if !strings.EqualFold(item.SHA256, a.SHA256) {
@@ -437,14 +489,19 @@ func (s *store) decodeState(raw []byte) (*stateView, error) {
 		}
 		v.lifecycle = stored(*r.Lifecycle)
 	}
-	// Reject hidden unreferenced records as well as missing graph edges.
-	encoded, err := s.encodeState(v)
-	if err != nil {
+	// Every edge was checked above. Reject hidden records directly without
+	// decoding another materialized graph just to compare its inventories.
+	if len(usedManifests) != len(r.Manifests) || len(usedTransfers) != len(r.Transfers) || len(canonicalTransfers) != len(r.Transfers) || len(usedBlobs) != len(r.Blobs) {
+		return nil, ErrStorageUnavailable
+	}
+	// Raw JSON can be smaller than its canonical encoding (for example literal
+	// U+2028 versus its JSON escape). Preserve the historical publishability
+	// bound even when the input itself fits; no second JSON decode is needed.
+	if _, err := s.encodeState(ctx, v); err != nil {
 		return nil, err
 	}
-	var reachable stateRecord
-	if json.Unmarshal(encoded, &reachable) != nil || len(reachable.Manifests) != len(r.Manifests) || len(reachable.Transfers) != len(r.Transfers) || len(reachable.Blobs) != len(r.Blobs) {
-		return nil, ErrStorageUnavailable
+	if err := contextError(ctx); err != nil {
+		return nil, err
 	}
 	return v, nil
 }

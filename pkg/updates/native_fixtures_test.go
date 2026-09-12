@@ -14,6 +14,7 @@ import (
 )
 
 // W13 encoding/IO adapters are fixture-only after the production migration.
+func fileSHA256(path string) (string, error) { return hashFile(context.Background(), path) }
 func readJSON(ctx context.Context, path string, out any) error {
 	err := filepersist.ReadJSON(ctx, path, maxMetadataBytes, out)
 	if errors.Is(err, os.ErrNotExist) {

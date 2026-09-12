@@ -63,64 +63,91 @@ func (p *FileObjectProvider) legacyObjectPath(ref CloudObjectRef) string {
 }
 
 func (p *FileObjectProvider) findObjectByIdentityLocked(ctx context.Context, profileNamespace string, kind CloudObjectKind, objectID string) (CloudObjectRef, bool, error) {
-	refs, err := p.objectRefsLocked(ctx)
+	var found CloudObjectRef
+	matched := false
+	err := p.scanObjectsLocked(ctx, func(ref CloudObjectRef) {
+		if ref.ProfileNamespace == profileNamespace && ref.Kind == kind && ref.ObjectID == objectID {
+			found, matched = ref, true
+		}
+	})
 	if err != nil {
 		return CloudObjectRef{}, false, err
 	}
-	for _, ref := range refs {
-		if ref.ProfileNamespace == profileNamespace && ref.Kind == kind && ref.ObjectID == objectID {
-			return ref, true, nil
-		}
+	return found, matched, nil
+}
+
+func (p *FileObjectProvider) countObjects(ctx context.Context) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.ensureLocked(ctx); err != nil {
+		return 0, err
 	}
-	return CloudObjectRef{}, false, nil
+	count := 0
+	err := p.scanObjectsLocked(ctx, func(CloudObjectRef) { count++ })
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // Legacy files are read-only. Exact embedded identities, never their lossy old
 // filenames, determine ownership. Conflicting surviving records fail closed.
-func (p *FileObjectProvider) objectRefsLocked(ctx context.Context) ([]CloudObjectRef, error) {
-	var refs []CloudObjectRef
-	seen := make(map[string]CloudObjectRef)
-	for _, dir := range []string{p.objectsDir(), filepath.Join(p.legacyRoot(), "objects")} {
+// Internal visitors cannot stop the scan: even a found object must not hide
+// later corrupt bodies, malformed foreign legacy records, or identity conflicts.
+func (p *FileObjectProvider) scanObjectsLocked(ctx context.Context, visit func(CloudObjectRef)) error {
+	type identity struct {
+		kind CloudObjectKind
+		id   string
+	}
+	seen := make(map[identity]CloudObjectRef)
+	objectsDir := p.objectsDir()
+	for _, dir := range []string{objectsDir, filepath.Join(p.legacyRoot(), "objects")} {
+		if ctx != nil && ctx.Err() != nil {
+			return sanitizeCloudError(ctx.Err())
+		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, ErrCloudProviderUnavailable
+			return ErrCloudProviderUnavailable
 		}
 		for _, entry := range entries {
+			if ctx != nil && ctx.Err() != nil {
+				return sanitizeCloudError(ctx.Err())
+			}
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 				continue
 			}
 			var file objectFile
 			if err := readJSONFile(ctx, filepath.Join(dir, entry.Name()), &file); err != nil {
-				return nil, ErrCloudStoreCorrupt
+				return ErrCloudStoreCorrupt
 			}
 			if err := ValidateCloudObjectRef(file.Ref); err != nil || cloudObjectHash(file.Body) != file.Ref.Hash || len(file.Body) != file.Ref.SizeBytes {
-				return nil, ErrCloudStoreCorrupt
+				return ErrCloudStoreCorrupt
 			}
 			if file.Ref.ProfileNamespace != p.namespace {
-				if dir == p.objectsDir() {
-					return nil, ErrCloudStoreCorrupt
+				if dir == objectsDir {
+					return ErrCloudStoreCorrupt
 				}
 				continue
 			}
-			if dir == p.objectsDir() {
+			if dir == objectsDir {
 				expected, _ := p.objectPath(file.Ref)
 				if entry.Name() != filepath.Base(expected) {
-					return nil, ErrCloudStoreCorrupt
+					return ErrCloudStoreCorrupt
 				}
 			}
-			key := cloudStorageKey("identity", string(file.Ref.Kind), file.Ref.ObjectID)
+			key := identity{file.Ref.Kind, file.Ref.ObjectID}
 			if prior, ok := seen[key]; ok {
 				if !sameCloudObjectRef(prior, file.Ref) {
-					return nil, ErrCloudObjectConflict
+					return ErrCloudObjectConflict
 				}
 				continue
 			}
 			seen[key] = file.Ref
-			refs = append(refs, file.Ref)
+			visit(file.Ref)
 		}
 	}
-	return refs, nil
+	return nil
 }

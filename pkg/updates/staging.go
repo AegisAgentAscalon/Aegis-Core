@@ -47,7 +47,10 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 	if err := validateDownloadedUpdateFor(snapshot.cfg, snapshot.store, verified.Downloaded); err != nil {
 		return StageResult{}, err
 	}
-	got, err := fileSHA256(verified.Downloaded.ArtifactPath)
+	got, err := hashFile(ctx, verified.Downloaded.ArtifactPath)
+	if errors.Is(err, ErrContextCanceled) {
+		return StageResult{}, err
+	}
 	if err != nil || !strings.EqualFold(got, verified.Downloaded.Artifact.SHA256) {
 		return StageResult{}, ErrVerificationFailed
 	}
@@ -102,13 +105,7 @@ func (s *Service) StageUpdate(ctx context.Context, version string) (StageResult,
 }
 
 func readyStaged(ctx context.Context, snapshot serviceSnapshot, now time.Time) (stagedUpdateRecord, error) {
-	if _, err := snapshot.view.staged.read(); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return stagedUpdateRecord{}, ErrStagedUpdateNotFound
-		}
-		return stagedUpdateRecord{}, ErrStorageUnavailable
-	}
-	staged, err := snapshot.view.stagedFor(snapshot.cfg)
+	staged, err := stagedForSnapshot(snapshot)
 	if err != nil {
 		return stagedUpdateRecord{}, err
 	}
@@ -116,6 +113,16 @@ func readyStaged(ctx context.Context, snapshot serviceSnapshot, now time.Time) (
 		return stagedUpdateRecord{}, err
 	}
 	return staged, nil
+}
+
+func stagedForSnapshot(snapshot serviceSnapshot) (stagedUpdateRecord, error) {
+	if _, err := snapshot.view.staged.read(); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return stagedUpdateRecord{}, ErrStagedUpdateNotFound
+		}
+		return stagedUpdateRecord{}, ErrStorageUnavailable
+	}
+	return snapshot.view.stagedFor(snapshot.cfg)
 }
 
 func (s *Service) DescribeStagedUpdate(ctx context.Context) (StagedUpdateSummary, error) {

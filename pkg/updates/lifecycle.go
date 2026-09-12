@@ -54,21 +54,40 @@ func (s *Service) RecordPackageHandoff(ctx context.Context, request PackageHando
 	snapshot := op.snapshot
 
 	now := time.Now().UTC()
-	record, staged, _, err := lifecycleFor(ctx, snapshot, now)
+	stagedRecord, err := stagedForSnapshot(snapshot)
 	if err != nil {
 		return PackageHandoff{}, err
 	}
+	if err := validateStagedMetadataFor(ctx, snapshot.cfg, snapshot.store, stagedRecord, now); err != nil {
+		return PackageHandoff{}, err
+	}
+	// Successful publication hashes at its final authority boundary. Rejected
+	// requests retain byte-validation precedence; duplicate reveals also rehash.
+	reject := func(err error) (PackageHandoff, error) {
+		if byteErr := validateStagedBytes(ctx, snapshot.store, stagedRecord); byteErr != nil {
+			return PackageHandoff{}, byteErr
+		}
+		return PackageHandoff{}, err
+	}
+	staged := stagedRecord.StagedUpdate
+	record, _, err := lifecycleRecordFor(snapshot, staged, now)
+	if err != nil {
+		return reject(err)
+	}
 	fingerprint := lifecycleFingerprint("handoff", request.ConsumerID)
 	if duplicate, err := lifecycleDuplicate(record, request.IdempotencyKey, fingerprint); err != nil {
-		return PackageHandoff{}, err
+		return reject(err)
 	} else if duplicate {
+		if err := validateStagedBytes(ctx, snapshot.store, stagedRecord); err != nil {
+			return PackageHandoff{}, err
+		}
 		return PackageHandoff{Envelope: cloneLifecycleEnvelope(record.Envelope), ArtifactPath: staged.ArtifactPath}, nil
 	}
 	if request.ExpectedRevision != record.Envelope.Revision {
-		return PackageHandoff{}, ErrLifecycleRevisionStale
+		return reject(ErrLifecycleRevisionStale)
 	}
 	if record.Envelope.Phase != LifecyclePhaseStaged {
-		return PackageHandoff{}, ErrLifecycleTransition
+		return reject(ErrLifecycleTransition)
 	}
 
 	at := lifecycleTimestamp(now)
@@ -86,7 +105,7 @@ func (s *Service) RecordPackageHandoff(ctx context.Context, request PackageHando
 	rememberLifecycleIdempotency(&record, request.IdempotencyKey, fingerprint)
 	snapshot.view.lifecycle = stored(record)
 	if err := snapshot.store.publish(ctx, op.guard, snapshot.cfg, snapshot.view, true); err != nil {
-		return PackageHandoff{}, err
+		return reject(err)
 	}
 	return PackageHandoff{Envelope: cloneLifecycleEnvelope(record.Envelope), ArtifactPath: snapshot.view.staged.value.ArtifactPath}, nil
 }
@@ -209,14 +228,19 @@ func lifecycleFor(ctx context.Context, snapshot serviceSnapshot, now time.Time) 
 		return lifecycleRecord{}, StagedUpdate{}, false, err
 	}
 	staged := stagedRecord.StagedUpdate
+	record, missing, err := lifecycleRecordFor(snapshot, staged, now)
+	return record, staged, missing, err
+}
+
+func lifecycleRecordFor(snapshot serviceSnapshot, staged StagedUpdate, now time.Time) (lifecycleRecord, bool, error) {
 	record, err := snapshot.view.lifecycle.read()
 	if errors.Is(err, os.ErrNotExist) {
-		return newLifecycleRecord(staged, now), staged, true, nil
+		return newLifecycleRecord(staged, now), true, nil
 	}
 	if err != nil || validateLifecycleRecord(record, staged) != nil {
-		return lifecycleRecord{}, StagedUpdate{}, false, ErrStorageUnavailable
+		return lifecycleRecord{}, false, ErrStorageUnavailable
 	}
-	return record, staged, false, nil
+	return record, false, nil
 }
 
 func checkLifecycleBeforeRestage(ctx context.Context, snapshot serviceSnapshot, candidate stagedUpdateRecord, now time.Time) (StageResult, bool, error) {

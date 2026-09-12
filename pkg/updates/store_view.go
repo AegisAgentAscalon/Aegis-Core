@@ -86,8 +86,11 @@ func (s *store) load(ctx context.Context, guard *generation.Guard) (*stateView, 
 	if snapshot.Token == "" {
 		return s.readLegacy(ctx), nil
 	}
-	v, err := s.decodeState(snapshot.Data)
+	v, err := s.decodeState(ctx, snapshot.Data)
 	if err != nil {
+		if canceled := contextError(ctx); canceled != nil {
+			return nil, canceled
+		}
 		return nil, ErrStorageUnavailable
 	}
 	v.token = snapshot.Token
@@ -210,12 +213,15 @@ func (s *store) publish(ctx context.Context, guard *generation.Guard, cfg AppCon
 			return err
 		}
 	}
-	data, err := s.encodeState(view)
+	data, err := s.encodeState(ctx, view)
 	if err != nil {
 		return persistenceError(err)
 	}
 	// Validate the exact bounded representation that will become authoritative.
-	if _, err := s.decodeState(data); err != nil {
+	if _, err := s.decodeState(ctx, data); err != nil {
+		if canceled := contextError(ctx); canceled != nil {
+			return canceled
+		}
 		return ErrStorageUnavailable
 	}
 	if reveal {

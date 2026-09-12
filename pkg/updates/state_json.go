@@ -2,6 +2,7 @@ package updates
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,20 +15,29 @@ import (
 // case-insensitive struct matching and null-to-zero conversion are not the
 // native storage grammar. Legacy/provider/public decoding stays unchanged.
 // Walk tokens without retaining another tree of potentially large manifests.
-func validateNativeStateJSON(raw []byte) error {
+func validateNativeStateJSON(ctx context.Context, raw []byte) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if int64(len(raw)) > maxMetadataBytes {
 		return ErrStorageUnavailable
 	}
-	d := json.NewDecoder(bytes.NewReader(raw))
+	d := json.NewDecoder(contextReader{ctx, bytes.NewReader(raw)})
 	d.UseNumber()
 	v := nativeJSONValidator{decoder: d, fields: make(map[reflect.Type]map[string]nativeJSONField)}
 	if err := v.value(reflect.TypeOf(stateRecord{})); err != nil {
+		if canceled := contextError(ctx); canceled != nil {
+			return canceled
+		}
 		return ErrStorageUnavailable
 	}
 	if _, err := d.Token(); !errors.Is(err, io.EOF) {
+		if canceled := contextError(ctx); canceled != nil {
+			return canceled
+		}
 		return ErrStorageUnavailable
 	}
-	return nil
+	return contextError(ctx)
 }
 
 type nativeJSONField struct {

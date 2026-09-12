@@ -80,9 +80,10 @@ func (m *SyncManager) now() time.Time {
 }
 
 func (m *SyncManager) recordExchange() {
+	now := m.now()
 	m.lastMu.Lock()
 	defer m.lastMu.Unlock()
-	m.last = m.now()
+	m.last = now
 }
 
 func (m *SyncManager) lastExchangeAt() time.Time {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/AegisAgentAscalon/aegis-core/internal/filelock"
+	"github.com/AegisAgentAscalon/aegis-core/internal/filepersist"
 	"github.com/AegisAgentAscalon/aegis-core/internal/generation"
 )
 
@@ -80,14 +81,14 @@ func newStore(cfg AppConfig) (*store, error) {
 		return nil, ErrStorageUnavailable
 	}
 	st := &store{dir: dir, generations: generations}
-	gate, err := filelock.TryAcquire(context.Background(), st.applyPath())
-	if err != nil && !errors.Is(err, filelock.ErrBusy) {
+	// Creating the sentinel must not briefly claim that an apply is executing.
+	// This checked open neither takes a gate nor changes an existing file.
+	sentinel, err := filepersist.OpenOrCreateRegular(context.Background(), st.applyPath())
+	if err != nil {
 		return nil, persistenceError(err)
 	}
-	if gate != nil {
-		if err := gate.Close(); err != nil {
-			return nil, persistenceError(err)
-		}
+	if err := sentinel.Close(); err != nil {
+		return nil, persistenceError(err)
 	}
 	return st, nil
 }
@@ -119,7 +120,7 @@ func persistenceError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, ErrContextCanceled) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return ErrContextCanceled
 	}
 	return ErrStorageUnavailable

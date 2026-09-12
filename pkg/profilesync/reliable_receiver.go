@@ -135,6 +135,7 @@ func (r *ReliableSyncReceiver) processPending(ctx context.Context, local profile
 	if err != nil {
 		return err
 	}
+	view := newInboxView(state)
 	processed := 0
 	for _, entry := range state.Entries {
 		if entry.State != "pending" {
@@ -144,38 +145,39 @@ func (r *ReliableSyncReceiver) processPending(ctx context.Context, local profile
 			break
 		}
 		processed++
-		if err := r.processOne(ctx, entry.ReceiptID, local, result); err != nil {
+		if err := r.processOne(ctx, &view, entry.ReceiptID, local, result); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (r *ReliableSyncReceiver) processOne(ctx context.Context, id string, local profilemesh.SignedProfileSnapshot, result *PullResult) error {
+func (r *ReliableSyncReceiver) processOne(ctx context.Context, view *inboxView, id string, local profilemesh.SignedProfileSnapshot, result *PullResult) error {
 	for attempt := 0; attempt < 3; attempt++ {
-		state, err := r.cfg.Inbox.read(ctx)
-		if err != nil {
+		if err := storeContextError(ctx); err != nil {
 			return err
 		}
-		var entry *inboxEntry
-		for j := range state.Entries {
-			if state.Entries[j].ReceiptID == id {
-				entry = &state.Entries[j]
-				break
+		if attempt > 0 {
+			state, err := r.cfg.Inbox.read(ctx)
+			if err != nil {
+				return err
 			}
+			*view = newInboxView(state)
 		}
-		if entry == nil || entry.State != "pending" {
+		index, found := view.positions[id]
+		if !found || view.state.Entries[index].State != "pending" {
 			return nil
 		}
-		out, delta, err := r.classify(ctx, state, *entry, local)
+		out, delta, err := r.classify(ctx, view, view.state.Entries[index], local)
 		if err != nil {
 			return err
 		}
-		committed, err := r.cfg.Inbox.commit(ctx, state.Revision, out)
+		committed, err := r.cfg.Inbox.commit(ctx, view.state.Revision, out)
 		if err != nil {
 			return err
 		}
 		if committed {
+			view.accepted(out)
 			result.ReceivedSnapshots += delta.ReceivedSnapshots
 			result.ReceivedProposals += delta.ReceivedProposals
 			result.Rejected += delta.Rejected
@@ -191,7 +193,7 @@ type inboxClock struct{ at time.Time }
 
 func (c inboxClock) Now() time.Time { return c.at }
 
-func (r *ReliableSyncReceiver) classify(ctx context.Context, state inboxState, entry inboxEntry, local profilemesh.SignedProfileSnapshot) (inboxEntry, PullResult, error) {
+func (r *ReliableSyncReceiver) classify(ctx context.Context, view *inboxView, entry inboxEntry, local profilemesh.SignedProfileSnapshot) (inboxEntry, PullResult, error) {
 	var result PullResult
 	entry.ProcessedAt = r.now()
 	if entry.ProcessedAt.IsZero() {
@@ -211,7 +213,7 @@ func (r *ReliableSyncReceiver) classify(ctx context.Context, state inboxState, e
 		return reject("expired")
 	}
 	var decoded SyncEnvelope
-	if json.Unmarshal(carrier.Payload, &decoded) != nil || carrier.MessageKind != relay.MessageKindOpaque || validateEnvelopeHeaderAt(decoded, state.Mailbox.Namespace, entry.ReceivedAt) != nil || decoded.SourceDeviceID != carrier.SourceDeviceID || decoded.MessageID != carrier.MessageID || decoded.ProfileNamespace != carrier.Namespace {
+	if json.Unmarshal(carrier.Payload, &decoded) != nil || carrier.MessageKind != relay.MessageKindOpaque || validateEnvelopeHeaderAt(decoded, view.state.Mailbox.Namespace, entry.ReceivedAt) != nil || decoded.SourceDeviceID != carrier.SourceDeviceID || decoded.MessageID != carrier.MessageID || decoded.ProfileNamespace != carrier.Namespace {
 		return reject("invalid_envelope")
 	}
 	if kind := carrier.Metadata["aegis_profile_sync_kind"]; kind != "" && kind != string(decoded.Kind) {
@@ -234,44 +236,36 @@ func (r *ReliableSyncReceiver) classify(ctx context.Context, state inboxState, e
 	if digest == "" {
 		return reject("invalid_envelope")
 	}
-	view := NewMemoryMetadataStore()
-	for _, old := range state.Entries {
-		if old.Snapshot != nil {
-			if decoded.Kind == EnvelopeKindSnapshot && old.Snapshot.Snapshot.Metadata.SnapshotID == key {
-				if old.DomainDigest == digest {
-					return reject("duplicate")
-				}
-				return reject("domain_conflict")
-			}
-			view.remoteSnapshots[old.Snapshot.Snapshot.Metadata.SnapshotID] = *old.Snapshot
-		}
-		if old.Proposal != nil {
-			if decoded.Kind == EnvelopeKindProposal && old.Proposal.Proposal.ProposalID == key {
-				if old.DomainDigest == digest {
-					return reject("duplicate")
-				}
-				return reject("domain_conflict")
-			}
-			view.remoteProposals[old.Proposal.Proposal.ProposalID] = *old.Proposal
-		}
+	digests := view.snapshotDigests
+	if decoded.Kind == EnvelopeKindProposal {
+		digests = view.proposalDigests
 	}
-	manager := SyncManager{cfg: SyncConfig{Enabled: true, ProfileNamespace: state.Mailbox.Namespace, LocalDeviceID: state.Mailbox.OwnerDeviceID}, snapshots: view, proposals: view, trust: r.cfg.Trust, clock: inboxClock{at: entry.ProcessedAt}}
+	if previous, found := digests[key]; found {
+		if previous == digest {
+			return reject("duplicate")
+		}
+		return reject("domain_conflict")
+	}
+	manager := SyncManager{cfg: SyncConfig{Enabled: true, ProfileNamespace: view.state.Mailbox.Namespace, LocalDeviceID: view.state.Mailbox.OwnerDeviceID}, trust: r.cfg.Trust, clock: inboxClock{at: entry.ProcessedAt}}
 	var err error
 	switch decoded.Kind {
 	case EnvelopeKindSnapshot:
-		err = manager.pullSnapshot(ctx, decoded, local, &result)
-		if result.ReceivedSnapshots == 1 {
-			record := view.remoteSnapshots[key]
+		err = manager.pullSnapshotInto(ctx, decoded, local, &result, func(id string) (bool, error) {
+			_, found := view.snapshotDigests[id]
+			return found, storeContextError(ctx)
+		}, func(record RemoteSnapshotRecord) error {
 			record.ReceivedAt = entry.ReceivedAt
 			entry.Snapshot = &record
-		}
+			return storeContextError(ctx)
+		})
 	case EnvelopeKindProposal:
-		err = manager.pullProposal(ctx, decoded, local, &result)
-		if result.ReceivedProposals == 1 {
-			record := view.remoteProposals[key]
+		err = manager.pullProposalInto(ctx, decoded, local, &result, func(proposal profilemesh.ProfileChangeProposal) (proposalReviewClassification, error) {
+			return classifyProposalRecords(view.proposals, proposal, local.Metadata.SnapshotID), storeContextError(ctx)
+		}, func(record RemoteProposalRecord) error {
 			record.ReceivedAt = entry.ReceivedAt
 			entry.Proposal = &record
-		}
+			return storeContextError(ctx)
+		})
 	}
 	if err != nil {
 		return entry, result, err

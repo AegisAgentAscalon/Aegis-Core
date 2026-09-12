@@ -43,7 +43,7 @@ func TestGenerationNativeRequiresExactPresentFields(t *testing.T) {
 		replaceTestManifest(t, r, id, m)
 	})
 	base := testNativeSnapshot(t, svc.store).Data
-	if _, err := svc.store.decodeState(base); err != nil {
+	if _, err := svc.store.decodeState(context.Background(), base); err != nil {
 		t.Fatalf("canonical schema-0 native fixture: %v", err)
 	}
 	fields := []struct {
@@ -90,7 +90,7 @@ func TestGenerationNativeRequiresExactPresentFields(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := svc.store.decodeState(raw); !errors.Is(err, ErrStorageUnavailable) {
+				if _, err := svc.store.decodeState(context.Background(), raw); !errors.Is(err, ErrStorageUnavailable) {
 					t.Fatalf("ambiguous/missing/null native member accepted: %v", err)
 				}
 			})
@@ -107,7 +107,7 @@ func TestGenerationNativeRequiresExactPresentFields(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := svc.store.decodeState(raw); !errors.Is(err, ErrStorageUnavailable) {
+			if _, err := svc.store.decodeState(context.Background(), raw); !errors.Is(err, ErrStorageUnavailable) {
 				t.Fatalf("null reference accepted: %v", err)
 			}
 		})
@@ -123,7 +123,7 @@ func TestGenerationNativeRequiresExactPresentFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := svc.store.decodeState(raw)
+	v, err := svc.store.decodeState(context.Background(), raw)
 	if err != nil {
 		t.Fatal("required nullable slice rejected", err)
 	}
@@ -132,7 +132,7 @@ func TestGenerationNativeRequiresExactPresentFields(t *testing.T) {
 		t.Fatal("nil/empty slices or case-sensitive free-form keys changed")
 	}
 	duplicate := append([]byte(`{"version":1,`), base[1:]...)
-	if _, err := svc.store.decodeState(duplicate); !errors.Is(err, ErrStorageUnavailable) {
+	if _, err := svc.store.decodeState(context.Background(), duplicate); !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatal("exact duplicate key accepted", err)
 	}
 	// Exercise public fail-closed reading through a correctly committed envelope.

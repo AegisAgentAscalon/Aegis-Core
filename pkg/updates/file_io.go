@@ -7,7 +7,6 @@ import (
 	"errors"
 	"github.com/AegisAgentAscalon/aegis-core/internal/filepersist"
 	"io"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -52,14 +51,21 @@ func (r downloadReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
+func hashFile(ctx context.Context, path string) (string, error) {
+	f, err := filepersist.OpenRegular(ctx, path)
 	if err != nil {
+		if canceled := contextError(ctx); canceled != nil {
+			return "", canceled
+		}
 		return "", ErrVerificationFailed
 	}
-	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	_, readErr := io.Copy(h, contextReader{ctx, f})
+	err = errors.Join(readErr, f.Close())
+	if canceled := contextError(ctx); canceled != nil {
+		return "", canceled
+	}
+	if err != nil {
 		return "", ErrVerificationFailed
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil

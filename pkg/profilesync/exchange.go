@@ -176,6 +176,14 @@ func (m *SyncManager) Exchange(ctx context.Context) (ExchangeResult, error) {
 }
 
 func (m *SyncManager) pullSnapshot(ctx context.Context, envelope SyncEnvelope, local profilemesh.SignedProfileSnapshot, result *PullResult) error {
+	return m.pullSnapshotInto(ctx, envelope, local, result,
+		func(id string) (bool, error) { return duplicateSnapshot(ctx, m.snapshots, id) },
+		func(record RemoteSnapshotRecord) error { return m.snapshots.SaveRemoteSnapshot(ctx, record) })
+}
+
+// The ordinary adapter observes its provider on each item. Reliable ingress
+// supplies only an owned revision view and still fences publication separately.
+func (m *SyncManager) pullSnapshotInto(ctx context.Context, envelope SyncEnvelope, local profilemesh.SignedProfileSnapshot, result *PullResult, duplicateID func(string) (bool, error), save func(RemoteSnapshotRecord) error) error {
 	if envelope.Snapshot == nil {
 		result.Rejected++
 		result.Issues = append(result.Issues, syncIssue("missing_snapshot", ErrSnapshotRejected.Error(), true))
@@ -191,7 +199,7 @@ func (m *SyncManager) pullSnapshot(ctx context.Context, envelope SyncEnvelope, l
 		}
 		return nil
 	}
-	duplicate, err := duplicateSnapshot(ctx, m.snapshots, snapshot.Metadata.SnapshotID)
+	duplicate, err := duplicateID(snapshot.Metadata.SnapshotID)
 	if err != nil {
 		result.Rejected++
 		result.Issues = append(result.Issues, syncIssue("remote_snapshot_store_unavailable", ErrStoreUnavailable.Error(), true))
@@ -215,7 +223,7 @@ func (m *SyncManager) pullSnapshot(ctx context.Context, envelope SyncEnvelope, l
 	if snapshotConflict(local, snapshot) {
 		result.Issues = append(result.Issues, syncIssue("conflict_review_required", ErrConflictReview.Error(), false))
 	}
-	if err := m.snapshots.SaveRemoteSnapshot(ctx, RemoteSnapshotRecord{Snapshot: snapshot, ReceivedAt: m.now(), TrustState: trustState, RequiresReview: requiresReview, Freshness: validation.Freshness}); err != nil {
+	if err := save(RemoteSnapshotRecord{Snapshot: snapshot, ReceivedAt: m.now(), TrustState: trustState, RequiresReview: requiresReview, Freshness: validation.Freshness}); err != nil {
 		result.Rejected++
 		result.Issues = append(result.Issues, syncIssue("snapshot_store_unavailable", ErrStoreUnavailable.Error(), true))
 		return ErrStoreUnavailable
@@ -228,12 +236,24 @@ func (m *SyncManager) pullSnapshot(ctx context.Context, envelope SyncEnvelope, l
 }
 
 func (m *SyncManager) pullProposal(ctx context.Context, envelope SyncEnvelope, local profilemesh.SignedProfileSnapshot, result *PullResult) error {
+	var classify func(profilemesh.ProfileChangeProposal) (proposalReviewClassification, error)
+	var save func(RemoteProposalRecord) error
+	if m.proposals != nil {
+		classify = func(proposal profilemesh.ProfileChangeProposal) (proposalReviewClassification, error) {
+			return classifyRemoteProposal(ctx, m.proposals, proposal, local.Metadata.SnapshotID)
+		}
+		save = func(record RemoteProposalRecord) error { return m.proposals.SaveRemoteProposal(ctx, record) }
+	}
+	return m.pullProposalInto(ctx, envelope, local, result, classify, save)
+}
+
+func (m *SyncManager) pullProposalInto(ctx context.Context, envelope SyncEnvelope, local profilemesh.SignedProfileSnapshot, result *PullResult, classify func(profilemesh.ProfileChangeProposal) (proposalReviewClassification, error), save func(RemoteProposalRecord) error) error {
 	if envelope.Proposal == nil {
 		result.Rejected++
 		result.Issues = append(result.Issues, syncIssue("missing_proposal", ErrProposalRejected.Error(), true))
 		return nil
 	}
-	if m.proposals == nil {
+	if save == nil {
 		result.Rejected++
 		result.Issues = append(result.Issues, syncIssue("proposal_store_missing", ErrStoreUnavailable.Error(), true))
 		return ErrStoreUnavailable
@@ -248,7 +268,7 @@ func (m *SyncManager) pullProposal(ctx context.Context, envelope SyncEnvelope, l
 		}
 		return nil
 	}
-	review, err := classifyRemoteProposal(ctx, m.proposals, proposal, local.Metadata.SnapshotID)
+	review, err := classify(proposal)
 	if err != nil {
 		result.Rejected++
 		result.Issues = append(result.Issues, syncIssue("remote_proposal_store_unavailable", ErrStoreUnavailable.Error(), true))
@@ -269,7 +289,7 @@ func (m *SyncManager) pullProposal(ctx context.Context, envelope SyncEnvelope, l
 		result.Issues = append(result.Issues, syncIssue("conflict_review_required", ErrConflictReview.Error(), false))
 	}
 	result.Issues = append(result.Issues, review.issues...)
-	if err := m.proposals.SaveRemoteProposal(ctx, RemoteProposalRecord{Proposal: proposal, ReceivedAt: m.now(), TrustState: trustState, RequiresReview: requiresReview}); err != nil {
+	if err := save(RemoteProposalRecord{Proposal: proposal, ReceivedAt: m.now(), TrustState: trustState, RequiresReview: requiresReview}); err != nil {
 		result.Rejected++
 		result.Issues = append(result.Issues, syncIssue("proposal_store_unavailable", ErrStoreUnavailable.Error(), true))
 		return ErrStoreUnavailable

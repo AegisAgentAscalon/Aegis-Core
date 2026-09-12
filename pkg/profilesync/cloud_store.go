@@ -69,8 +69,8 @@ func (p *FileObjectProvider) GetStatus(ctx context.Context) CloudSyncProviderSta
 		status.Available = false
 		status.Issues = append(status.Issues, cloudIssue("cloud_manifest_unavailable", err, false))
 	}
-	if refs, err := p.ListObjects(ctx, CloudObjectQuery{ProfileNamespace: p.namespace}); err == nil {
-		status.ObjectCount = len(refs)
+	if count, err := p.countObjects(ctx); err == nil {
+		status.ObjectCount = count
 	} else {
 		status.Available = false
 		status.Issues = append(status.Issues, cloudIssue("cloud_objects_unavailable", err, false))
@@ -208,15 +208,14 @@ func (p *FileObjectProvider) ListObjects(ctx context.Context, query CloudObjectQ
 	if err := p.ensureLocked(ctx); err != nil {
 		return nil, err
 	}
-	all, err := p.objectRefsLocked(ctx)
-	if err != nil {
-		return nil, err
-	}
 	var refs []CloudObjectRef
-	for _, ref := range all {
+	err := p.scanObjectsLocked(ctx, func(ref CloudObjectRef) {
 		if query.Kind == "" || ref.Kind == query.Kind {
 			refs = append(refs, ref)
 		}
+	})
+	if err != nil {
+		return nil, err
 	}
 	sort.Slice(refs, func(i, j int) bool { return refs[i].ObjectID < refs[j].ObjectID })
 	return refs, nil

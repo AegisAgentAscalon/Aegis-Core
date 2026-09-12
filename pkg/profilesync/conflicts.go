@@ -24,6 +24,10 @@ func classifyRemoteProposal(ctx context.Context, store ProposalStore, proposal p
 	if err != nil {
 		return proposalReviewClassification{}, err
 	}
+	return classifyProposalRecords(records, proposal, localSnapshotID), nil
+}
+
+func classifyProposalRecords(records []RemoteProposalRecord, proposal profilemesh.ProfileChangeProposal, localSnapshotID string) proposalReviewClassification {
 	out := proposalReviewClassification{}
 	if proposal.BaseSnapshotID != localSnapshotID {
 		out.requiresReview = true
@@ -35,7 +39,7 @@ func classifyRemoteProposal(ctx context.Context, store ProposalStore, proposal p
 			out.duplicate = true
 			out.requiresReview = true
 			out.issues = append(out.issues, syncIssue("duplicate_proposal_id", ErrDuplicateProposal.Error(), false))
-			return out, nil
+			return out
 		}
 		if competingProposal(existing, proposal) {
 			out.requiresReview = true
@@ -46,7 +50,7 @@ func classifyRemoteProposal(ctx context.Context, store ProposalStore, proposal p
 			out.issues = append(out.issues, syncIssue("superseded_proposal_review_required", ErrConflictReview.Error(), false))
 		}
 	}
-	return out, nil
+	return out
 }
 
 func competingProposal(a, b profilemesh.ProfileChangeProposal) bool {

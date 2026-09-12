@@ -47,7 +47,10 @@ func verifyUpdateSnapshot(ctx context.Context, snapshot serviceSnapshot, version
 	if err := validateDownloadedUpdateFor(snapshot.cfg, snapshot.store, downloaded); err != nil {
 		return VerifyResult{}, err
 	}
-	got, err := fileSHA256(downloaded.ArtifactPath)
+	got, err := hashFile(ctx, downloaded.ArtifactPath)
+	if errors.Is(err, ErrContextCanceled) {
+		return VerifyResult{}, err
+	}
 	if err != nil || !strings.EqualFold(got, downloaded.Artifact.SHA256) {
 		return VerifyResult{}, ErrVerificationFailed
 	}
