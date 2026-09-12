@@ -62,24 +62,21 @@ func InspectBootstrap(config AppConfig) (BootstrapStatus, error) {
 }
 
 func regularFileExists(path string) (bool, error) {
-	info, err := os.Stat(path)
+	_, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, ErrStorageUnavailable
 	}
-	if !info.Mode().IsRegular() {
-		return true, nil
-	}
 	return true, nil
 }
 
 func (s *Service) BootstrapCurrentDevice(ctx context.Context, req BootstrapDeviceRequest) (DeviceIdentity, error) {
-	if err := contextError(ctx); err != nil {
+	now, err := s.lockAtTime(ctx)
+	if err != nil {
 		return DeviceIdentity{}, err
 	}
-	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, err := s.store.readIdentity(); err == nil {
 		privateKey, keyErr := s.privateKey()
@@ -102,7 +99,6 @@ func (s *Service) BootstrapCurrentDevice(ctx context.Context, req BootstrapDevic
 	if err != nil {
 		return DeviceIdentity{}, ErrStorageUnavailable
 	}
-	now := s.clock.Now().UTC()
 	displayName := strings.TrimSpace(req.DisplayName)
 	if displayName == "" {
 		displayName = s.cfg.DisplayName

@@ -6,10 +6,10 @@ import (
 )
 
 func (s *Service) AdvertiseResources(ctx context.Context, req ResourceAdvertisementRequest) error {
-	if err := contextError(ctx); err != nil {
+	now, err := s.lockAtTime(ctx)
+	if err != nil {
 		return err
 	}
-	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, err := s.store.readIdentity()
 	if err != nil {
@@ -34,7 +34,7 @@ func (s *Service) AdvertiseResources(ctx context.Context, req ResourceAdvertisem
 			res.Availability = ResourceUnknown
 		}
 		if res.LastUpdated.IsZero() {
-			res.LastUpdated = s.clock.Now().UTC()
+			res.LastUpdated = now
 		}
 		res.Tags = append([]string{}, res.Tags...)
 		res.Metadata = cloneMap(res.Metadata)
@@ -43,7 +43,7 @@ func (s *Service) AdvertiseResources(ctx context.Context, req ResourceAdvertisem
 		}
 		out = append(out, res)
 	}
-	return s.store.writeResources(resourceFile{SchemaVersion: schemaVersion, Resources: out, UpdatedAt: s.clock.Now().UTC()})
+	return s.store.writeResources(resourceFile{SchemaVersion: schemaVersion, Resources: out, UpdatedAt: now})
 }
 
 func (s *Service) ListLocalResources(ctx context.Context) ([]ResourceDescriptor, error) {
@@ -60,10 +60,10 @@ func (s *Service) ListLocalResources(ctx context.Context) ([]ResourceDescriptor,
 }
 
 func (s *Service) ListKnownRemoteResources(ctx context.Context) ([]RemoteResourceDescriptor, error) {
-	if err := contextError(ctx); err != nil {
+	now, err := s.lockAtTime(ctx)
+	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
 	defer s.mu.Unlock()
 	peers, err := s.store.readPeers()
 	if err != nil {
@@ -78,7 +78,6 @@ func (s *Service) ListKnownRemoteResources(ctx context.Context) ([]RemoteResourc
 		trust[dev.DeviceID] = dev
 	}
 	out := make([]RemoteResourceDescriptor, 0)
-	now := s.clock.Now().UTC()
 	for _, peer := range peers.Peers {
 		dev := trust[peer.DeviceID]
 		availability := remoteResourceAvailability(now, peer, dev)

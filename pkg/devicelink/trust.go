@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 )
 
 func (s *Service) ListTrustedDevices(ctx context.Context) ([]TrustedDevice, error) {
@@ -22,15 +23,15 @@ func (s *Service) ListTrustedDevices(ctx context.Context) ([]TrustedDevice, erro
 }
 
 func (s *Service) TrustDevice(ctx context.Context, req TrustDeviceRequest) (TrustedDevice, error) {
-	if err := contextError(ctx); err != nil {
+	now, err := s.lockAtTime(ctx)
+	if err != nil {
 		return TrustedDevice{}, err
 	}
-	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.trustDeviceLocked(req)
+	return s.trustDeviceLocked(req, now)
 }
 
-func (s *Service) trustDeviceLocked(req TrustDeviceRequest) (TrustedDevice, error) {
+func (s *Service) trustDeviceLocked(req TrustDeviceRequest, now time.Time) (TrustedDevice, error) {
 	req.DeviceID = strings.TrimSpace(req.DeviceID)
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
 	if req.DeviceID == "" || !validSafeName(req.DeviceID) {
@@ -51,7 +52,6 @@ func (s *Service) trustDeviceLocked(req TrustDeviceRequest) (TrustedDevice, erro
 	if err != nil {
 		return TrustedDevice{}, err
 	}
-	now := s.clock.Now().UTC()
 	for i, dev := range reg.Devices {
 		if dev.DeviceID != req.DeviceID {
 			continue
@@ -123,10 +123,10 @@ func (s *Service) trustDeviceLocked(req TrustDeviceRequest) (TrustedDevice, erro
 }
 
 func (s *Service) RevokeDevice(ctx context.Context, deviceID string) error {
-	if err := contextError(ctx); err != nil {
+	now, err := s.lockAtTime(ctx)
+	if err != nil {
 		return err
 	}
-	s.mu.Lock()
 	defer s.mu.Unlock()
 	reg, err := s.store.readRegistry()
 	if err != nil {
@@ -134,7 +134,6 @@ func (s *Service) RevokeDevice(ctx context.Context, deviceID string) error {
 	}
 	for i, dev := range reg.Devices {
 		if dev.DeviceID == deviceID {
-			now := s.clock.Now().UTC()
 			if now.Before(dev.TrustedAt) {
 				now = dev.TrustedAt
 			}
@@ -175,10 +174,10 @@ func (s *Service) GetDeviceTrustStatus(ctx context.Context, deviceID string) (De
 }
 
 func (s *Service) ExportRegistrySnapshot(ctx context.Context) (RegistrySnapshot, error) {
-	if err := contextError(ctx); err != nil {
+	now, err := s.lockAtTime(ctx)
+	if err != nil {
 		return RegistrySnapshot{}, err
 	}
-	s.mu.Lock()
 	defer s.mu.Unlock()
 	reg, err := s.store.readRegistry()
 	if err != nil {
@@ -188,7 +187,6 @@ func (s *Service) ExportRegistrySnapshot(ctx context.Context) (RegistrySnapshot,
 	if id, err := s.store.readIdentity(); err == nil {
 		origin = id.DeviceID
 	}
-	now := s.clock.Now().UTC()
 	snap := RegistrySnapshot{
 		SchemaVersion:          RegistrySnapshotSchemaVersion,
 		Purpose:                RegistrySnapshotLocalBackup,
@@ -209,10 +207,10 @@ func (s *Service) ExportRegistrySnapshot(ctx context.Context) (RegistrySnapshot,
 }
 
 func (s *Service) ImportRegistrySnapshot(ctx context.Context, snapshot RegistrySnapshot) error {
-	if err := contextError(ctx); err != nil {
+	now, err := s.lockAtTime(ctx)
+	if err != nil {
 		return err
 	}
-	s.mu.Lock()
 	defer s.mu.Unlock()
 	normalized, err := validateRegistryBackupSnapshot(s.cfg, snapshot)
 	if err != nil {
@@ -228,7 +226,7 @@ func (s *Service) ImportRegistrySnapshot(ctx context.Context, snapshot RegistryS
 	}
 	// Registry commit comes first. A failed proof clear rolls the registry back;
 	// if rollback itself faults, a second clear leaves the imported state safe.
-	cleared := linkStatusFile{SchemaVersion: schemaVersion, Links: []ConnectionStatus{}, UpdatedAt: s.clock.Now().UTC()}
+	cleared := linkStatusFile{SchemaVersion: schemaVersion, Links: []ConnectionStatus{}, UpdatedAt: now}
 	if err := s.store.writeLinks(cleared); err != nil {
 		if rollbackErr := s.store.writeRegistry(previous); rollbackErr == nil {
 			return err

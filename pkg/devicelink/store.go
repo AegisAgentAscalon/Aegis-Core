@@ -6,7 +6,45 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+type privateKeyFile struct {
+	PrivateKey string `json:"private_key"`
+}
+
+type registryFile struct {
+	SchemaVersion int             `json:"schema_version"`
+	Devices       []TrustedDevice `json:"devices"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+}
+
+type resourceFile struct {
+	SchemaVersion int                  `json:"schema_version"`
+	Resources     []ResourceDescriptor `json:"resources"`
+	UpdatedAt     time.Time            `json:"updated_at"`
+}
+
+type peerFile struct {
+	SchemaVersion int              `json:"schema_version"`
+	Peers         []PresenceRecord `json:"peers"`
+	UpdatedAt     time.Time        `json:"updated_at"`
+}
+
+type handshakeSession struct {
+	SessionID          string    `json:"session_id"`
+	ChallengerDeviceID string    `json:"challenger_device_id"`
+	PeerDeviceID       string    `json:"peer_device_id"`
+	Challenge          string    `json:"challenge"`
+	ExpiresAt          time.Time `json:"expires_at"`
+	Consumed           bool      `json:"consumed"`
+}
+
+type linkStatusFile struct {
+	SchemaVersion int                `json:"schema_version"`
+	Links         []ConnectionStatus `json:"links"`
+	UpdatedAt     time.Time          `json:"updated_at"`
+}
 
 type store struct {
 	dir       string

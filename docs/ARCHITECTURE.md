@@ -57,6 +57,14 @@ incomplete result when a callback still owns storage. See the
 [W11 record](audits/2026-09-12-w11-auth-operations.md) for retry, revision ownership
 and separately constructed service limits.
 
+W12 divides Device Link contracts and implementation around identity/bootstrap,
+registry trust, presence/resources, signed proof and transport reachability.
+Public and persisted key views remain distinct. Clock observations occur outside
+the owner mutex and are refreshed after contention; direct memory connections
+copy their payloads and synchronize connection state without locking handlers.
+See the [W12 record](audits/2026-09-12-w12-device-link.md) for preserved schemas,
+expiry/revocation checks and callback semantics.
+
 W10 makes Profile Mesh's remaining boundaries explicit: public domain models in
 `types.go`, configuration and shared syntax in `config.go`, schema-specific
 snapshot encoding in `snapshot_codec.go`, and private registry envelopes in

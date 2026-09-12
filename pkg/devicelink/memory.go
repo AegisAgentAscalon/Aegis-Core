@@ -98,33 +98,44 @@ func (t *MemoryTransport) Open(ctx context.Context, peer DiscoveredPeer) (Connec
 }
 
 type memoryConnection struct {
+	mu      sync.Mutex
 	handler MessageHandler
 	last    Message
 	closed  bool
 }
 
 func (c *memoryConnection) Send(ctx context.Context, msg Message) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.closed {
 		return ErrTransportUnavailable
 	}
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	c.last = msg
+	c.last = cloneMessage(msg)
 	return nil
 }
 
 func (c *memoryConnection) Receive(ctx context.Context) (Message, error) {
+	c.mu.Lock()
 	if c.closed {
+		c.mu.Unlock()
 		return Message{}, ErrTransportUnavailable
 	}
 	if err := contextError(ctx); err != nil {
+		c.mu.Unlock()
 		return Message{}, err
 	}
-	return c.handler(ctx, c.last)
+	request := cloneMessage(c.last)
+	c.mu.Unlock()
+	msg, err := c.handler(ctx, request)
+	return cloneMessage(msg), err
 }
 
 func (c *memoryConnection) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.closed = true
 	return nil
 }

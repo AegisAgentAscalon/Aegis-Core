@@ -7,10 +7,10 @@ import (
 
 func (s *Service) PublishPresence(ctx context.Context) (PresenceRecord, error) {
 	ctx = normalizeContext(ctx)
-	if err := contextError(ctx); err != nil {
+	now, err := s.lockAtTime(ctx)
+	if err != nil {
 		return PresenceRecord{}, err
 	}
-	s.mu.Lock()
 	current, err := s.store.readIdentity()
 	if err != nil {
 		s.mu.Unlock()
@@ -28,7 +28,7 @@ func (s *Service) PublishPresence(ctx context.Context) (PresenceRecord, error) {
 		EndpointHints:        []EndpointHint{},
 		Capabilities:         append([]string{}, current.Capabilities...),
 		ResourcesSummary:     summarizeResources(resources.Resources),
-		LastSeen:             s.clock.Now().UTC(),
+		LastSeen:             now,
 		PublicKeyFingerprint: current.PublicKeyFingerprint,
 	}
 	discovery := s.discovery
@@ -51,10 +51,10 @@ func (s *Service) DiscoverPeers(ctx context.Context) ([]DiscoveredPeer, error) {
 	if err != nil {
 		return nil, ErrDiscoveryUnavailable
 	}
-	if err := contextError(ctx); err != nil {
+	now, err := s.lockAtTime(ctx)
+	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, _ := s.store.readIdentity()
 	reg, err := s.store.readRegistry()
@@ -67,7 +67,6 @@ func (s *Service) DiscoverPeers(ctx context.Context) ([]DiscoveredPeer, error) {
 	}
 	peers := make([]PresenceRecord, 0)
 	out := make([]DiscoveredPeer, 0)
-	now := s.clock.Now().UTC()
 	for _, rec := range records {
 		rec = clonePresenceRecord(rec)
 		if rec.DeviceID == "" || rec.PublicKeyFingerprint == "" || rec.SchemaVersion != schemaVersion {

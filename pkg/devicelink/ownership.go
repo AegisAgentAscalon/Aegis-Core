@@ -66,3 +66,33 @@ func cloneMessage(msg Message) Message {
 	msg.Payload = cloneMap(msg.Payload)
 	return msg
 }
+
+func cloneDeviceIdentity(identity DeviceIdentity) DeviceIdentity {
+	identity.Capabilities = append([]string{}, identity.Capabilities...)
+	return identity
+}
+
+func cloneTrustedDevice(device TrustedDevice) TrustedDevice {
+	return cloneTrustedDevices([]TrustedDevice{device})[0]
+}
+
+func cloneMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneResourceDescriptors(in []ResourceDescriptor) []ResourceDescriptor {
+	out := make([]ResourceDescriptor, len(in))
+	for i, resource := range in {
+		out[i] = resource
+		out[i].Tags = append([]string{}, resource.Tags...)
+		out[i].Metadata = cloneMap(resource.Metadata)
+	}
+	return out
+}

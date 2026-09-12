@@ -7,13 +7,6 @@ import (
 	"time"
 )
 
-func transportContextError(ctx context.Context, err error) error {
-	if errors.Is(err, ErrContextCanceled) || contextError(ctx) != nil {
-		return ErrContextCanceled
-	}
-	return err
-}
-
 func transportPublicError(ctx context.Context, err error) error {
 	if errors.Is(err, ErrContextCanceled) || contextError(ctx) != nil {
 		return ErrContextCanceled
@@ -42,7 +35,7 @@ func (s *Service) findTrustedDeviceLocked(deviceID string) (TrustedDevice, bool,
 	return TrustedDevice{}, false, nil
 }
 
-func (s *Service) peerForDeviceLocked(deviceID string) (DiscoveredPeer, error) {
+func (s *Service) peerForDeviceLocked(deviceID string, now time.Time) (DiscoveredPeer, error) {
 	dev, found, err := s.findTrustedDeviceLocked(deviceID)
 	if err != nil {
 		return DiscoveredPeer{}, err
@@ -59,18 +52,17 @@ func (s *Service) peerForDeviceLocked(deviceID string) (DiscoveredPeer, error) {
 			if rec.PublicKeyFingerprint != dev.PublicKeyFingerprint {
 				return DiscoveredPeer{}, ErrFingerprintMismatch
 			}
-			return DiscoveredPeer{Presence: rec, TrustStatus: dev.TrustStatus, Stale: isStale(s.clock.Now().UTC(), rec.LastSeen)}, nil
+			return DiscoveredPeer{Presence: rec, TrustStatus: dev.TrustStatus, Stale: isStale(now, rec.LastSeen)}, nil
 		}
 	}
 	return DiscoveredPeer{}, ErrTransportUnavailable
 }
 
-func (s *Service) upsertReachabilityStatusLocked(deviceID string, reachable bool, message string) error {
+func (s *Service) upsertReachabilityStatusLocked(deviceID string, reachable bool, message string, now time.Time) error {
 	links, err := s.store.readLinks()
 	if err != nil {
 		return err
 	}
-	now := s.clock.Now().UTC()
 	for i, link := range links.Links {
 		if link.DeviceID == deviceID {
 			link.TrustStatus = TrustTrusted
@@ -91,12 +83,11 @@ func (s *Service) upsertReachabilityStatusLocked(deviceID string, reachable bool
 	return s.store.writeLinks(links)
 }
 
-func (s *Service) upsertProofStatusLocked(deviceID string, receipt ProofReceipt) error {
+func (s *Service) upsertProofStatusLocked(deviceID string, receipt ProofReceipt, now time.Time) error {
 	links, err := s.store.readLinks()
 	if err != nil {
 		return err
 	}
-	now := s.clock.Now().UTC()
 	for i, link := range links.Links {
 		if link.DeviceID != deviceID {
 			continue
