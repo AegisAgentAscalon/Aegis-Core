@@ -176,7 +176,7 @@ func TestStatusRedactsTokensAndSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.store.writeToken(token{
+	if err := svc.store.writeToken(context.Background(), token{
 		AccessToken:  "access-secret",
 		RefreshToken: "refresh-secret",
 		TokenType:    "Bearer",
@@ -185,7 +185,7 @@ func TestStatusRedactsTokensAndSecrets(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.store.writeProfile(profileFile{Email: "person@example.com", DisplayName: "Person", Subject: "subject-1"}); err != nil {
+	if err := svc.store.writeProfile(context.Background(), profileFile{Email: "person@example.com", DisplayName: "Person", Subject: "subject-1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -288,7 +288,7 @@ func TestStartSignInReturnsSafeURLShape(t *testing.T) {
 	if result.SessionID == "" {
 		t.Fatalf("expected opaque session id")
 	}
-	if _, err := svc.store.readSession(result.SessionID); err != nil {
+	if _, err := svc.store.readSession(context.Background(), result.SessionID); err != nil {
 		t.Fatalf("expected pending private session: %v", err)
 	}
 	if strings.Contains(result.AuthorizationURL, cfg.OAuth.ClientSecret) || strings.Contains(result.AuthorizationURL, "code_verifier") {
@@ -348,7 +348,7 @@ func TestCompleteSignInRejectsExpiredAndConsumedSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	expired := pendingSession{SessionID: "expired", State: "expired-state", Verifier: "verifier", RedirectURI: "http://127.0.0.1:56789/oauth/callback", CreatedAt: time.Now().Add(-20 * time.Minute), ExpiresAt: time.Now().Add(-10 * time.Minute)}
-	if err := svc.store.writeSession(expired); err != nil {
+	if err := svc.store.writeSession(context.Background(), expired); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.CompleteSignIn(context.Background(), CompleteSignInRequest{State: expired.State, Code: "code"}); err == nil || !strings.Contains(err.Error(), "expired") {
@@ -356,7 +356,7 @@ func TestCompleteSignInRejectsExpiredAndConsumedSessions(t *testing.T) {
 	}
 
 	consumed := pendingSession{SessionID: "consumed", State: "consumed-state", Verifier: "verifier", RedirectURI: "http://127.0.0.1:56789/oauth/callback", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute), Consumed: true}
-	if err := svc.store.writeSession(consumed); err != nil {
+	if err := svc.store.writeSession(context.Background(), consumed); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.CompleteSignIn(context.Background(), CompleteSignInRequest{State: consumed.State, Code: "code"}); err == nil || !strings.Contains(err.Error(), "consumed") {
@@ -404,7 +404,7 @@ func TestCompleteSignInRejectsTooManyPendingSessions(t *testing.T) {
 			CreatedAt:   time.Now().UTC(),
 			ExpiresAt:   time.Now().UTC().Add(time.Minute),
 		}
-		if err := svc.store.writeSession(sess); err != nil {
+		if err := svc.store.writeSession(context.Background(), sess); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -505,7 +505,7 @@ func TestCompleteSignInAfterSignOutOrSessionCleanupFailsSafely(t *testing.T) {
 		t.Fatal(err)
 	}
 	state = mustState(t, start.AuthorizationURL)
-	if err := svc.store.clearSessions(); err != nil {
+	if err := svc.store.clearSessions(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.CompleteSignIn(context.Background(), CompleteSignInRequest{State: state, Code: "code"}); !errors.Is(err, ErrSessionNotFound) {
@@ -710,7 +710,7 @@ func TestUserInfoMissingSubjectFailsButOptionalFieldsMayBeEmpty(t *testing.T) {
 	if _, err := svc.CompleteSignIn(context.Background(), CompleteSignInRequest{State: mustState(t, start.AuthorizationURL), Code: "code"}); !errors.Is(err, ErrInvalidProviderResponse) {
 		t.Fatalf("expected missing subject to fail, got %v", err)
 	}
-	if _, err := svc.store.readToken(); err == nil {
+	if _, err := svc.store.readToken(context.Background()); err == nil {
 		t.Fatalf("token should not remain after profile fetch failure")
 	}
 
@@ -747,19 +747,19 @@ func TestSignOutClearsOnlyCurrentNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svcA.store.writeToken(token{AccessToken: "a", Expiry: time.Now().Add(time.Hour)}); err != nil {
+	if err := svcA.store.writeToken(context.Background(), token{AccessToken: "a", Expiry: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svcB.store.writeToken(token{AccessToken: "b", Expiry: time.Now().Add(time.Hour)}); err != nil {
+	if err := svcB.store.writeToken(context.Background(), token{AccessToken: "b", Expiry: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := svcA.SignOut(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svcA.store.readToken(); err == nil {
+	if _, err := svcA.store.readToken(context.Background()); err == nil {
 		t.Fatalf("expected namespace A token cleared")
 	}
-	if _, err := svcB.store.readToken(); err != nil {
+	if _, err := svcB.store.readToken(context.Background()); err != nil {
 		t.Fatalf("expected namespace B token preserved: %v", err)
 	}
 }

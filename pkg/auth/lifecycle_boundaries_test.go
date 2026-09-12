@@ -44,7 +44,7 @@ func TestStrictRepeatedCompletedSignInsRemainUsableAndRejectReplay(t *testing.T)
 			t.Fatalf("replay was not rejected: %v", err)
 		}
 	}
-	sessions, err := svc.store.readProtectedSessions()
+	sessions, err := svc.store.readProtectedSessions(context.Background())
 	if err != nil || len(sessions) != maxPendingSessionFiles {
 		t.Fatalf("unbounded session record: %d %v", len(sessions), err)
 	}
@@ -76,14 +76,14 @@ func TestPendingSessionBoundaryAndFiveLiveLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	before, err := svc.store.getProtected(svc.store.sessionsKey)
+	before, err := svc.store.getProtected(context.Background(), svc.store.sessionsKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.StartSignIn(context.Background()); !errors.Is(err, ErrStorageUnavailable) {
 		t.Fatalf("sixth live session accepted: %v", err)
 	}
-	after, err := svc.store.getProtected(svc.store.sessionsKey)
+	after, err := svc.store.getProtected(context.Background(), svc.store.sessionsKey)
 	if err != nil || string(before) != string(after) {
 		t.Fatal("quota failure altered sessions")
 	}
@@ -171,7 +171,7 @@ func TestStrictSessionPruneAndAppendShareCAS(t *testing.T) {
 			if len(successes) != want {
 				t.Fatalf("unexpected successful starts: %d", len(successes))
 			}
-			sessions, err := first.store.readProtectedSessions()
+			sessions, err := first.store.readProtectedSessions(context.Background())
 			if err != nil || len(sessions) != live+want {
 				t.Fatalf("lost CAS state: %d %v", len(sessions), err)
 			}
@@ -204,13 +204,13 @@ func TestAuthStatusTokenProfileMatrix(t *testing.T) {
 						if tokenState == "expired" {
 							expiry = time.Now().Add(-time.Hour)
 						}
-						if err := svc.store.writeToken(token{AccessToken: "private-token-sentinel", Expiry: expiry}); err != nil {
+						if err := svc.store.writeToken(context.Background(), token{AccessToken: "private-token-sentinel", Expiry: expiry}); err != nil {
 							t.Fatal(err)
 						}
 					}
 					if tokenState == "invalid" {
 						if strict {
-							err = svc.store.putProtected(svc.store.tokenKey, []byte("{invalid"))
+							err = svc.store.putProtected(context.Background(), svc.store.tokenKey, []byte("{invalid"))
 						} else {
 							err = os.WriteFile(svc.store.tokenPath(), []byte("{invalid"), 0600)
 						}
@@ -219,7 +219,7 @@ func TestAuthStatusTokenProfileMatrix(t *testing.T) {
 						}
 					}
 					if profileState == "valid" {
-						err = svc.store.writeProfile(profileFile{Subject: "subject", Email: "user@example.test"})
+						err = svc.store.writeProfile(context.Background(), profileFile{Subject: "subject", Email: "user@example.test"})
 					} else if profileState == "empty" {
 						err = os.WriteFile(svc.store.profilePath(), []byte(`{}`), 0600)
 					} else if profileState == "invalid" {

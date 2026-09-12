@@ -24,12 +24,15 @@ type protectedPendingSessions struct {
 	Sessions []pendingSession `json:"sessions"`
 }
 
-func (s *store) writeSession(sess pendingSession) error {
+func (s *store) writeSession(ctx context.Context, sess pendingSession) error {
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
 	if s.isStrict() {
 		if err := validatePendingSession(sess); err != nil {
 			return ErrStorageUnavailable
 		}
-		return s.mutateProtectedSessions(func(sessions []pendingSession) ([]pendingSession, error) {
+		return s.mutateProtectedSessions(ctx, func(sessions []pendingSession) ([]pendingSession, error) {
 			return appendPendingSession(sessions, sess, time.Now().UTC())
 		})
 	}
@@ -39,6 +42,9 @@ func (s *store) writeSession(sess pendingSession) error {
 	b, err := json.MarshalIndent(sess, "", "  ")
 	if err != nil {
 		return ErrStorageUnavailable
+	}
+	if err := checkContext(ctx); err != nil {
+		return err
 	}
 	return writeFileAtomic(s.sessionPath(sess.SessionID), b, 0o600)
 }
@@ -76,9 +82,12 @@ func appendPendingSession(sessions []pendingSession, sess pendingSession, now ti
 	return append(kept, sess), nil
 }
 
-func (s *store) readSession(sessionID string) (pendingSession, error) {
+func (s *store) readSession(ctx context.Context, sessionID string) (pendingSession, error) {
+	if err := checkContext(ctx); err != nil {
+		return pendingSession{}, err
+	}
 	if s.isStrict() {
-		sessions, err := s.readProtectedSessions()
+		sessions, err := s.readProtectedSessions(ctx)
 		if err != nil {
 			return pendingSession{}, err
 		}
@@ -100,13 +109,16 @@ func (s *store) readSession(sessionID string) (pendingSession, error) {
 	return sess, nil
 }
 
-func (s *store) findSessionByState(state string) (pendingSession, error) {
+func (s *store) findSessionByState(ctx context.Context, state string) (pendingSession, error) {
+	if err := checkContext(ctx); err != nil {
+		return pendingSession{}, err
+	}
 	state = strings.TrimSpace(state)
 	if state == "" {
 		return pendingSession{}, errors.New("state is required")
 	}
 	if s.isStrict() {
-		sessions, err := s.readProtectedSessions()
+		sessions, err := s.readProtectedSessions(ctx)
 		if errors.Is(err, secretstore.ErrNotFound) {
 			return pendingSession{}, ErrSessionNotFound
 		}
@@ -130,6 +142,9 @@ func (s *store) findSessionByState(state string) (pendingSession, error) {
 	sawInvalid := false
 	sessionFiles := 0
 	for _, file := range files {
+		if err := checkContext(ctx); err != nil {
+			return pendingSession{}, err
+		}
 		if file.IsDir() {
 			continue
 		}
@@ -157,13 +172,16 @@ func (s *store) findSessionByState(state string) (pendingSession, error) {
 	return pendingSession{}, ErrSessionNotFound
 }
 
-func (s *store) consumeSessionByState(state string, now time.Time) (pendingSession, error) {
+func (s *store) consumeSessionByState(ctx context.Context, state string, now time.Time) (pendingSession, error) {
+	if err := checkContext(ctx); err != nil {
+		return pendingSession{}, err
+	}
 	state = strings.TrimSpace(state)
 	if state == "" {
 		return pendingSession{}, errors.New("state is required")
 	}
 	if !s.isStrict() {
-		sess, err := s.findSessionByState(state)
+		sess, err := s.findSessionByState(ctx, state)
 		if err != nil {
 			return pendingSession{}, err
 		}
@@ -174,14 +192,14 @@ func (s *store) consumeSessionByState(state string, now time.Time) (pendingSessi
 			return pendingSession{}, ErrSessionExpired
 		}
 		sess.Consumed = true
-		if err := s.writeSession(sess); err != nil {
+		if err := s.writeSession(ctx, sess); err != nil {
 			return pendingSession{}, err
 		}
 		return sess, nil
 	}
 
 	var claimed pendingSession
-	err := s.mutateProtectedSessions(func(sessions []pendingSession) ([]pendingSession, error) {
+	err := s.mutateProtectedSessions(ctx, func(sessions []pendingSession) ([]pendingSession, error) {
 		for i := range sessions {
 			if sessions[i].State != state {
 				continue
@@ -204,9 +222,12 @@ func (s *store) consumeSessionByState(state string, now time.Time) (pendingSessi
 	return claimed, nil
 }
 
-func (s *store) clearSessions() error {
+func (s *store) clearSessions(ctx context.Context) error {
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
 	if s.isStrict() {
-		return s.deleteProtected(s.sessionsKey)
+		return s.deleteProtected(ctx, s.sessionsKey)
 	}
 	if err := os.RemoveAll(s.sessionsDir()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return ErrStorageUnavailable
@@ -214,17 +235,24 @@ func (s *store) clearSessions() error {
 	return nil
 }
 
-func (s *store) readProtectedSessions() ([]pendingSession, error) {
-	b, err := s.getProtected(s.sessionsKey)
+func (s *store) readProtectedSessions(ctx context.Context) ([]pendingSession, error) {
+	b, err := s.getProtected(ctx, s.sessionsKey)
 	if err != nil {
 		return nil, err
 	}
 	return decodeProtectedSessions(b)
 }
 
-func (s *store) mutateProtectedSessions(mutate func([]pendingSession) ([]pendingSession, error)) error {
+func (s *store) mutateProtectedSessions(ctx context.Context, mutate func([]pendingSession) ([]pendingSession, error)) error {
+	ctx = normalizeContext(ctx)
 	for attempt := 0; attempt < maxProtectedSessionCASAttempts; attempt++ {
-		b, revision, err := s.versioned.GetWithRevision(context.Background(), s.sessionsKey)
+		if err := checkContext(ctx); err != nil {
+			return err
+		}
+		b, revision, err := s.versioned.GetWithRevision(ctx, s.sessionsKey)
+		if canceled := protectedCallError(ctx, err); errors.Is(canceled, ErrAuthCanceled) {
+			return canceled
+		}
 		var sessions []pendingSession
 		switch {
 		case err == nil:
@@ -246,11 +274,19 @@ func (s *store) mutateProtectedSessions(mutate func([]pendingSession) ([]pending
 		if err != nil {
 			return err
 		}
-		if _, err := s.versioned.CompareAndSwap(context.Background(), s.sessionsKey, revision, record); err == nil {
-			return nil
-		} else if !errors.Is(err, secretstore.ErrConflict) {
-			return ErrStorageUnavailable
+		if err := checkContext(ctx); err != nil {
+			return err
 		}
+		_, err = s.versioned.CompareAndSwap(ctx, s.sessionsKey, revision, record)
+		if canceled := protectedCallError(ctx, err); errors.Is(canceled, ErrAuthCanceled) {
+			return canceled
+		}
+		if !errors.Is(err, secretstore.ErrConflict) {
+			return protectedCallError(ctx, err)
+		}
+	}
+	if err := checkContext(ctx); err != nil {
+		return err
 	}
 	return ErrStorageUnavailable
 }

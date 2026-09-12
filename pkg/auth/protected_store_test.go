@@ -106,10 +106,10 @@ func TestStrictServiceMigratesLegacySecretsAndProtectedRecordsStayAuthoritative(
 	}
 	wantToken := token{AccessToken: "legacy-access", RefreshToken: "legacy-refresh", Expiry: time.Now().UTC().Add(time.Hour)}
 	wantSession := migrationSession("legacy-session", "legacy-state")
-	if err := legacy.store.writeToken(wantToken); err != nil {
+	if err := legacy.store.writeToken(context.Background(), wantToken); err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.store.writeSession(wantSession); err != nil {
+	if err := legacy.store.writeSession(context.Background(), wantSession); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,17 +119,17 @@ func TestStrictServiceMigratesLegacySecretsAndProtectedRecordsStayAuthoritative(
 		t.Fatal(err)
 	}
 	assertLegacySecretsRemoved(t, strict.store)
-	if got, err := strict.store.readToken(); err != nil || got.AccessToken != wantToken.AccessToken {
+	if got, err := strict.store.readToken(context.Background()); err != nil || got.AccessToken != wantToken.AccessToken {
 		t.Fatalf("migrated token = %+v, %v", got, err)
 	}
-	if got, err := strict.store.readSession(wantSession.SessionID); err != nil || got.Verifier != wantSession.Verifier {
+	if got, err := strict.store.readSession(context.Background(), wantSession.SessionID); err != nil || got.Verifier != wantSession.Verifier {
 		t.Fatalf("migrated session = %+v, %v", got, err)
 	}
 
-	if err := legacy.store.writeToken(token{AccessToken: "stale-legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
+	if err := legacy.store.writeToken(context.Background(), token{AccessToken: "stale-legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.store.writeSession(migrationSession("stale-session", "stale-state")); err != nil {
+	if err := legacy.store.writeSession(context.Background(), migrationSession("stale-session", "stale-state")); err != nil {
 		t.Fatal(err)
 	}
 	strict, err = NewStrictService(cfg, protected)
@@ -137,10 +137,10 @@ func TestStrictServiceMigratesLegacySecretsAndProtectedRecordsStayAuthoritative(
 		t.Fatal(err)
 	}
 	assertLegacySecretsRemoved(t, strict.store)
-	if got, err := strict.store.readToken(); err != nil || got.AccessToken != wantToken.AccessToken {
+	if got, err := strict.store.readToken(context.Background()); err != nil || got.AccessToken != wantToken.AccessToken {
 		t.Fatalf("protected token lost authority: %+v, %v", got, err)
 	}
-	if _, err := strict.store.readSession("stale-session"); !errors.Is(err, secretstore.ErrNotFound) {
+	if _, err := strict.store.readSession(context.Background(), "stale-session"); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("stale legacy session became authoritative: %v", err)
 	}
 	if _, err := NewStrictService(cfg, protected); err != nil {
@@ -155,7 +155,7 @@ func TestStrictMigrationReadBackMismatchPreservesLegacy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := legacy.store.writeToken(token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
+		if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
 		faults := newFaultStore()
@@ -175,7 +175,7 @@ func TestStrictMigrationReadBackMismatchPreservesLegacy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := legacy.store.writeSession(migrationSession("legacy-session", "legacy-state")); err != nil {
+		if err := legacy.store.writeSession(context.Background(), migrationSession("legacy-session", "legacy-state")); err != nil {
 			t.Fatal(err)
 		}
 		faults := newFaultStore()
@@ -198,7 +198,7 @@ func TestStrictStoreAcceptsBase64URLSessionIDPrefixes(t *testing.T) {
 			t.Fatal(err)
 		}
 		session := migrationSession(prefix+"base64url", prefix+"state")
-		if err := svc.store.writeSession(session); err != nil {
+		if err := svc.store.writeSession(context.Background(), session); err != nil {
 			t.Fatalf("session id %q was rejected: %v", session.SessionID, err)
 		}
 	}
@@ -259,7 +259,7 @@ func TestStrictMigrationPreflightsEveryLegacyRecordBeforeProtectedWrites(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.store.writeToken(token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
+	if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(legacy.store.sessionsDir(), 0o700); err != nil {
@@ -283,7 +283,7 @@ func TestStrictProtectedCorruptionIsAuthoritativeAndFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.store.writeToken(token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
+	if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	protected := devsecretstore.NewMemoryStore()
@@ -308,7 +308,7 @@ func TestStrictProtectedSessionCorruptionIsAuthoritativeAndFailsClosed(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.store.writeSession(migrationSession("legacy-session", "legacy-state")); err != nil {
+	if err := legacy.store.writeSession(context.Background(), migrationSession("legacy-session", "legacy-state")); err != nil {
 		t.Fatal(err)
 	}
 	protected := devsecretstore.NewMemoryStore()
@@ -342,7 +342,7 @@ func TestStrictProtectedStoreFailuresAndSignOutAreRedacted(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := legacy.store.writeToken(token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
+		if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
 		faults := newFaultStore()
@@ -373,10 +373,10 @@ func TestStrictProtectedStoreFailuresAndSignOutAreRedacted(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := svc.store.writeToken(token{AccessToken: "access-secret", RefreshToken: "refresh-secret", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
+		if err := svc.store.writeToken(context.Background(), token{AccessToken: "access-secret", RefreshToken: "refresh-secret", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
-		if err := svc.store.writeSession(migrationSession("session", "state")); err != nil {
+		if err := svc.store.writeSession(context.Background(), migrationSession("session", "state")); err != nil {
 			t.Fatal(err)
 		}
 		faults.failDelete[svc.store.tokenKey] = errors.New("delete failed for access-secret")
@@ -493,10 +493,10 @@ func TestStrictMigrationFailuresPreserveAllLegacySourcesAndRetryCleanly(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := legacy.store.writeToken(token{AccessToken: "legacy-access", RefreshToken: "legacy-refresh", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
+			if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", RefreshToken: "legacy-refresh", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 				t.Fatal(err)
 			}
-			if err := legacy.store.writeSession(migrationSession("legacy-session", "legacy-state")); err != nil {
+			if err := legacy.store.writeSession(context.Background(), migrationSession("legacy-session", "legacy-state")); err != nil {
 				t.Fatal(err)
 			}
 
@@ -514,10 +514,10 @@ func TestStrictMigrationFailuresPreserveAllLegacySourcesAndRetryCleanly(t *testi
 				t.Fatalf("migration retry failed: %v", err)
 			}
 			assertLegacySecretsRemoved(t, strict.store)
-			if _, err := strict.store.readToken(); err != nil {
+			if _, err := strict.store.readToken(context.Background()); err != nil {
 				t.Fatalf("retried token migration failed: %v", err)
 			}
-			if _, err := strict.store.readSession("legacy-session"); err != nil {
+			if _, err := strict.store.readSession(context.Background(), "legacy-session"); err != nil {
 				t.Fatalf("retried session migration failed: %v", err)
 			}
 		})
@@ -719,10 +719,10 @@ func legacyStoreWithTokenAndSession(t *testing.T) (AppConfig, *Service) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.store.writeToken(token{AccessToken: "legacy-access", RefreshToken: "legacy-refresh", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
+	if err := legacy.store.writeToken(context.Background(), token{AccessToken: "legacy-access", RefreshToken: "legacy-refresh", Expiry: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.store.writeSession(migrationSession("legacy-session", "legacy-state")); err != nil {
+	if err := legacy.store.writeSession(context.Background(), migrationSession("legacy-session", "legacy-state")); err != nil {
 		t.Fatal(err)
 	}
 	return cfg, legacy

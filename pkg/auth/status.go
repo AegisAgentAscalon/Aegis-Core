@@ -11,17 +11,32 @@ import (
 )
 
 // Status returns safe UI-facing auth state.
-func (s *Service) Status(context.Context) (AuthStatus, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.store.status(s.cfg)
+func (s *Service) Status(ctx context.Context) (AuthStatus, error) {
+	op := s.beginOperation(ctx)
+	defer op.finish()
+	if err := op.reserveStore(); err != nil {
+		return AuthStatus{}, err
+	}
+	defer s.releaseStore()
+	result, err := s.store.status(op.ctx, s.cfg)
+	if err = op.resultError(err); err != nil {
+		return AuthStatus{}, err
+	}
+	return result, nil
 }
 
 // Profile returns the safe stored profile summary.
-func (s *Service) Profile(context.Context) (ProfileSummary, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p, err := s.store.readProfile()
+func (s *Service) Profile(ctx context.Context) (ProfileSummary, error) {
+	op := s.beginOperation(ctx)
+	defer op.finish()
+	if err := op.reserveStore(); err != nil {
+		return ProfileSummary{}, err
+	}
+	defer s.releaseStore()
+	p, err := s.store.readProfile(op.ctx)
+	if current := op.resultError(nil); current != nil {
+		return ProfileSummary{}, current
+	}
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ProfileSummary{}, ErrProfileNotFound
@@ -31,7 +46,7 @@ func (s *Service) Profile(context.Context) (ProfileSummary, error) {
 	return ProfileSummary{Email: p.Email, DisplayName: p.DisplayName, Subject: p.Subject, PictureURL: p.PictureURL}, nil
 }
 
-func (s *store) status(cfg AppConfig) (AuthStatus, error) {
+func (s *store) status(ctx context.Context, cfg AppConfig) (AuthStatus, error) {
 	st := AuthStatus{
 		AppID:               cfg.AppID,
 		DisplayName:         cfg.DisplayName,
@@ -44,13 +59,13 @@ func (s *store) status(cfg AppConfig) (AuthStatus, error) {
 		LastError:           s.readLastError(),
 	}
 	// Profile and token validity contribute independently to reconnect state.
-	p, profileErr := s.readProfile()
+	p, profileErr := s.readProfile(ctx)
 	st.ProfilePresent = !errors.Is(profileErr, os.ErrNotExist)
 	profileInvalid := profileErr != nil && !errors.Is(profileErr, os.ErrNotExist)
 	if profileErr == nil {
 		st.Profile = ProfileSummary{Email: p.Email, DisplayName: p.DisplayName, Subject: p.Subject, PictureURL: p.PictureURL}
 	}
-	t, tokenErr := s.readToken()
+	t, tokenErr := s.readToken(ctx)
 	tokenMissing := errors.Is(tokenErr, os.ErrNotExist) || errors.Is(tokenErr, secretstore.ErrNotFound)
 	if s.isStrict() && tokenErr != nil && !tokenMissing {
 		return AuthStatus{}, tokenErr

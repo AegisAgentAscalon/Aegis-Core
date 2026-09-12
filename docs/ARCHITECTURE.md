@@ -50,6 +50,13 @@ bodies. Auth separates sign-in orchestration, OAuth HTTP work, session CAS,
 legacy migration and file I/O. Device Link, Profile Mesh and Updates follow the
 same organization around their own responsibilities.
 
+W11 gives Auth a shared operation generation and cancellable host I/O. Its mutex
+is not held across HTTP or protected-store callbacks. Strict storage contention
+fails promptly; sign-out invalidates pending work before cleanup and reports an
+incomplete result when a callback still owns storage. See the
+[W11 record](audits/2026-09-12-w11-auth-operations.md) for retry, revision ownership
+and separately constructed service limits.
+
 W10 makes Profile Mesh's remaining boundaries explicit: public domain models in
 `types.go`, configuration and shared syntax in `config.go`, schema-specific
 snapshot encoding in `snapshot_codec.go`, and private registry envelopes in

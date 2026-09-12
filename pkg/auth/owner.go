@@ -14,9 +14,13 @@ type Service struct {
 
 // serviceState keeps copied Service values attached to the same owner and lock.
 type serviceState struct {
-	cfg   AppConfig
-	store *store
-	mu    sync.Mutex
+	cfg        AppConfig
+	store      *store
+	mu         sync.Mutex
+	epoch      uint64
+	ioBusy     bool
+	ioDone     chan struct{}
+	operations map[*authOperation]struct{}
 }
 
 // Option configures an auth service without expanding the legacy constructor.

@@ -78,7 +78,13 @@ func (s *Service) exchangeCode(ctx context.Context, code string, sess pendingSes
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return token{}, fmt.Errorf("%w with HTTP %d", ErrTokenExchangeFailed, resp.StatusCode)
 	}
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return token{}, classifyProviderError(ctx, err, "token exchange")
+	}
+	if ctx.Err() != nil {
+		return token{}, classifyProviderError(ctx, ctx.Err(), "token exchange")
+	}
 	var parsed struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
@@ -119,7 +125,13 @@ func (s *Service) fetchProfile(ctx context.Context, accessToken string) (Profile
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return ProfileSummary{}, fmt.Errorf("%w with HTTP %d", errProfileFetchFailed, resp.StatusCode)
 	}
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return ProfileSummary{}, classifyProviderError(ctx, err, "profile fetch")
+	}
+	if ctx.Err() != nil {
+		return ProfileSummary{}, classifyProviderError(ctx, ctx.Err(), "profile fetch")
+	}
 	var parsed struct {
 		Email       string `json:"email"`
 		DisplayName string `json:"name"`

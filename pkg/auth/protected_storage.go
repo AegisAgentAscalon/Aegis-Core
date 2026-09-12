@@ -9,8 +9,15 @@ import (
 	"github.com/AegisAgentAscalon/aegis-core/pkg/secretstore"
 )
 
-func (s *store) getProtected(key secretstore.Key) ([]byte, error) {
-	b, err := s.protected.Get(context.Background(), key)
+func (s *store) getProtected(ctx context.Context, key secretstore.Key) ([]byte, error) {
+	ctx = normalizeContext(ctx)
+	if err := checkContext(ctx); err != nil {
+		return nil, err
+	}
+	b, err := s.protected.Get(ctx, key)
+	if canceled := protectedCallError(ctx, err); errors.Is(canceled, ErrAuthCanceled) {
+		return nil, canceled
+	}
 	if err == nil {
 		return b, nil
 	}
@@ -20,19 +27,40 @@ func (s *store) getProtected(key secretstore.Key) ([]byte, error) {
 	return nil, ErrStorageUnavailable
 }
 
-func (s *store) putProtected(key secretstore.Key, value []byte) error {
-	if err := s.protected.Put(context.Background(), key, value); err != nil {
-		return ErrStorageUnavailable
+func (s *store) putProtected(ctx context.Context, key secretstore.Key, value []byte) error {
+	ctx = normalizeContext(ctx)
+	if err := checkContext(ctx); err != nil {
+		return err
 	}
-	return nil
+	return protectedCallError(ctx, s.protected.Put(ctx, key, value))
 }
 
-func (s *store) deleteProtected(key secretstore.Key) error {
-	err := s.protected.Delete(context.Background(), key)
+func (s *store) deleteProtected(ctx context.Context, key secretstore.Key) error {
+	ctx = normalizeContext(ctx)
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
+	err := s.protected.Delete(ctx, key)
+	if canceled := protectedCallError(ctx, err); errors.Is(canceled, ErrAuthCanceled) {
+		return canceled
+	}
 	if err == nil || errors.Is(err, secretstore.ErrNotFound) {
 		return nil
 	}
 	return ErrStorageUnavailable
+}
+
+// Protected stores are host callbacks. Preserve cancellation while keeping
+// backend diagnostics out of the app-facing error surface.
+func protectedCallError(ctx context.Context, err error) error {
+	if checkContext(ctx) != nil || errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrAuthCanceled) {
+		return ErrAuthCanceled
+	}
+	if err != nil {
+		return ErrStorageUnavailable
+	}
+	return nil
 }
 
 func decodeProtectedToken(b []byte) (token, error) {

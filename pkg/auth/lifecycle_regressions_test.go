@@ -24,7 +24,7 @@ func TestStrictExpiredSessionsDoNotExhaustSignIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.store.putProtected(svc.store.sessionsKey, raw); err != nil {
+	if err := svc.store.putProtected(context.Background(), svc.store.sessionsKey, raw); err != nil {
 		t.Fatal(err)
 	}
 	_, err = svc.StartSignIn(context.Background())
@@ -47,7 +47,7 @@ func TestValidTokenCorruptProfileRequiresReconnect(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := svc.store.writeToken(token{AccessToken: "test", Expiry: time.Now().Add(time.Hour)}); err != nil {
+			if err := svc.store.writeToken(context.Background(), token{AccessToken: "test", Expiry: time.Now().Add(time.Hour)}); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(svc.store.profilePath(), []byte(`{bad-json`), 0600); err != nil {

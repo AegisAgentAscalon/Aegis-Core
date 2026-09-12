@@ -9,12 +9,6 @@ import (
 	"strings"
 )
 
-func errorsWithStore(st *store, msg string) error {
-	err := errors.New(msg)
-	st.writeLastError(err)
-	return err
-}
-
 func checkContext(ctx context.Context) error {
 	if ctx == nil {
 		return nil
